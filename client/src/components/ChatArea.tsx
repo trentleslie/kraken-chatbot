@@ -42,7 +42,7 @@ export function ChatArea({
           </div>
           <div className="space-y-1">
             <h2 className="text-lg font-semibold text-foreground">
-              Welcome to Kestrel KG Explorer
+              Welcome to KRAKEN Explorer
             </h2>
             <p className="text-sm text-muted-foreground max-w-md">
               Query the KRAKEN biomedical knowledge graph through the
