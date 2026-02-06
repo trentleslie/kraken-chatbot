@@ -15,21 +15,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
     ToolResultBlock,
 )
-from claude_agent_sdk.types import McpSSEServerConfig
-
 from .config import get_settings
-
-
-# Kestrel MCP server configuration
-KESTREL_MCP_CONFIG = {
-    "kestrel": McpSSEServerConfig(
-        type="sse",
-        url="https://kestrel.nathanpricelab.com/mcp",
-        headers={
-            "Accept": "application/json, text/event-stream",
-        },
-    )
-}
 
 
 # Kestrel MCP tools whitelist - ONLY these tools are allowed
@@ -137,11 +123,10 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
     settings = get_settings()
     metrics = TurnMetrics(model=settings.model or "default")
 
-    # Build options with MCP server configuration
+    # Build options - MCP servers configured in ~/.claude/settings.json
     options_kwargs = {
         "allowed_tools": list(ALLOWED_TOOLS),
         "system_prompt": SYSTEM_PROMPT,
-        "mcp_servers": KESTREL_MCP_CONFIG,
     }
     if settings.model:
         options_kwargs["model"] = settings.model
