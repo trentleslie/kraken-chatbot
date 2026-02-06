@@ -22,7 +22,6 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import McpStdioServerConfig
 from .config import get_settings
-from .local_tools import create_local_mcp_server
 
 
 # Kestrel MCP tools whitelist - ONLY these tools are allowed
@@ -40,8 +39,6 @@ ALLOWED_TOOLS = frozenset([
     "mcp__kestrel__get_valid_predicates",
     "mcp__kestrel__get_valid_prefixes",
     "mcp__kestrel__health_check",
-    # Local analysis tools (via SDK MCP server)
-    "mcp__local__analyze_results",
 ])
 
 
@@ -84,19 +81,19 @@ SYSTEM_PROMPT = """You are KRAKEN Explorer, a helpful assistant for exploring th
 Your capabilities:
 - Search for concepts, diseases, drugs, genes, and their relationships using Kestrel MCP tools
 - Navigate the graph using one-hop queries to find connections
-- Use the analyze_results tool to process and compare query results
 - Explain biomedical relationships in clear terms
 
 Available tools:
 - text_search, vector_search, hybrid_search: Find entities by name/description
 - one_hop_query: Find connected entities (diseases, drugs, genes, etc.)
 - get_nodes, get_edges: Get detailed information about specific entities
-- analyze_results: Analyze and compare query results (use this for finding overlaps, patterns, or summarizing complex data)
+- similar_nodes: Find semantically similar entities
+- get_valid_categories, get_valid_predicates, get_valid_prefixes: Query metadata
 
-IMPORTANT - Data Analysis:
-- When you need to compare or analyze results from multiple queries, use the analyze_results tool
-- Pass the relevant data and describe what analysis you need (e.g., "find common diseases between these two gene result sets")
+IMPORTANT:
+- Only use the Kestrel MCP tools listed above
 - Do NOT attempt to use Bash, Task, or code execution - they are not available
+- For complex queries requiring multiple genes/entities, run separate queries and summarize the results yourself
 
 When responding:
 - Be concise but informative
@@ -162,16 +159,12 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
     # The proxy handles Kestrel's non-standard MCP-over-HTTP protocol
     kestrel_config = _get_kestrel_mcp_config()
 
-    # Configure local MCP server for analysis tools (in-process)
-    local_server = create_local_mcp_server()
-
-    # Build options with both MCP servers
+    # Build options with Kestrel MCP server
     options_kwargs = {
         "allowed_tools": list(ALLOWED_TOOLS),
         "system_prompt": SYSTEM_PROMPT,
         "mcp_servers": {
-            "kestrel": kestrel_config,  # Stdio proxy to Kestrel
-            "local": local_server,       # In-process analysis tools
+            "kestrel": kestrel_config,
         },
     }
     if settings.model:
