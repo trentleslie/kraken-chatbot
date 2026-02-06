@@ -2,7 +2,7 @@ import { ConnectionStatus } from "@/components/ConnectionStatus";
 import { SessionStatsBar } from "@/components/SessionStatsBar";
 import type { ConnectionStatus as ConnectionStatusType, SessionStats } from "@/types/messages";
 import { Button } from "@/components/ui/button";
-import { Network, Trash2 } from "lucide-react";
+import { Trash2 } from "lucide-react";
 
 interface HeaderProps {
   connectionStatus: ConnectionStatusType;
@@ -19,26 +19,13 @@ export function Header({
 }: HeaderProps) {
   return (
     <header
-      className="flex items-center justify-between gap-4 flex-wrap px-4 sm:px-6 py-3 border-b bg-card sticky top-0 z-50"
+      className="flex items-center justify-between gap-4 flex-wrap px-4 sm:px-6 py-2 border-b bg-card sticky top-0 z-50"
       data-testid="header"
     >
-      <div className="flex items-center gap-3">
-        <div className="flex items-center justify-center w-8 h-8 rounded-md bg-primary">
-          <Network className="w-4 h-4 text-primary-foreground" />
-        </div>
-        <div className="min-w-0">
-          <h1 className="text-sm font-semibold leading-tight truncate">
-            Kestrel KG Explorer
-          </h1>
-          <p className="text-xs text-muted-foreground truncate hidden sm:block">
-            Query KRAKEN via the Kestrel API
-          </p>
-        </div>
-      </div>
+      <ConnectionStatus status={connectionStatus} />
 
       <div className="flex items-center gap-2">
         <SessionStatsBar stats={sessionStats} />
-        <ConnectionStatus status={connectionStatus} />
         {hasMessages && (
           <Button
             variant="ghost"
