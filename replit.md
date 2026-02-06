@@ -20,14 +20,16 @@ client/src/
 ├── pages/
 │   └── chat.tsx                 # Main chat page composing all components
 ├── components/
-│   ├── Header.tsx               # App title, connection status, clear chat
-│   ├── ConnectionStatus.tsx     # Green/red/yellow dot indicator
-│   ├── ChatArea.tsx             # Scrollable message list, empty state
+│   ├── Header.tsx               # App title, connection status, session stats, clear chat
+│   ├── ConnectionStatus.tsx     # Green/red/yellow dot indicator + demo mode
+│   ├── ChatArea.tsx             # Scrollable message list, empty state, trace bars
 │   ├── ChatInput.tsx            # Text input with auto-resize, send button
 │   ├── MessageBubble.tsx        # User message bubble (right-aligned)
 │   ├── AgentMessage.tsx         # Agent text with Markdown rendering
-│   ├── ToolCallCard.tsx         # Expandable tool call visualization
+│   ├── ToolCallCard.tsx         # Expandable tool call visualization with latency badge
 │   ├── ToolResultDisplay.tsx    # Smart formatting per Kestrel tool type
+│   ├── TraceBar.tsx             # Per-turn trace metrics (duration, tokens, cost)
+│   ├── SessionStatsBar.tsx      # Cumulative session stats pill in header
 │   ├── ErrorCard.tsx            # Error display card
 │   └── StarterChips.tsx         # Suggestion query chips
 ├── hooks/
@@ -50,8 +52,12 @@ client/src/
 - Starter query suggestion chips for common biomedical queries
 - Connection status indicator (connected/disconnected/reconnecting)
 - Sequential text message grouping
+- Demo mode: Simulates full conversation scenario with tool calls and trace messages when backend unavailable
+- Agent Trace & Debug Display: Per-turn trace bar (duration, tokens, cost, model) and cumulative session stats in header
+- Tool call latency badges showing client-side timing between tool_use and tool_result
 
 ## Recent Changes
+- 2026-02-06: Added Agent Trace & Debug Display (TraceBar, SessionStatsBar, tool latency badges, demo mode)
 - 2026-02-06: Initial implementation of the complete chat frontend
 
 ## Design Tokens
