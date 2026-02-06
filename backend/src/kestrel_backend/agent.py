@@ -41,6 +41,12 @@ ALLOWED_TOOLS = frozenset([
     "mcp__kestrel__get_valid_predicates",
     "mcp__kestrel__get_valid_prefixes",
     "mcp__kestrel__health_check",
+    # Multi-hop graph reasoning tools
+    "mcp__kestrel__guilt_by_association",
+    "mcp__kestrel__missing_edge_prediction",
+    "mcp__kestrel__pathway_enrichment",
+    "mcp__kestrel__novelty_score",
+    "mcp__kestrel__gap_analysis",
     # Development/testing tools (sandboxed)
     "Bash",
     # Task tracking
@@ -100,6 +106,46 @@ Available tools:
   ALLOWED: jq, python, python3, grep, awk, sed, sort, uniq, wc, head, tail, cat, ls, find, echo
   BLOCKED: ALL network tools (curl, wget, nc, ssh), rm, sudo, system commands
   NOTE: For network/external data, use the Kestrel MCP tools instead.
+
+Multi-hop graph reasoning tools:
+- guilt_by_association: Find structurally similar entities via shared neighbors
+- missing_edge_prediction: Predict novel associations (2-hop reachable, no direct edge)
+- pathway_enrichment: Find shared biological themes across entity sets
+- novelty_score: Triage entities by characterization level (well-characterized/moderate/sparse)
+- gap_analysis: Find "expected but missing" entities sharing neighbors with input set
+
+## Analytical Workflow for Entity Lists
+
+When a user provides a list of analytes, metabolites, proteins, genes, or other biological entities for analysis, follow this systematic workflow:
+
+### Step 1: Triage with novelty_score
+Run `novelty_score` on the full list to classify each entity as well-characterized, moderate, or sparse. This determines your strategy for each entity.
+
+### Step 2: Pathway enrichment
+Run `pathway_enrichment` on the full list to find shared biological themes — genes, pathways, diseases, and phenotypes that connect multiple entities in the list. This is the foundation of your narrative.
+
+### Step 3: Direct associations for well-characterized entities
+Use `hybrid_search` and `one_hop_query` on well-characterized entities to retrieve known disease associations, pathway memberships, and literature-supported relationships.
+
+### Step 4: Inference for sparse entities
+For entities classified as sparse or moderate by novelty_score:
+- Use `guilt_by_association` to find structurally similar well-characterized entities
+- Use `missing_edge_prediction` with target_category="biolink:Disease" to predict novel disease associations via 2-hop paths
+- Clearly label these as **graph-structural inferences**, not established findings
+
+### Step 5: Gap analysis
+Run `gap_analysis` on the full list with category="biolink:SmallMolecule" to identify metabolites that would be expected alongside this panel but are absent. These are candidates for follow-up measurement.
+
+### Step 6: Synthesis
+Combine all findings into a narrative that:
+- Groups entities by biological theme (from pathway_enrichment)
+- Presents established associations (from direct lookups) separately from novel predictions (from inference tools)
+- Proposes 2-3 biological hypotheses explaining the overall pattern
+- Identifies which entities support each hypothesis and which don't fit
+- Lists expected-but-absent entities that would confirm or refute each hypothesis
+- Recommends specific follow-up analyses
+
+Always be transparent about evidence quality: direct KG edges with publication provenance > multi-source KG edges > graph-structural inferences.
 
 IMPORTANT:
 - Use Kestrel MCP tools for knowledge graph queries
