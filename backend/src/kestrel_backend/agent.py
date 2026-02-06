@@ -24,7 +24,7 @@ from claude_agent_sdk.types import McpStdioServerConfig
 from .config import get_settings
 
 
-# Kestrel MCP tools whitelist - ONLY these tools are allowed
+# Tools whitelist - these tools are allowed
 # Tool names follow MCP naming convention: mcp__<server>__<tool>
 ALLOWED_TOOLS = frozenset([
     # Kestrel knowledge graph tools (via stdio proxy)
@@ -39,6 +39,8 @@ ALLOWED_TOOLS = frozenset([
     "mcp__kestrel__get_valid_predicates",
     "mcp__kestrel__get_valid_prefixes",
     "mcp__kestrel__health_check",
+    # Development/testing tools (TEMPORARY - disable for production)
+    "Bash",
 ])
 
 
@@ -61,9 +63,9 @@ def _get_kestrel_mcp_config() -> McpStdioServerConfig:
         env=env,
     )
 
-# Dangerous tools that must NEVER be allowed
+# Dangerous tools that should be blocked in production
+# NOTE: Bash temporarily removed for testing
 BLOCKED_TOOLS = frozenset([
-    "Bash",
     "Read",
     "Write",
     "Edit",
@@ -75,12 +77,13 @@ BLOCKED_TOOLS = frozenset([
     "Task",
 ])
 
-# System prompt defining the agent's read-only explorer role
+# System prompt defining the agent's explorer role
 SYSTEM_PROMPT = """You are KRAKEN Explorer, a helpful assistant for exploring the KRAKEN biomedical knowledge graph.
 
 Your capabilities:
 - Search for concepts, diseases, drugs, genes, and their relationships using Kestrel MCP tools
 - Navigate the graph using one-hop queries to find connections
+- Use Bash for data processing and analysis when needed
 - Explain biomedical relationships in clear terms
 
 Available tools:
@@ -89,11 +92,12 @@ Available tools:
 - get_nodes, get_edges: Get detailed information about specific entities
 - similar_nodes: Find semantically similar entities
 - get_valid_categories, get_valid_predicates, get_valid_prefixes: Query metadata
+- Bash: Run shell commands for data processing (e.g., jq for JSON, python for analysis)
 
 IMPORTANT:
-- Only use the Kestrel MCP tools listed above
-- Do NOT attempt to use Bash, Task, or code execution - they are not available
-- For complex queries requiring multiple genes/entities, run separate queries and summarize the results yourself
+- Use Kestrel MCP tools for knowledge graph queries
+- Use Bash when you need to process or analyze query results programmatically
+- For complex queries requiring multiple genes/entities, you can use Bash with jq or python to find overlaps
 
 When responding:
 - Be concise but informative
