@@ -210,6 +210,7 @@ export function useWebSocket() {
             id: generateId(),
             type: "error" as const,
             message: data.message,
+            code: data.code,
             timestamp: Date.now(),
           },
         ]);

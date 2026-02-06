@@ -29,6 +29,7 @@ export type ErrorMessage = {
   id: string;
   type: "error";
   message: string;
+  code?: string;  // Optional error code (e.g., "AUTH_ERROR")
   timestamp: number;
 };
 
@@ -81,7 +82,7 @@ export type IncomingMessage =
   | { type: "text"; content: string }
   | { type: "tool_use"; tool: string; args: Record<string, unknown> }
   | { type: "tool_result"; tool: string; data: Record<string, unknown> }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; code?: string }
   | { type: "done" }
   | { type: "status"; status: string }
   | {
