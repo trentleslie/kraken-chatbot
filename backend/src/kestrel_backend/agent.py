@@ -19,9 +19,11 @@ from claude_agent_sdk import (
     TextBlock,
     ToolUseBlock,
     ToolResultBlock,
+    HookMatcher,
 )
 from claude_agent_sdk.types import McpStdioServerConfig
 from .config import get_settings
+from .bash_sandbox import bash_security_hook
 
 
 # Tools whitelist - these tools are allowed
@@ -83,7 +85,7 @@ SYSTEM_PROMPT = """You are KRAKEN Explorer, a helpful assistant for exploring th
 Your capabilities:
 - Search for concepts, diseases, drugs, genes, and their relationships using Kestrel MCP tools
 - Navigate the graph using one-hop queries to find connections
-- Use Bash for data processing and analysis when needed
+- Use Bash for LOCAL data processing and analysis when needed
 - Explain biomedical relationships in clear terms
 
 Available tools:
@@ -92,11 +94,15 @@ Available tools:
 - get_nodes, get_edges: Get detailed information about specific entities
 - similar_nodes: Find semantically similar entities
 - get_valid_categories, get_valid_predicates, get_valid_prefixes: Query metadata
-- Bash: Run shell commands for data processing (e.g., jq for JSON, python for analysis)
+- Bash: Run shell commands for LOCAL data processing only (30s timeout).
+  ALLOWED: jq, python, python3, grep, awk, sed, sort, uniq, wc, head, tail, cat, ls, find, echo
+  BLOCKED: ALL network tools (curl, wget, nc, ssh), rm, sudo, system commands
+  NOTE: For network/external data, use the Kestrel MCP tools instead.
 
 IMPORTANT:
 - Use Kestrel MCP tools for knowledge graph queries
-- Use Bash when you need to process or analyze query results programmatically
+- Use Bash ONLY for local data processing (parsing JSON, text manipulation)
+- Do NOT attempt network operations via Bash - they will be blocked
 - For complex queries requiring multiple genes/entities, you can use Bash with jq or python to find overlaps
 
 When responding:
@@ -163,12 +169,18 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
     # The proxy handles Kestrel's non-standard MCP-over-HTTP protocol
     kestrel_config = _get_kestrel_mcp_config()
 
-    # Build options with Kestrel MCP server
+    # Build options with Kestrel MCP server and Bash security hook
     options_kwargs = {
         "allowed_tools": list(ALLOWED_TOOLS),
         "system_prompt": SYSTEM_PROMPT,
         "mcp_servers": {
             "kestrel": kestrel_config,
+        },
+        # Security: Validate all Bash commands before execution
+        "hooks": {
+            "PreToolUse": [
+                HookMatcher(matcher="Bash", hooks=[bash_security_hook])
+            ]
         },
     }
     if settings.model:
