@@ -43,10 +43,15 @@ jobs:
           # Restart backend service
           sudo systemctl restart kraken-backend
 
-          # Wait for service to start
-          sleep 3
-
-          # Health check
-          curl -sf http://localhost:8000/health || exit 1
-          echo "Deployment successful!"
+          # Health check with retries (wait up to 15 seconds for service to start)
+          for i in {1..5}; do
+            if curl -sf http://localhost:8000/health; then
+              echo "Deployment successful!"
+              exit 0
+            fi
+            echo "Health check attempt $i failed, retrying in 3s..."
+            sleep 3
+          done
+          echo "Health check failed after 5 attempts"
+          exit 1
           EOF
