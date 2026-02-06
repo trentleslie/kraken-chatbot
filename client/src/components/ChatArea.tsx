@@ -45,9 +45,9 @@ export function ChatArea({
               Welcome to Kestrel KG Explorer
             </h2>
             <p className="text-sm text-muted-foreground max-w-md">
-              Ask questions about the KRAKEN biomedical knowledge graph.
-              Search for drugs, diseases, genes, metabolites, and their
-              relationships.
+              Query the KRAKEN biomedical knowledge graph through the
+              Kestrel API. Search for drugs, diseases, genes, metabolites,
+              and their relationships.
             </p>
           </div>
         </div>

@@ -1,7 +1,7 @@
 # Kestrel KG Explorer
 
 ## Overview
-A React TypeScript frontend chat application for querying the KRAKEN biomedical knowledge graph through an AI-powered conversational interface. The frontend connects to an external FastAPI + Claude Agent SDK backend via WebSocket.
+A React TypeScript frontend chat application for querying the KRAKEN biomedical knowledge graph via the Kestrel API, through an AI-powered conversational interface. The frontend connects to an external FastAPI + Claude Agent SDK backend via WebSocket. Kestrel is the API for the KRAKEN knowledge graph.
 
 ## Architecture
 - **Frontend**: React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui

@@ -28,7 +28,7 @@ export function Header({
             Kestrel KG Explorer
           </h1>
           <p className="text-xs text-muted-foreground truncate hidden sm:block">
-            Explore the KRAKEN biomedical knowledge graph
+            Query KRAKEN via the Kestrel API
           </p>
         </div>
       </div>
