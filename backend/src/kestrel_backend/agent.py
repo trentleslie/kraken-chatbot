@@ -25,6 +25,9 @@ KESTREL_MCP_CONFIG = {
     "kestrel": McpSSEServerConfig(
         type="sse",
         url="https://kestrel.nathanpricelab.com/mcp",
+        headers={
+            "Accept": "application/json, text/event-stream",
+        },
     )
 }
 
