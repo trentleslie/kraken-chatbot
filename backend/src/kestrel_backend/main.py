@@ -5,6 +5,7 @@ import json
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
+from typing import List, Tuple
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +24,32 @@ from .protocol import (
 
 # Rate limiting state: connection_id -> list of message timestamps
 rate_limit_state: dict[str, list[float]] = defaultdict(list)
+
+# Conversation history per WebSocket connection: {connection_id: [(role, content), ...]}
+conversation_history: dict[str, List[Tuple[str, str]]] = defaultdict(list)
+
+# Maximum number of user/assistant exchanges to keep in history
+MAX_HISTORY_EXCHANGES = 10
+
+
+def build_conversation_prompt(history: List[Tuple[str, str]], current_message: str) -> str:
+    """
+    Build prompt with conversation history for multi-turn context.
+
+    Formats previous exchanges and appends the current message so the agent
+    can understand the full conversation context.
+    """
+    if not history:
+        return current_message
+
+    lines = ["Previous conversation:"]
+    for role, content in history:
+        prefix = "User" if role == "user" else "Assistant"
+        lines.append(f"{prefix}: {content}")
+
+    lines.append("")
+    lines.append(f"Current message: {current_message}")
+    return "\n".join(lines)
 
 
 def check_rate_limit(connection_id: str) -> bool:
@@ -139,13 +166,23 @@ async def websocket_chat(websocket: WebSocket):
                 )
                 continue
 
+            # Build prompt with conversation history for multi-turn context
+            history = conversation_history[connection_id]
+            full_prompt = build_conversation_prompt(history, content)
+
             # Process the message through the agent
             try:
-                async for event in run_agent_turn(content):
+                # Track assistant response text for history
+                assistant_response_parts: List[str] = []
+
+                async for event in run_agent_turn(full_prompt):
                     # Convert agent events to protocol messages
                     match event.type:
                         case "text":
-                            msg = TextMessage(content=event.data["content"])
+                            # Capture text content for conversation history
+                            text_content = event.data["content"]
+                            assistant_response_parts.append(text_content)
+                            msg = TextMessage(content=text_content)
                         case "tool_use":
                             msg = ToolUseMessage(
                                 tool=event.data["tool"],
@@ -170,6 +207,16 @@ async def websocket_chat(websocket: WebSocket):
 
                     await websocket.send_text(msg.model_dump_json())
 
+                # Update conversation history after successful exchange
+                history.append(("user", content))
+                if assistant_response_parts:
+                    history.append(("assistant", "".join(assistant_response_parts)))
+
+                # Trim history to last N exchanges (2 messages per exchange)
+                max_messages = MAX_HISTORY_EXCHANGES * 2
+                if len(history) > max_messages:
+                    conversation_history[connection_id] = history[-max_messages:]
+
             except Exception as e:
                 await websocket.send_text(
                     ErrorMessage(message=f"Agent error: {str(e)}").model_dump_json()
@@ -177,11 +224,13 @@ async def websocket_chat(websocket: WebSocket):
                 await websocket.send_text(DoneMessage().model_dump_json())
 
     except WebSocketDisconnect:
-        # Clean up rate limit state for this connection
+        # Clean up state for this connection
         rate_limit_state.pop(connection_id, None)
+        conversation_history.pop(connection_id, None)
     except Exception as e:
         print(f"WebSocket error: {e}")
         rate_limit_state.pop(connection_id, None)
+        conversation_history.pop(connection_id, None)
 
 
 if __name__ == "__main__":
