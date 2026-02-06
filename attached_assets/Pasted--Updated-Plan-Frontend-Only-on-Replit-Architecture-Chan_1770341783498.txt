@@ -1,0 +1,317 @@
+# Updated Plan: Frontend Only on Replit
+
+## Architecture Change
+
+The Claude Agent SDK has specific runtime requirements (bundles the Claude Code CLI, needs Node.js 18+) that make it a poor fit for Replit. Instead, we’re splitting the architecture:
+
+- **Replit**: React frontend only (chat UI, tool call visualization, WebSocket client)
+- **AWS Lightsail**: FastAPI + Claude Agent SDK backend (deployed separately)
+
+The Replit app connects to the Lightsail backend via WebSocket. For development, we’ll use a configurable backend URL so we can point it at `localhost` during local testing or the Lightsail instance in production.
+
+## What to Build on Replit
+
+A React (TypeScript) frontend chat application with Tailwind CSS and shadcn/ui. No backend logic, no Python, no Agent SDK. Just a WebSocket client that talks to an external backend.
+
+### Tech Stack (Frontend Only)
+
+- React 18+ with TypeScript
+- Tailwind CSS + shadcn/ui components
+- Vite for build/dev server
+- No backend — this is a static SPA that connects to an external WebSocket
+
+### Environment Variables
+
+```
+VITE_WS_URL=wss://your-lightsail-instance.com/ws/chat
+```
+
+This should default to `ws://localhost:8000/ws/chat` for local development.
+
+### WebSocket Protocol
+
+The frontend connects to a WebSocket endpoint and exchanges JSON messages. Here’s the protocol:
+
+**Client → Server (user messages):**
+
+```json
+{"type": "user_message", "content": "What drugs treat type 2 diabetes?"}
+```
+
+**Server → Client (streamed responses):**
+
+```json
+{"type": "text", "content": "I'll search for type 2 diabetes first..."}
+```
+
+```json
+{"type": "tool_use", "tool": "hybrid_search", "args": {"search_text": "type 2 diabetes", "limit": 5}}
+```
+
+```json
+{"type": "tool_result", "tool": "hybrid_search", "data": {"type 2 diabetes": [{"id": "MONDO:0005148", "name": "type 2 diabetes mellitus", "category": "biolink:Disease", "score": 48.3}]}}
+```
+
+```json
+{"type": "text", "content": "I found type 2 diabetes mellitus (MONDO:0005148). Let me find drugs that treat it..."}
+```
+
+```json
+{"type": "tool_use", "tool": "one_hop_query", "args": {"start_node_ids": "MONDO:0005148", "predicate_filter": "biolink:treats", "direction": "reverse", "mode": "preview"}}
+```
+
+```json
+{"type": "tool_result", "tool": "one_hop_query", "data": {"preview": {"node_count": 12, "edge_count": 12}}}
+```
+
+```json
+{"type": "text", "content": "There are 12 drugs associated with treating type 2 diabetes..."}
+```
+
+```json
+{"type": "done"}
+```
+
+Additional server message types:
+
+```json
+{"type": "error", "message": "Connection to Kestrel API failed"}
+{"type": "status", "status": "connecting" | "connected" | "thinking"}
+```
+
+### UI Layout
+
+Single-page chat application:
+
+1. **Header**: “Kestrel KG Explorer” with a brief subtitle (“Explore the KRAKEN biomedical knowledge graph”). Include a connection status indicator (green dot = connected, red = disconnected, yellow = reconnecting).
+1. **Chat area**: Scrollable message list taking up the main viewport. Auto-scrolls to bottom on new messages.
+1. **Input area**: Fixed at bottom. Text input with send button. Disabled when WebSocket is disconnected or agent is currently responding. Support Enter to send, Shift+Enter for newline.
+1. **Starter chips**: When the chat is empty, show clickable suggestion chips above the input:
+- “What is the CHEBI ID for glucose?”
+- “What pathways does glucose participate in?”
+- “Find drugs that treat type 2 diabetes”
+- “What metabolites are similar to cholesterol?”
+- “What genes interact with NAD+?”
+
+### Message Rendering
+
+**User messages**: Right-aligned bubble, simple text, subtle background color.
+
+**Agent text messages**: Left-aligned, rendered as Markdown. Must support:
+
+- Bold, italic, inline code
+- Tables (important — the agent formats entity results as tables)
+- Code blocks with syntax highlighting
+- Bullet/numbered lists
+- Links
+
+Use a library like `react-markdown` with `remark-gfm` for GitHub-flavored Markdown (tables, strikethrough, etc.).
+
+**Tool call cards**: This is the key differentiator. When a `tool_use` message arrives, render an inline expandable card:
+
+Collapsed state:
+
+```
+┌─────────────────────────────────────────────────┐
+│ 🔍 hybrid_search                      ⏳ / ✓    │
+│ "type 2 diabetes"                                │
+│ ▶ Click to expand                                │
+└─────────────────────────────────────────────────┘
+```
+
+The card shows ⏳ spinner until the corresponding `tool_result` arrives, then switches to ✓.
+
+When the `tool_result` arrives, update the card to show a summary line:
+
+```
+│ ✓ 3 results found                                │
+```
+
+Expanded state (click to toggle):
+
+```
+┌─────────────────────────────────────────────────┐
+│ 🔍 hybrid_search                           ✓    │
+│ Query: "type 2 diabetes"                         │
+│ ▼ 3 results:                                     │
+│                                                   │
+│   MONDO:0005148                                   │
+│   type 2 diabetes mellitus                        │
+│   biolink:Disease · Score: 48.3                   │
+│                                                   │
+│   MONDO:0005015                                   │
+│   diabetes mellitus                               │
+│   biolink:Disease · Score: 35.1                   │
+│   ...                                             │
+│                                                   │
+│ ▶ Raw JSON                                        │
+└─────────────────────────────────────────────────┘
+```
+
+Include a “Raw JSON” toggle at the bottom that shows the full JSON response in a code block (for debugging/power users).
+
+**Tool-specific display formatting:**
+
+For `hybrid_search`, `text_search`, `vector_search`, `similar_nodes` results:
+
+- Show each result as: CURIE, name, category, score
+- Render CURIEs in monospace font
+
+For `one_hop_query` results:
+
+- Preview mode: Show node/edge counts as a summary
+- Slim/full mode: Render as relationship triples:
+  
+  ```
+  CHEBI:6801 (metformin) → biolink:treats → MONDO:0005148 (type 2 diabetes)
+  ```
+
+For `get_nodes` results:
+
+- Show entity name, CURIE, category, description, synonyms (truncated), equivalent IDs
+
+For `get_valid_categories`, `get_valid_predicates`, `get_valid_prefixes`:
+
+- Render as a simple formatted list
+
+**Error messages**: Red-tinted card with error icon and message text.
+
+### Color Scheme & Design
+
+- Clean, professional research tool aesthetic
+- Light background (#fafafa or similar), white message cards
+- Teal/blue accent color for agent elements and the header
+- Monospace font (`font-mono`) for all CURIEs, predicates, and technical identifiers
+- Tool call cards: subtle gray background with left border accent
+- Good contrast and readable font sizes — this is a research tool, not a consumer app
+- Responsive: works well on desktop (primary) and tablet
+
+### React App Structure
+
+```
+src/
+├── App.tsx                      # Main layout, WebSocket provider
+├── components/
+│   ├── Header.tsx               # App title, connection status indicator
+│   ├── ChatArea.tsx             # Scrollable message list, auto-scroll
+│   ├── ChatInput.tsx            # Text input, send button, starter chips
+│   ├── MessageBubble.tsx        # User message bubble
+│   ├── AgentMessage.tsx         # Agent text (Markdown rendered)
+│   ├── ToolCallCard.tsx         # Expandable tool call visualization
+│   ├── ToolResultDisplay.tsx    # Smart formatting per tool type
+│   ├── ErrorCard.tsx            # Error display
+│   └── ConnectionStatus.tsx     # Green/red/yellow dot
+├── hooks/
+│   └── useWebSocket.ts          # WebSocket connection, reconnect logic, message parsing
+├── types/
+│   └── messages.ts              # TypeScript types for all WS message types
+├── utils/
+│   ├── formatters.ts            # Format CURIEs, predicates, scores for display
+│   └── toolResultParsers.ts     # Extract summary info from each tool type's results
+└── styles/
+    └── globals.css              # Tailwind imports, custom utility classes
+```
+
+### WebSocket Hook (`useWebSocket.ts`)
+
+The hook should:
+
+- Connect to `VITE_WS_URL` on mount
+- Auto-reconnect with exponential backoff (1s, 2s, 4s, 8s, max 30s)
+- Expose: `sendMessage(text)`, `messages[]`, `connectionStatus`, `isAgentResponding`
+- Parse incoming JSON and append to messages array
+- Match `tool_result` messages to their corresponding `tool_use` by tool name (they arrive in order)
+- Set `isAgentResponding = true` on user message send, `false` on `done` or `error`
+
+### TypeScript Types (`messages.ts`)
+
+```typescript
+type ConnectionStatus = "connecting" | "connected" | "disconnected" | "reconnecting";
+
+type UserMessage = {
+  type: "user";
+  content: string;
+  timestamp: number;
+};
+
+type AgentTextMessage = {
+  type: "text";
+  content: string;
+  timestamp: number;
+};
+
+type ToolUseMessage = {
+  type: "tool_use";
+  tool: string;
+  args: Record<string, unknown>;
+  timestamp: number;
+  status: "pending" | "complete" | "error";
+  result?: ToolResultData;
+};
+
+type ToolResultMessage = {
+  type: "tool_result";
+  tool: string;
+  data: Record<string, unknown>;
+  timestamp: number;
+};
+
+type ErrorMessage = {
+  type: "error";
+  message: string;
+  timestamp: number;
+};
+
+type DoneMessage = {
+  type: "done";
+  timestamp: number;
+};
+
+type StatusMessage = {
+  type: "status";
+  status: string;
+  timestamp: number;
+};
+
+type ChatMessage = UserMessage | AgentTextMessage | ToolUseMessage | ErrorMessage | DoneMessage;
+```
+
+### Key Implementation Notes
+
+1. **No backend on Replit** — this is purely a frontend deployment. All intelligence lives on the Lightsail backend.
+1. **CORS/WebSocket security**: During development, the Lightsail backend will need to allow WebSocket connections from the Replit preview URL. We’ll handle that on the backend side.
+1. **Graceful degradation**: If the WebSocket can’t connect, show a clear message: “Cannot connect to backend. The Kestrel agent backend may not be running.” with a retry button.
+1. **Message grouping**: Agent text messages that arrive in sequence (before a tool_use or done) should be concatenated into a single message bubble, not shown as separate bubbles.
+1. **Mobile responsiveness**: The primary use case is desktop, but the layout should not break on tablet/mobile. Use standard responsive Tailwind patterns.
+1. **Dark mode**: Not required for v1, but don’t hard-code colors in a way that makes it difficult to add later.
+
+### Suggested Starter Queries (for chips)
+
+These are ordered from simple to complex and cover the main query patterns:
+
+**Entity Resolution (hybrid_search)**:
+
+- “What is the CHEBI ID for glucose?”
+- “Find all identifiers for vitamin B12”
+
+**Relationship Exploration (one_hop_query)**:
+
+- “What pathways does glucose participate in?”
+- “What genes interact with NAD+?”
+
+**Combined Workflow (search → graph)**:
+
+- “Find drugs that treat type 2 diabetes”
+- “What biological processes involve serotonin?”
+
+**Semantic/Fuzzy (vector_search, similar_nodes)**:
+
+- “What metabolites are similar to cholesterol?”
+
+### Stretch Goals (design for, don’t implement yet)
+
+- **Conversation export**: Download chat as Markdown or JSON
+- **Bookmarked entities**: Click a CURIE to “pin” it for reference
+- **Graph visualization panel**: Side panel with D3/vis.js node-link diagram for one_hop results
+- **Multi-session**: Session list in a sidebar, backed by persistent storage
+- **Dark mode toggle**
