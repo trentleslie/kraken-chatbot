@@ -41,8 +41,10 @@ ALLOWED_TOOLS = frozenset([
     "mcp__kestrel__get_valid_predicates",
     "mcp__kestrel__get_valid_prefixes",
     "mcp__kestrel__health_check",
-    # Development/testing tools (TEMPORARY - disable for production)
+    # Development/testing tools (sandboxed)
     "Bash",
+    # Task tracking
+    "TodoWrite",
 ])
 
 
