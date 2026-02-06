@@ -32,3 +32,17 @@ export function getToolDisplayName(tool: string): string {
 export function getToolCleanName(tool: string): string {
   return tool.replace(/^mcp__kestrel__/, "");
 }
+
+export function formatTokens(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+export function formatCost(usd: number): string {
+  if (usd < 0.01) return `$${usd.toFixed(3)}`;
+  return `$${usd.toFixed(2)}`;
+}
+
+export function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}

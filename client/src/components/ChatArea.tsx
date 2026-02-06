@@ -4,9 +4,10 @@ import { AgentMessage } from "@/components/AgentMessage";
 import { ToolCallCard } from "@/components/ToolCallCard";
 import { ErrorCard } from "@/components/ErrorCard";
 import { StarterChips } from "@/components/StarterChips";
-import type { ChatMessage, ToolUseMessage } from "@/types/messages";
+import { TraceBar } from "@/components/TraceBar";
+import type { ChatMessage, ToolUseMessage, TraceMessage } from "@/types/messages";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Network, Loader2 } from "lucide-react";
+import { Network } from "lucide-react";
 
 interface ChatAreaProps {
   messages: ChatMessage[];
@@ -75,6 +76,10 @@ export function ChatArea({
                   key={msg.id}
                   message={msg as ToolUseMessage}
                 />
+              );
+            case "trace":
+              return (
+                <TraceBar key={msg.id} trace={msg as TraceMessage} />
               );
             case "error":
               return <ErrorCard key={msg.id} message={msg.message} />;

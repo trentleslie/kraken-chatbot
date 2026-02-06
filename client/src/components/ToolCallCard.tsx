@@ -20,7 +20,7 @@ import {
   Shuffle,
   type LucideIcon,
 } from "lucide-react";
-import { getToolDisplayName } from "@/utils/formatters";
+import { getToolDisplayName, formatDuration } from "@/utils/formatters";
 import { getResultSummary } from "@/utils/toolResultParsers";
 import { ToolResultDisplay } from "@/components/ToolResultDisplay";
 import type { ToolUseMessage } from "@/types/messages";
@@ -71,6 +71,10 @@ export function ToolCallCard({ message }: ToolCallCardProps) {
   const summary = message.result
     ? getResultSummary(message.tool, message.result)
     : null;
+  const latencyMs =
+    message.resultTimestamp && message.timestamp
+      ? message.resultTimestamp - message.timestamp
+      : null;
 
   return (
     <div
@@ -93,6 +97,14 @@ export function ToolCallCard({ message }: ToolCallCardProps) {
                     </Badge>
                   </div>
                   <div className="flex items-center gap-1.5 flex-shrink-0">
+                    {latencyMs != null && latencyMs > 0 && (
+                      <span
+                        className="text-[10px] text-muted-foreground/60 font-mono"
+                        data-testid={`latency-${message.id}`}
+                      >
+                        {formatDuration(latencyMs)}
+                      </span>
+                    )}
                     {isPending ? (
                       <Loader2 className="h-3.5 w-3.5 text-muted-foreground animate-spin" />
                     ) : (

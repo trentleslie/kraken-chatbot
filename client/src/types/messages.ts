@@ -1,4 +1,4 @@
-export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "reconnecting";
+export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "reconnecting" | "demo";
 
 export type UserMessage = {
   id: string;
@@ -22,6 +22,7 @@ export type ToolUseMessage = {
   timestamp: number;
   status: "pending" | "complete" | "error";
   result?: Record<string, unknown>;
+  resultTimestamp?: number;
 };
 
 export type ErrorMessage = {
@@ -44,12 +45,37 @@ export type StatusMessage = {
   timestamp: number;
 };
 
+export type TraceMessage = {
+  id: string;
+  type: "trace";
+  turn_id?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_tokens?: number;
+  cache_read_tokens?: number;
+  cost_usd?: number;
+  duration_ms?: number;
+  tool_calls_count?: number;
+  model?: string;
+  timestamp: number;
+};
+
+export type SessionStats = {
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cost_usd: number;
+  total_tool_calls: number;
+  turn_count: number;
+  traces: TraceMessage[];
+};
+
 export type ChatMessage =
   | UserMessage
   | AgentTextMessage
   | ToolUseMessage
   | ErrorMessage
-  | DoneMessage;
+  | DoneMessage
+  | TraceMessage;
 
 export type IncomingMessage =
   | { type: "text"; content: string }
@@ -57,4 +83,16 @@ export type IncomingMessage =
   | { type: "tool_result"; tool: string; data: Record<string, unknown> }
   | { type: "error"; message: string }
   | { type: "done" }
-  | { type: "status"; status: string };
+  | { type: "status"; status: string }
+  | {
+      type: "trace";
+      turn_id?: string;
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_creation_tokens?: number;
+      cache_read_tokens?: number;
+      cost_usd?: number;
+      duration_ms?: number;
+      tool_calls_count?: number;
+      model?: string;
+    };

@@ -1,16 +1,19 @@
 import { ConnectionStatus } from "@/components/ConnectionStatus";
-import type { ConnectionStatus as ConnectionStatusType } from "@/types/messages";
+import { SessionStatsBar } from "@/components/SessionStatsBar";
+import type { ConnectionStatus as ConnectionStatusType, SessionStats } from "@/types/messages";
 import { Button } from "@/components/ui/button";
 import { Network, Trash2 } from "lucide-react";
 
 interface HeaderProps {
   connectionStatus: ConnectionStatusType;
+  sessionStats: SessionStats;
   onClearChat: () => void;
   hasMessages: boolean;
 }
 
 export function Header({
   connectionStatus,
+  sessionStats,
   onClearChat,
   hasMessages,
 }: HeaderProps) {
@@ -34,6 +37,7 @@ export function Header({
       </div>
 
       <div className="flex items-center gap-2">
+        <SessionStatsBar stats={sessionStats} />
         <ConnectionStatus status={connectionStatus} />
         {hasMessages && (
           <Button

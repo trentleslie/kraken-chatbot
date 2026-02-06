@@ -8,11 +8,12 @@ export default function ChatPage() {
     messages,
     connectionStatus,
     isAgentResponding,
+    sessionStats,
     sendMessage,
     clearMessages,
   } = useWebSocket();
 
-  const isConnected = connectionStatus === "connected";
+  const isConnected = connectionStatus === "connected" || connectionStatus === "demo";
 
   const handleSelectStarter = (query: string) => {
     if (isConnected && !isAgentResponding) {
@@ -24,6 +25,7 @@ export default function ChatPage() {
     <div className="flex flex-col h-screen bg-background">
       <Header
         connectionStatus={connectionStatus}
+        sessionStats={sessionStats}
         onClearChat={clearMessages}
         hasMessages={messages.length > 0}
       />

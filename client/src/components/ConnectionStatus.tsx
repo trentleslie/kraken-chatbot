@@ -20,6 +20,11 @@ const statusConfig: Record<
     label: "Disconnected",
     pulse: false,
   },
+  demo: {
+    color: "bg-status-online",
+    label: "Demo Mode",
+    pulse: false,
+  },
 };
 
 export function ConnectionStatus({ status }: ConnectionStatusProps) {

@@ -4,30 +4,123 @@ import type {
   ConnectionStatus,
   IncomingMessage,
   ToolUseMessage,
+  TraceMessage,
+  SessionStats,
 } from "@/types/messages";
 
-const WS_URL =
-  import.meta.env.VITE_WS_URL || "ws://localhost:8000/ws/chat";
+const WS_URL = import.meta.env.VITE_WS_URL || "";
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
+const MAX_CONNECT_ATTEMPTS_BEFORE_DEMO = 3;
 
 let messageIdCounter = 0;
 function generateId(): string {
   return `msg-${Date.now()}-${++messageIdCounter}`;
 }
 
+function emptySessionStats(): SessionStats {
+  return {
+    total_input_tokens: 0,
+    total_output_tokens: 0,
+    total_cost_usd: 0,
+    total_tool_calls: 0,
+    turn_count: 0,
+    traces: [],
+  };
+}
+
+const DEMO_SCENARIO: IncomingMessage[] = [
+  {
+    type: "tool_use",
+    tool: "mcp__kestrel__hybrid_search",
+    args: { search_text: "type 2 diabetes treatments", limit: 5 },
+  },
+  {
+    type: "tool_result",
+    tool: "mcp__kestrel__hybrid_search",
+    data: {
+      results: [
+        { id: "MONDO:0005148", name: "type 2 diabetes mellitus", category: "biolink:Disease", score: 0.95 },
+        { id: "CHEBI:6801", name: "metformin", category: "biolink:SmallMolecule", score: 0.88 },
+        { id: "CHEBI:5441", name: "glipizide", category: "biolink:SmallMolecule", score: 0.82 },
+        { id: "CHEBI:75209", name: "empagliflozin", category: "biolink:SmallMolecule", score: 0.79 },
+      ],
+    },
+  },
+  {
+    type: "tool_use",
+    tool: "mcp__kestrel__one_hop_query",
+    args: { start_node_ids: ["MONDO:0005148"], predicates: ["biolink:treated_by"], limit: 10 },
+  },
+  {
+    type: "tool_result",
+    tool: "mcp__kestrel__one_hop_query",
+    data: {
+      preview: { node_count: 8, edge_count: 7 },
+      nodes: [
+        { id: "MONDO:0005148", name: "type 2 diabetes mellitus", category: "biolink:Disease" },
+        { id: "CHEBI:6801", name: "metformin", category: "biolink:SmallMolecule" },
+        { id: "CHEBI:5441", name: "glipizide", category: "biolink:SmallMolecule" },
+      ],
+      edges: [
+        { subject: "MONDO:0005148", predicate: "biolink:treated_by", object: "CHEBI:6801" },
+        { subject: "MONDO:0005148", predicate: "biolink:treated_by", object: "CHEBI:5441" },
+      ],
+    },
+  },
+  {
+    type: "text",
+    content: "Based on my search of the KRAKEN knowledge graph, here are the key findings about **type 2 diabetes treatments**:\n\n",
+  },
+  {
+    type: "text",
+    content: "### First-Line Treatments\n\n| Drug | ID | Mechanism |\n|------|------|------|\n| Metformin | `CHEBI:6801` | Biguanide — reduces hepatic glucose production |\n| Glipizide | `CHEBI:5441` | Sulfonylurea — stimulates insulin secretion |\n| Empagliflozin | `CHEBI:75209` | SGLT2 inhibitor — increases urinary glucose excretion |\n\n",
+  },
+  {
+    type: "text",
+    content: "The graph shows **7 treatment relationships** connecting type 2 diabetes mellitus (`MONDO:0005148`) to various therapeutic agents. Metformin remains the most strongly associated first-line treatment.",
+  },
+  {
+    type: "trace",
+    turn_id: "demo-turn-1",
+    input_tokens: 2847,
+    output_tokens: 531,
+    cache_creation_tokens: 0,
+    cache_read_tokens: 1200,
+    cost_usd: 0.012,
+    duration_ms: 3400,
+    tool_calls_count: 2,
+    model: "claude-sonnet-4-5",
+  },
+  { type: "done" },
+];
+
+const DEMO_DELAYS = [400, 1200, 300, 900, 200, 300, 200, 100, 100];
+
 export function useWebSocket() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("disconnected");
   const [isAgentResponding, setIsAgentResponding] = useState(false);
+  const [sessionStats, setSessionStats] = useState<SessionStats>(emptySessionStats());
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptRef = useRef(0);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  const demoModeRef = useRef(false);
+  const demoTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const addTraceToSession = useCallback((trace: TraceMessage) => {
+    setSessionStats((prev) => ({
+      total_input_tokens: prev.total_input_tokens + (trace.input_tokens || 0),
+      total_output_tokens: prev.total_output_tokens + (trace.output_tokens || 0),
+      total_cost_usd: prev.total_cost_usd + (trace.cost_usd || 0),
+      total_tool_calls: prev.total_tool_calls + (trace.tool_calls_count || 0),
+      turn_count: prev.turn_count + 1,
+      traces: [...prev.traces, trace],
+    }));
+  }, []);
 
   const handleIncomingMessage = useCallback((data: IncomingMessage) => {
     switch (data.type) {
@@ -84,10 +177,31 @@ export function useWebSocket() {
             ...existing,
             status: "complete" as const,
             result: data.data,
+            resultTimestamp: Date.now(),
           };
           return updated;
         });
         break;
+
+      case "trace": {
+        const traceMsg: TraceMessage = {
+          id: generateId(),
+          type: "trace" as const,
+          turn_id: data.turn_id,
+          input_tokens: data.input_tokens,
+          output_tokens: data.output_tokens,
+          cache_creation_tokens: data.cache_creation_tokens,
+          cache_read_tokens: data.cache_read_tokens,
+          cost_usd: data.cost_usd,
+          duration_ms: data.duration_ms,
+          tool_calls_count: data.tool_calls_count,
+          model: data.model,
+          timestamp: Date.now(),
+        };
+        setMessages((prev) => [...prev, traceMsg]);
+        addTraceToSession(traceMsg);
+        break;
+      }
 
       case "error":
         setMessages((prev) => [
@@ -109,10 +223,21 @@ export function useWebSocket() {
       case "status":
         break;
     }
+  }, [addTraceToSession]);
+
+  const enterDemoMode = useCallback(() => {
+    demoModeRef.current = true;
+    setConnectionStatus("demo");
   }, []);
 
   const scheduleReconnect = useCallback(() => {
     const attempt = reconnectAttemptRef.current;
+
+    if (!WS_URL || attempt >= MAX_CONNECT_ATTEMPTS_BEFORE_DEMO) {
+      enterDemoMode();
+      return;
+    }
+
     const delay =
       RECONNECT_DELAYS[Math.min(attempt, RECONNECT_DELAYS.length - 1)];
 
@@ -124,9 +249,14 @@ export function useWebSocket() {
         connectWs();
       }
     }, delay);
-  }, []);
+  }, [enterDemoMode]);
 
   const connectWs = useCallback(() => {
+    if (!WS_URL) {
+      enterDemoMode();
+      return;
+    }
+
     if (
       wsRef.current?.readyState === WebSocket.OPEN ||
       wsRef.current?.readyState === WebSocket.CONNECTING
@@ -144,6 +274,7 @@ export function useWebSocket() {
         if (!mountedRef.current) return;
         setConnectionStatus("connected");
         reconnectAttemptRef.current = 0;
+        demoModeRef.current = false;
       };
 
       ws.onmessage = (event) => {
@@ -170,32 +301,69 @@ export function useWebSocket() {
       setConnectionStatus("disconnected");
       scheduleReconnect();
     }
-  }, [handleIncomingMessage, scheduleReconnect]);
+  }, [handleIncomingMessage, scheduleReconnect, enterDemoMode]);
 
-  const sendMessage = useCallback((content: string) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+  const runDemoScenario = useCallback(
+    (userContent: string) => {
+      setIsAgentResponding(true);
 
-    const userMessage: ChatMessage = {
-      id: generateId(),
-      type: "user",
-      content,
-      timestamp: Date.now(),
-    };
+      const userMessage: ChatMessage = {
+        id: generateId(),
+        type: "user",
+        content: userContent,
+        timestamp: Date.now(),
+      };
+      setMessages((prev) => [...prev, userMessage]);
 
-    setMessages((prev) => [...prev, userMessage]);
-    setIsAgentResponding(true);
+      let cumulative = 300;
+      DEMO_SCENARIO.forEach((msg, i) => {
+        cumulative += DEMO_DELAYS[i] || 200;
+        const timeout = setTimeout(() => {
+          if (mountedRef.current) {
+            handleIncomingMessage(msg);
+          }
+        }, cumulative);
+        demoTimeoutsRef.current.push(timeout);
+      });
+    },
+    [handleIncomingMessage],
+  );
 
-    wsRef.current.send(
-      JSON.stringify({
-        type: "user_message",
+  const sendMessage = useCallback(
+    (content: string) => {
+      if (demoModeRef.current) {
+        runDemoScenario(content);
+        return;
+      }
+
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
+      const userMessage: ChatMessage = {
+        id: generateId(),
+        type: "user",
         content,
-      }),
-    );
-  }, []);
+        timestamp: Date.now(),
+      };
+
+      setMessages((prev) => [...prev, userMessage]);
+      setIsAgentResponding(true);
+
+      wsRef.current.send(
+        JSON.stringify({
+          type: "user_message",
+          content,
+        }),
+      );
+    },
+    [runDemoScenario],
+  );
 
   const clearMessages = useCallback(() => {
     setMessages([]);
     setIsAgentResponding(false);
+    setSessionStats(emptySessionStats());
+    for (const t of demoTimeoutsRef.current) clearTimeout(t);
+    demoTimeoutsRef.current = [];
   }, []);
 
   useEffect(() => {
@@ -207,6 +375,7 @@ export function useWebSocket() {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
+      for (const t of demoTimeoutsRef.current) clearTimeout(t);
       if (wsRef.current) {
         wsRef.current.close();
       }
@@ -217,6 +386,7 @@ export function useWebSocket() {
     messages,
     connectionStatus,
     isAgentResponding,
+    sessionStats,
     sendMessage,
     clearMessages,
   };
