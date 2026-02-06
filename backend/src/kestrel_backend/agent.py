@@ -1,5 +1,6 @@
 """Claude Agent SDK integration with security hardening for public-facing deployment."""
 
+import json
 import os
 import sys
 import time
@@ -210,6 +211,18 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
 
                             # Look up the tool name from our mapping
                             tool_name = tool_id_to_name.get(tool_use_id, "unknown")
+
+                            # Parse JSON content if it's a string
+                            if isinstance(content, str):
+                                try:
+                                    content = json.loads(content)
+                                except json.JSONDecodeError:
+                                    # Keep as string wrapped in dict
+                                    content = {"raw": content}
+
+                            # Ensure content is a dict
+                            if not isinstance(content, dict):
+                                content = {"result": content}
 
                             yield AgentEvent(
                                 type="tool_result",
