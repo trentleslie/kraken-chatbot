@@ -4,3 +4,10 @@ dist
 server/public
 vite.config.ts.*
 *.tar.gz
+
+# Python backend
+backend/.venv/
+backend/.env
+__pycache__/
+*.pyc
+.ruff_cache/

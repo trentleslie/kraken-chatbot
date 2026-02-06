@@ -1,0 +1,52 @@
+name: Deploy to Lightsail
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH
+        env:
+          SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          HOST: ${{ secrets.LIGHTSAIL_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" | base64 -d > ~/.ssh/key
+          chmod 600 ~/.ssh/key
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy
+        env:
+          HOST: ${{ secrets.LIGHTSAIL_HOST }}
+          USER: ${{ secrets.LIGHTSAIL_USER }}
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/key \
+            "${USER}@${HOST}" << 'EOF'
+          set -e
+
+          cd ~/kraken-chatbot
+          git fetch origin main
+          git reset --hard origin/main
+
+          # Rebuild frontend with production WebSocket URL
+          npm ci
+          VITE_WS_URL=wss://kraken.expertintheloop.io/ws/chat npm run build
+
+          # Update backend dependencies
+          cd backend
+          ~/.local/bin/uv sync
+
+          # Restart backend service
+          sudo systemctl restart kraken-backend
+
+          # Wait for service to start
+          sleep 3
+
+          # Health check
+          curl -sf http://localhost:8000/health || exit 1
+          echo "Deployment successful!"
+          EOF
