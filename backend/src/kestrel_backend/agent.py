@@ -1,9 +1,12 @@
 """Claude Agent SDK integration with security hardening for public-facing deployment."""
 
+import os
+import sys
 import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import (
@@ -15,25 +18,45 @@ from claude_agent_sdk import (
     ToolUseBlock,
     ToolResultBlock,
 )
+from claude_agent_sdk.types import McpStdioServerConfig
 from .config import get_settings
-from .kestrel_tools import create_kestrel_mcp_server
 
 
-# Kestrel tools whitelist - ONLY these tools are allowed
-# These are SDK MCP tools (in-process), so they use simple names
+# Kestrel MCP tools whitelist - ONLY these tools are allowed
+# Tool names follow MCP naming convention: mcp__<server>__<tool>
 ALLOWED_TOOLS = frozenset([
-    "one_hop_query",
-    "text_search",
-    "vector_search",
-    "similar_nodes",
-    "hybrid_search",
-    "get_nodes",
-    "get_edges",
-    "get_valid_categories",
-    "get_valid_predicates",
-    "get_valid_prefixes",
-    "health_check",
+    "mcp__kestrel__one_hop_query",
+    "mcp__kestrel__text_search",
+    "mcp__kestrel__vector_search",
+    "mcp__kestrel__similar_nodes",
+    "mcp__kestrel__hybrid_search",
+    "mcp__kestrel__get_nodes",
+    "mcp__kestrel__get_edges",
+    "mcp__kestrel__get_valid_categories",
+    "mcp__kestrel__get_valid_predicates",
+    "mcp__kestrel__get_valid_prefixes",
+    "mcp__kestrel__health_check",
 ])
+
+
+def _get_kestrel_mcp_config() -> McpStdioServerConfig:
+    """Get the Kestrel MCP server configuration using stdio proxy."""
+    # Get the path to the mcp_proxy module
+    backend_dir = Path(__file__).parent.parent.parent
+    proxy_module = "src.kestrel_backend.mcp_proxy"
+
+    # Pass environment variables to the proxy
+    env = {
+        "KESTREL_API_KEY": os.getenv("KESTREL_API_KEY", ""),
+        "KESTREL_MCP_URL": os.getenv("KESTREL_MCP_URL", "https://kestrel.nathanpricelab.com/mcp"),
+    }
+
+    return McpStdioServerConfig(
+        type="stdio",
+        command=sys.executable,  # Use the current Python interpreter
+        args=["-m", proxy_module],
+        env=env,
+    )
 
 # Dangerous tools that must NEVER be allowed
 BLOCKED_TOOLS = frozenset([
@@ -124,15 +147,15 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
     settings = get_settings()
     metrics = TurnMetrics(model=settings.model or "default")
 
-    # Create in-process SDK MCP server for Kestrel
-    # This proxies tool calls through our SSE client to the Kestrel MCP server
-    kestrel_server = create_kestrel_mcp_server()
+    # Configure Kestrel MCP server via stdio proxy
+    # The proxy handles Kestrel's non-standard MCP-over-HTTP protocol
+    kestrel_config = _get_kestrel_mcp_config()
 
-    # Build options with the SDK MCP server
+    # Build options with the stdio MCP server
     options_kwargs = {
         "allowed_tools": list(ALLOWED_TOOLS),
         "system_prompt": SYSTEM_PROMPT,
-        "mcp_servers": {"kestrel": kestrel_server},
+        "mcp_servers": {"kestrel": kestrel_config},
     }
     if settings.model:
         options_kwargs["model"] = settings.model
