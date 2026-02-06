@@ -16,22 +16,23 @@ from claude_agent_sdk import (
     ToolResultBlock,
 )
 from .config import get_settings
+from .kestrel_tools import create_kestrel_mcp_server
 
 
-# Kestrel MCP tools whitelist - ONLY these tools are allowed
+# Kestrel tools whitelist - ONLY these tools are allowed
+# These are SDK MCP tools (in-process), so they use simple names
 ALLOWED_TOOLS = frozenset([
-    "mcp__kestrel__hybrid_search",
-    "mcp__kestrel__get_node_by_id",
-    "mcp__kestrel__get_edges_for_node",
-    "mcp__kestrel__one_hop_query",
-    "mcp__kestrel__two_hop_query",
-    "mcp__kestrel__expand_path",
-    "mcp__kestrel__find_common_neighbors",
-    "mcp__kestrel__list_predicates",
-    "mcp__kestrel__get_schema",
-    "mcp__kestrel__get_statistics",
-    "mcp__kestrel__batch_get_nodes",
-    "mcp__kestrel__related_concepts",
+    "one_hop_query",
+    "text_search",
+    "vector_search",
+    "similar_nodes",
+    "hybrid_search",
+    "get_nodes",
+    "get_edges",
+    "get_valid_categories",
+    "get_valid_predicates",
+    "get_valid_prefixes",
+    "health_check",
 ])
 
 # Dangerous tools that must NEVER be allowed
@@ -123,10 +124,15 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
     settings = get_settings()
     metrics = TurnMetrics(model=settings.model or "default")
 
-    # Build options - MCP servers configured in ~/.claude/settings.json
+    # Create in-process SDK MCP server for Kestrel
+    # This proxies tool calls through our SSE client to the Kestrel MCP server
+    kestrel_server = create_kestrel_mcp_server()
+
+    # Build options with the SDK MCP server
     options_kwargs = {
         "allowed_tools": list(ALLOWED_TOOLS),
         "system_prompt": SYSTEM_PROMPT,
+        "mcp_servers": {"kestrel": kestrel_server},
     }
     if settings.model:
         options_kwargs["model"] = settings.model
