@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from claude_code_sdk import query, ClaudeCodeOptions
+from claude_agent_sdk import query, ClaudeAgentOptions
 
 from .config import get_settings
 
@@ -116,18 +116,15 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
     settings = get_settings()
     metrics = TurnMetrics(model=settings.model)
 
-    # Build the prompt with system context
-    full_prompt = f"{SYSTEM_PROMPT}\n\nUser query: {user_message}"
-
-    options = ClaudeCodeOptions(
+    options = ClaudeAgentOptions(
         allowed_tools=list(ALLOWED_TOOLS),
-        disallowed_tools=list(BLOCKED_TOOLS),
+        system_prompt=SYSTEM_PROMPT,
         model=settings.model,
     )
 
     try:
         async for event in query(
-            prompt=full_prompt,
+            prompt=user_message,
             options=options,
         ):
             # Handle different event types from the SDK
