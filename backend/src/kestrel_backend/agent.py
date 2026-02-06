@@ -14,6 +14,7 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     AssistantMessage,
     ResultMessage,
+    UserMessage,
     TextBlock,
     ToolUseBlock,
     ToolResultBlock,
@@ -162,6 +163,9 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
 
     options = ClaudeAgentOptions(**options_kwargs)
 
+    # Track tool_use_id -> tool_name mapping for matching results
+    tool_id_to_name: dict[str, str] = {}
+
     try:
         async for event in query(
             prompt=user_message,
@@ -176,6 +180,7 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
                     elif isinstance(block, ToolUseBlock):
                         tool_name = block.name
                         tool_input = block.input
+                        tool_id = getattr(block, "id", None)
 
                         # Security check: verify tool is allowed
                         if tool_name not in ALLOWED_TOOLS:
@@ -185,22 +190,32 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
                             )
                             continue
 
+                        # Track the mapping for later result matching
+                        if tool_id:
+                            tool_id_to_name[tool_id] = tool_name
+
                         metrics.tool_calls_count += 1
                         yield AgentEvent(
                             type="tool_use",
                             data={"tool": tool_name, "args": tool_input}
                         )
 
-            elif isinstance(event, ResultMessage):
-                # Tool result - extract from the result message
+            elif isinstance(event, UserMessage):
+                # Tool results come in UserMessage with ToolResultBlock
                 if hasattr(event, "content"):
                     for block in event.content:
                         if isinstance(block, ToolResultBlock):
+                            tool_use_id = getattr(block, "tool_use_id", None)
+                            content = getattr(block, "content", "")
+
+                            # Look up the tool name from our mapping
+                            tool_name = tool_id_to_name.get(tool_use_id, "unknown")
+
                             yield AgentEvent(
                                 type="tool_result",
                                 data={
-                                    "tool": getattr(block, "tool_use_id", "unknown"),
-                                    "data": getattr(block, "content", {})
+                                    "tool": tool_name,
+                                    "data": content
                                 }
                             )
 
