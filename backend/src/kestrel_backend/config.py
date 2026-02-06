@@ -19,8 +19,8 @@ class Settings(BaseModel):
     # Rate limiting
     rate_limit_per_minute: int = 10
 
-    # Claude model
-    model: str = "claude-sonnet-4-5-20250514"
+    # Claude model (None = use SDK default)
+    model: str | None = None
 
 
 @lru_cache
@@ -36,5 +36,5 @@ def get_settings() -> Settings:
         port=int(os.getenv("PORT", "8000")),
         allowed_origins=origins,
         rate_limit_per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "10")),
-        model=os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250514"),
+        model=os.getenv("CLAUDE_MODEL"),  # None = use SDK default
     )

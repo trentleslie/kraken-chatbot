@@ -114,13 +114,17 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
         AgentEvent objects for each streaming event (text, tool_use, tool_result, etc.)
     """
     settings = get_settings()
-    metrics = TurnMetrics(model=settings.model)
+    metrics = TurnMetrics(model=settings.model or "default")
 
-    options = ClaudeAgentOptions(
-        allowed_tools=list(ALLOWED_TOOLS),
-        system_prompt=SYSTEM_PROMPT,
-        model=settings.model,
-    )
+    # Build options, only including model if explicitly configured
+    options_kwargs = {
+        "allowed_tools": list(ALLOWED_TOOLS),
+        "system_prompt": SYSTEM_PROMPT,
+    }
+    if settings.model:
+        options_kwargs["model"] = settings.model
+
+    options = ClaudeAgentOptions(**options_kwargs)
 
     try:
         async for event in query(
