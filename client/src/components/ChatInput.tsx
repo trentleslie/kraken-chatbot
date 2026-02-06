@@ -72,8 +72,7 @@ export function ChatInput({ onSend, disabled, isConnected }: ChatInputProps) {
 
       {!isConnected && (
         <p className="text-xs text-muted-foreground text-center mt-2 max-w-md mx-auto">
-          Cannot connect to backend. The Kestrel agent backend may not be
-          running.
+          Cannot connect to backend. The KRAKEN backend may not be running.
         </p>
       )}
 
