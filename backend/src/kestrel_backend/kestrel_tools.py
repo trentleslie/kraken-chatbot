@@ -3,6 +3,9 @@
 These tools use the claude-agent-sdk's in-process MCP server feature to expose
 Kestrel's knowledge graph tools to Claude. Each tool wraps a call to the
 Kestrel MCP server via our HTTP client.
+
+Note: This file is currently unused - we use the stdio proxy approach instead.
+It's kept for reference and potential future use with the SDK MCP server.
 """
 
 from claude_agent_sdk import tool, create_sdk_mcp_server
@@ -159,6 +162,7 @@ async def health_check(args):
 
 
 # Create the SDK MCP server with all Kestrel tools
+# Note: analyze_results is in local_tools.py, not here (it runs locally, not via Kestrel)
 def create_kestrel_mcp_server():
     """Create an SDK MCP server with all Kestrel tools."""
     return create_sdk_mcp_server(

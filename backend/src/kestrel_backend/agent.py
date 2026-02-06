@@ -22,11 +22,13 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import McpStdioServerConfig
 from .config import get_settings
+from .local_tools import create_local_mcp_server
 
 
 # Kestrel MCP tools whitelist - ONLY these tools are allowed
 # Tool names follow MCP naming convention: mcp__<server>__<tool>
 ALLOWED_TOOLS = frozenset([
+    # Kestrel knowledge graph tools (via stdio proxy)
     "mcp__kestrel__one_hop_query",
     "mcp__kestrel__text_search",
     "mcp__kestrel__vector_search",
@@ -38,6 +40,8 @@ ALLOWED_TOOLS = frozenset([
     "mcp__kestrel__get_valid_predicates",
     "mcp__kestrel__get_valid_prefixes",
     "mcp__kestrel__health_check",
+    # Local analysis tools (via SDK MCP server)
+    "mcp__local__analyze_results",
 ])
 
 
@@ -80,19 +84,19 @@ SYSTEM_PROMPT = """You are KRAKEN Explorer, a helpful assistant for exploring th
 Your capabilities:
 - Search for concepts, diseases, drugs, genes, and their relationships using Kestrel MCP tools
 - Navigate the graph using one-hop queries to find connections
-- Find and summarize relationships between entities
+- Use the analyze_results tool to process and compare query results
 - Explain biomedical relationships in clear terms
 
-Your limitations:
-- You can ONLY use the Kestrel MCP tools (text_search, one_hop_query, get_nodes, etc.)
-- You have NO access to Bash, file system, web browsing, code execution, or any other tools
-- You CANNOT run local commands or scripts - all data processing must be done in your response text
-- When you receive query results, analyze and summarize them directly in your text response
+Available tools:
+- text_search, vector_search, hybrid_search: Find entities by name/description
+- one_hop_query: Find connected entities (diseases, drugs, genes, etc.)
+- get_nodes, get_edges: Get detailed information about specific entities
+- analyze_results: Analyze and compare query results (use this for finding overlaps, patterns, or summarizing complex data)
 
-IMPORTANT: When you need to compare or analyze results from multiple queries:
-- Do NOT try to use Bash, Task, or any code execution tools - they will be blocked
-- Instead, read through the returned data and summarize the key findings in your response
-- For finding overlaps (e.g., common diseases between two genes), manually identify matching entries from the query results
+IMPORTANT - Data Analysis:
+- When you need to compare or analyze results from multiple queries, use the analyze_results tool
+- Pass the relevant data and describe what analysis you need (e.g., "find common diseases between these two gene result sets")
+- Do NOT attempt to use Bash, Task, or code execution - they are not available
 
 When responding:
 - Be concise but informative
@@ -158,11 +162,17 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
     # The proxy handles Kestrel's non-standard MCP-over-HTTP protocol
     kestrel_config = _get_kestrel_mcp_config()
 
-    # Build options with the stdio MCP server
+    # Configure local MCP server for analysis tools (in-process)
+    local_server = create_local_mcp_server()
+
+    # Build options with both MCP servers
     options_kwargs = {
         "allowed_tools": list(ALLOWED_TOOLS),
         "system_prompt": SYSTEM_PROMPT,
-        "mcp_servers": {"kestrel": kestrel_config},
+        "mcp_servers": {
+            "kestrel": kestrel_config,  # Stdio proxy to Kestrel
+            "local": local_server,       # In-process analysis tools
+        },
     }
     if settings.model:
         options_kwargs["model"] = settings.model
