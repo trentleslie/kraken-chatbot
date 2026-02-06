@@ -1,0 +1,166 @@
+# Feature Request: Agent Trace & Debug Display
+
+## Context
+
+The chat frontend is now connected to a backend that runs the Claude Agent SDK with MCP tools for querying a biomedical knowledge graph. The backend will emit trace/debug metadata alongside the existing message types (text, tool_use, tool_result, done, error). This feature adds frontend components to display that metadata.
+
+## New WebSocket Message Type
+
+Add a new `trace` message type to the existing protocol. The backend will send one `trace` message at the end of each agent turn (just before the `done` message):
+
+```json
+{
+  "type": "trace",
+  "turn_id": "abc123",
+  "input_tokens": 2847,
+  "output_tokens": 531,
+  "cache_creation_tokens": 0,
+  "cache_read_tokens": 1200,
+  "cost_usd": 0.012,
+  "duration_ms": 3400,
+  "tool_calls_count": 3,
+  "model": "claude-sonnet-4-5"
+}
+```
+
+All fields except `type` may be absent — the display should gracefully handle partial data.
+
+## What to Build
+
+### 1. Turn-Level Trace Bar
+
+After each complete agent response (after the `done` message), render a subtle, compact trace bar below the last agent message in that turn. It should look something like:
+
+```
+───────────────────────────────────────────────────────
+⚡ 3.4s · 2,847 in / 531 out · 1,200 cached · 3 tool calls · $0.012
+───────────────────────────────────────────────────────
+```
+
+Design requirements:
+
+- Very subtle — small text (text-xs), muted color (text-gray-400 or similar)
+- Single line, horizontally laid out with · separators
+- Does not draw attention away from the actual conversation
+- Only shows fields that are present in the trace data
+- Clicking it could expand to show more detail (model name, turn_id, token breakdown) but this is optional for v1
+
+### 2. Session Stats Panel
+
+A small, collapsible panel in the header area (or a floating pill in the bottom-right corner) showing cumulative session statistics:
+
+```
+Session: 12,450 tokens · $0.047 · 4 turns
+```
+
+This accumulates across all trace messages in the current session. Fields:
+
+- Total tokens (sum of input_tokens + output_tokens across all turns)
+- Total cost (sum of cost_usd)
+- Turn count
+- Total tool calls (sum of tool_calls_count)
+
+Design requirements:
+
+- Subtle pill or badge, not intrusive
+- Click to expand for per-turn breakdown (optional for v1)
+- Resets when the page is refreshed (no persistence needed)
+
+### 3. Tool Call Latency on Tool Cards
+
+If the backend includes timing information per tool call, the existing ToolCallCard can show latency. For now, the frontend can calculate approximate latency client-side:
+
+- Record timestamp when `tool_use` message arrives
+- Record timestamp when corresponding `tool_result` arrives
+- Show the delta as a small badge on the tool card: `1.2s`
+
+This is a nice-to-have enhancement to the existing tool cards, not a separate component.
+
+## TypeScript Type Updates
+
+Add to the existing `messages.ts`:
+
+```typescript
+type TraceMessage = {
+  type: "trace";
+  turn_id?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_tokens?: number;
+  cache_read_tokens?: number;
+  cost_usd?: number;
+  duration_ms?: number;
+  tool_calls_count?: number;
+  model?: string;
+  timestamp: number;
+};
+
+type SessionStats = {
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cost_usd: number;
+  total_tool_calls: number;
+  turn_count: number;
+  traces: TraceMessage[];
+};
+```
+
+Update `ChatMessage` union type to include `TraceMessage`.
+
+## Component Structure
+
+```
+src/
+├── components/
+│   ├── TraceBar.tsx              # Per-turn trace display (subtle single line)
+│   ├── SessionStats.tsx          # Cumulative session stats pill/badge
+│   └── ToolCallCard.tsx          # (update existing) Add latency badge
+├── hooks/
+│   └── useWebSocket.ts           # (update existing) Parse trace messages, accumulate session stats
+├── types/
+│   └── messages.ts               # (update existing) Add TraceMessage, SessionStats types
+└── utils/
+    └── formatters.ts             # (update existing) Add formatTokens(), formatCost(), formatDuration()
+```
+
+## Formatter Utilities
+
+Add to `formatters.ts`:
+
+```typescript
+// "2,847" — with comma separators
+function formatTokens(n: number): string
+
+// "$0.012" — always show 3 decimal places for sub-cent amounts, 2 for larger
+function formatCost(usd: number): string
+
+// "3.4s" for seconds, "125ms" for sub-second
+function formatDuration(ms: number): string
+```
+
+## Mock Data for Testing
+
+Since the backend isn’t connected yet, add mock trace data to whatever mock/demo mode currently exists. After each mock agent response, emit a trace message like:
+
+```json
+{
+  "type": "trace",
+  "input_tokens": 2847,
+  "output_tokens": 531,
+  "cache_read_tokens": 1200,
+  "cost_usd": 0.012,
+  "duration_ms": 3400,
+  "tool_calls_count": 3,
+  "model": "claude-sonnet-4-5"
+}
+```
+
+This lets us verify the display looks right without the real backend.
+
+## Design Priority
+
+1. Turn-level trace bar (most important — shows per-response cost/performance)
+1. Session stats pill (useful for monitoring spend during a session)
+1. Tool call latency badges (nice-to-have, client-side calculation)
+
+Keep all trace UI extremely subtle. This is a research tool — the conversation content is primary, trace data is secondary context for power users and developers.
