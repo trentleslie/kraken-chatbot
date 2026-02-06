@@ -6,7 +6,15 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from claude_agent_sdk import query, ClaudeAgentOptions
+from claude_agent_sdk import (
+    query,
+    ClaudeAgentOptions,
+    AssistantMessage,
+    ResultMessage,
+    TextBlock,
+    ToolUseBlock,
+    ToolResultBlock,
+)
 
 from .config import get_settings
 
@@ -131,46 +139,45 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
             prompt=user_message,
             options=options,
         ):
-            # Handle different event types from the SDK
-            event_type = getattr(event, "type", None)
+            # Handle different message types from the SDK
+            if isinstance(event, AssistantMessage):
+                # Process content blocks from assistant
+                for block in event.content:
+                    if isinstance(block, TextBlock):
+                        yield AgentEvent(type="text", data={"content": block.text})
+                    elif isinstance(block, ToolUseBlock):
+                        tool_name = block.name
+                        tool_input = block.input
 
-            if event_type == "assistant":
-                # Text content from the assistant
-                content = getattr(event, "message", {})
-                if hasattr(content, "content"):
-                    for block in content.content:
-                        if hasattr(block, "text"):
-                            yield AgentEvent(type="text", data={"content": block.text})
-                        elif hasattr(block, "type") and block.type == "tool_use":
-                            # Tool is being called
-                            tool_name = getattr(block, "name", "unknown")
-                            tool_input = getattr(block, "input", {})
-
-                            # Security check: verify tool is allowed
-                            if tool_name not in ALLOWED_TOOLS:
-                                yield AgentEvent(
-                                    type="error",
-                                    data={"message": f"Tool {tool_name} is not allowed"}
-                                )
-                                continue
-
-                            metrics.tool_calls_count += 1
+                        # Security check: verify tool is allowed
+                        if tool_name not in ALLOWED_TOOLS:
                             yield AgentEvent(
-                                type="tool_use",
-                                data={"tool": tool_name, "args": tool_input}
+                                type="error",
+                                data={"message": f"Tool {tool_name} is not allowed"}
+                            )
+                            continue
+
+                        metrics.tool_calls_count += 1
+                        yield AgentEvent(
+                            type="tool_use",
+                            data={"tool": tool_name, "args": tool_input}
+                        )
+
+            elif isinstance(event, ResultMessage):
+                # Tool result - extract from the result message
+                if hasattr(event, "content"):
+                    for block in event.content:
+                        if isinstance(block, ToolResultBlock):
+                            yield AgentEvent(
+                                type="tool_result",
+                                data={
+                                    "tool": getattr(block, "tool_use_id", "unknown"),
+                                    "data": getattr(block, "content", {})
+                                }
                             )
 
-            elif event_type == "result":
-                # Tool result
-                result_data = getattr(event, "result", {})
-                tool_name = getattr(event, "tool_name", "unknown")
-                yield AgentEvent(
-                    type="tool_result",
-                    data={"tool": tool_name, "data": result_data}
-                )
-
             # Collect usage metrics if available
-            if hasattr(event, "usage"):
+            if hasattr(event, "usage") and event.usage:
                 usage = event.usage
                 metrics.input_tokens += getattr(usage, "input_tokens", 0)
                 metrics.output_tokens += getattr(usage, "output_tokens", 0)
