@@ -30,6 +30,7 @@ class ErrorMessage(BaseModel):
     """Error occurred during processing."""
     type: Literal["error"] = "error"
     message: str
+    code: str | None = None  # Optional error code (e.g., "AUTH_ERROR")
 
 
 class DoneMessage(BaseModel):

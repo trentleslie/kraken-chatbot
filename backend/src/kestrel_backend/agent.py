@@ -174,7 +174,22 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
                 metrics.cache_read_tokens += getattr(usage, "cache_read_input_tokens", 0)
 
     except Exception as e:
-        yield AgentEvent(type="error", data={"message": str(e)})
+        error_msg = str(e).lower()
+        # Detect authentication/authorization errors
+        if any(keyword in error_msg for keyword in [
+            "unauthorized", "authentication", "auth", "login",
+            "credential", "token expired", "not logged in",
+            "permission denied", "access denied", "401", "403"
+        ]):
+            yield AgentEvent(
+                type="error",
+                data={
+                    "message": "Authentication expired. Please contact the administrator to re-authenticate the server.",
+                    "code": "AUTH_ERROR"
+                }
+            )
+        else:
+            yield AgentEvent(type="error", data={"message": str(e)})
 
     # Emit trace with metrics
     yield AgentEvent(

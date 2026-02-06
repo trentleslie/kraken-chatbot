@@ -157,7 +157,10 @@ async def websocket_chat(websocket: WebSocket):
                                 data=event.data["data"]
                             )
                         case "error":
-                            msg = ErrorMessage(message=event.data["message"])
+                            msg = ErrorMessage(
+                                message=event.data["message"],
+                                code=event.data.get("code")
+                            )
                         case "trace":
                             msg = TraceMessage(**event.data)
                         case "done":

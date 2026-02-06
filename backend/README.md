@@ -30,7 +30,21 @@ uv sync
 
 # Configure environment
 cp .env.example .env
-# Edit .env with your ANTHROPIC_API_KEY
+
+# Authenticate Claude CLI (primary method)
+claude login  # Opens browser for OAuth
+```
+
+### Authentication
+
+The backend uses the Claude Agent SDK which authenticates via the Claude CLI:
+
+1. **Primary**: Run `claude login` on the server to authenticate via OAuth
+2. **Fallback**: Set `ANTHROPIC_API_KEY` environment variable for API key auth
+
+When authentication expires, the backend returns a specific error to the frontend:
+```json
+{"type": "error", "message": "Authentication expired...", "code": "AUTH_ERROR"}
 ```
 
 ## Running
