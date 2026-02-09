@@ -340,7 +340,9 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
 
                             # End Langfuse span for this tool
                             if tool_use_id and tool_use_id in tool_spans:
-                                tool_spans[tool_use_id].end(output=content)
+                                tool_span = tool_spans[tool_use_id]
+                                tool_span.update(output=content)
+                                tool_span.end()
 
                             yield AgentEvent(
                                 type="tool_result",
