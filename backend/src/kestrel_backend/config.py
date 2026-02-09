@@ -22,6 +22,12 @@ class Settings(BaseModel):
     # Claude model (None = use SDK default)
     model: str | None = None
 
+    # Langfuse observability
+    langfuse_enabled: bool = True
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
+    langfuse_base_url: str = "https://us.cloud.langfuse.com"
+
 
 @lru_cache
 def get_settings() -> Settings:
@@ -37,4 +43,8 @@ def get_settings() -> Settings:
         allowed_origins=origins,
         rate_limit_per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "10")),
         model=os.getenv("CLAUDE_MODEL"),  # None = use SDK default
+        langfuse_enabled=os.getenv("LANGFUSE_ENABLED", "true").lower() == "true",
+        langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
+        langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
+        langfuse_base_url=os.getenv("LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com"),
     )

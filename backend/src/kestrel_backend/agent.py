@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from langfuse import Langfuse
+
 from claude_agent_sdk import (
     query,
     ClaudeAgentOptions,
@@ -24,6 +26,25 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import McpStdioServerConfig
 from .config import get_settings
 from .bash_sandbox import bash_security_hook
+
+
+# Langfuse client (lazy initialized)
+_langfuse: Langfuse | None = None
+
+
+def _get_langfuse() -> Langfuse | None:
+    """Get or create Langfuse client for observability tracing."""
+    global _langfuse
+    if _langfuse is not None:
+        return _langfuse
+    settings = get_settings()
+    if settings.langfuse_enabled and settings.langfuse_public_key and settings.langfuse_secret_key:
+        _langfuse = Langfuse(
+            public_key=settings.langfuse_public_key,
+            secret_key=settings.langfuse_secret_key,
+            host=settings.langfuse_base_url,
+        )
+    return _langfuse
 
 
 # Tools whitelist - these tools are allowed
@@ -213,6 +234,16 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
     settings = get_settings()
     metrics = TurnMetrics(model=settings.model or "default")
 
+    # Start Langfuse trace for observability
+    langfuse = _get_langfuse()
+    trace = None
+    if langfuse:
+        trace = langfuse.trace(
+            name="kraken_agent_turn",
+            input={"user_message": user_message},
+            metadata={"turn_id": metrics.turn_id, "model": metrics.model},
+        )
+
     # Configure Kestrel MCP server via stdio proxy
     # The proxy handles Kestrel's non-standard MCP-over-HTTP protocol
     kestrel_config = _get_kestrel_mcp_config()
@@ -238,6 +269,8 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
 
     # Track tool_use_id -> tool_name mapping for matching results
     tool_id_to_name: dict[str, str] = {}
+    # Track Langfuse tool spans for correlation
+    tool_spans: dict[str, Any] = {}
 
     try:
         async for event in query(
@@ -266,6 +299,12 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
                         # Track the mapping for later result matching
                         if tool_id:
                             tool_id_to_name[tool_id] = tool_name
+                            # Create Langfuse span for tool call
+                            if trace:
+                                tool_spans[tool_id] = trace.span(
+                                    name=f"tool:{tool_name}",
+                                    input=tool_input,
+                                )
 
                         metrics.tool_calls_count += 1
                         yield AgentEvent(
@@ -295,6 +334,10 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
                             # Ensure content is a dict
                             if not isinstance(content, dict):
                                 content = {"result": content}
+
+                            # End Langfuse span for this tool
+                            if tool_use_id and tool_use_id in tool_spans:
+                                tool_spans[tool_use_id].end(output=content)
 
                             yield AgentEvent(
                                 type="tool_result",
@@ -345,6 +388,25 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
             "model": metrics.model,
         }
     )
+
+    # Finalize Langfuse trace with collected metrics
+    if trace and langfuse:
+        trace.update(
+            output={"turn_id": metrics.turn_id},
+            usage={
+                "input": metrics.input_tokens,
+                "output": metrics.output_tokens,
+                "total": metrics.input_tokens + metrics.output_tokens,
+            },
+            metadata={
+                "cost_usd": metrics.cost_usd,
+                "duration_ms": metrics.duration_ms,
+                "tool_calls_count": metrics.tool_calls_count,
+                "cache_creation_tokens": metrics.cache_creation_tokens,
+                "cache_read_tokens": metrics.cache_read_tokens,
+            },
+        )
+        langfuse.flush()  # Ensure trace is sent before response completes
 
     # Signal completion
     yield AgentEvent(type="done", data={})
