@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from langfuse import Langfuse
+from langfuse import get_client
 
 from claude_agent_sdk import (
     query,
@@ -29,21 +29,24 @@ from .bash_sandbox import bash_security_hook
 
 
 # Langfuse client (lazy initialized)
-_langfuse: Langfuse | None = None
+_langfuse = None  # Type annotation removed since get_client() return type differs
 
 
-def _get_langfuse() -> Langfuse | None:
-    """Get or create Langfuse client for observability tracing."""
+def _get_langfuse():
+    """Get or create Langfuse client for observability tracing.
+
+    SDK v3 reads credentials from environment variables:
+    - LANGFUSE_PUBLIC_KEY
+    - LANGFUSE_SECRET_KEY
+    - LANGFUSE_HOST
+    """
     global _langfuse
     if _langfuse is not None:
         return _langfuse
     settings = get_settings()
     if settings.langfuse_enabled and settings.langfuse_public_key and settings.langfuse_secret_key:
-        _langfuse = Langfuse(
-            public_key=settings.langfuse_public_key,
-            secret_key=settings.langfuse_secret_key,
-            host=settings.langfuse_base_url,
-        )
+        # get_client() reads from LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST env vars
+        _langfuse = get_client()
     return _langfuse
 
 
@@ -238,7 +241,7 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
     langfuse = _get_langfuse()
     trace = None
     if langfuse:
-        trace = langfuse.trace(
+        trace = langfuse.start_span(
             name="kraken_agent_turn",
             input={"user_message": user_message},
             metadata={"turn_id": metrics.turn_id, "model": metrics.model},
@@ -299,9 +302,9 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
                         # Track the mapping for later result matching
                         if tool_id:
                             tool_id_to_name[tool_id] = tool_name
-                            # Create Langfuse span for tool call
+                            # Create Langfuse child span for tool call
                             if trace:
-                                tool_spans[tool_id] = trace.span(
+                                tool_spans[tool_id] = trace.start_span(
                                     name=f"tool:{tool_name}",
                                     input=tool_input,
                                 )
@@ -406,6 +409,7 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
                 "cache_read_tokens": metrics.cache_read_tokens,
             },
         )
+        trace.end()  # SDK v3 requires explicit end() for manually created spans
         langfuse.flush()  # Ensure trace is sent before response completes
 
     # Signal completion
