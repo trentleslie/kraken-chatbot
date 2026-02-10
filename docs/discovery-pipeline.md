@@ -59,15 +59,15 @@ flowchart TD
 
     I --> J((END))
 
-    style A fill:#e1f5fe
-    style B fill:#e1f5fe
-    style C fill:#fff3e0
-    style D fill:#e8f5e9
-    style E fill:#fce4ec
-    style F fill:#f3e5f5
-    style G fill:#f3e5f5
-    style H fill:#fff8e1
-    style I fill:#e0f2f1
+    style A fill:#e1f5fe,color:#1a237e
+    style B fill:#e1f5fe,color:#1a237e
+    style C fill:#fff3e0,color:#e65100
+    style D fill:#e8f5e9,color:#1b5e20
+    style E fill:#fce4ec,color:#880e4f
+    style F fill:#f3e5f5,color:#4a148c
+    style G fill:#f3e5f5,color:#4a148c
+    style H fill:#fff8e1,color:#f57f17
+    style I fill:#e0f2f1,color:#004d40
 ```
 
 ### Routing Logic
