@@ -140,9 +140,9 @@ async def count_edges_single(entity: EntityResolution) -> NoveltyScore:
 
         result_text_parts = []
         async for event in query(prompt=f"Count edges for: {curie}", options=options):
-            if hasattr(event, content):
+            if hasattr(event, 'content'):
                 for block in event.content:
-                    if hasattr(block, text):
+                    if hasattr(block, 'text'):
                         result_text_parts.append(block.text)
 
         result_text = "".join(result_text_parts)

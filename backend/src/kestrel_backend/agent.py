@@ -437,17 +437,17 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
                             # Build context based on tool type for better error messages
                             context = ""
                             if tool_name == "Write" and "file_path" in tool_input:
-                                context = f" (tried to write: {tool_input["file_path"]})"
+                                context = f" (tried to write: {tool_input['file_path']})"
                             elif tool_name == "Edit" and "file_path" in tool_input:
-                                context = f" (tried to edit: {tool_input["file_path"]})"
+                                context = f" (tried to edit: {tool_input['file_path']})"
                             elif tool_name == "WebFetch" and "url" in tool_input:
-                                context = f" (tried to fetch: {tool_input["url"]})"
+                                context = f" (tried to fetch: {tool_input['url']})"
                             elif tool_name == "WebSearch" and "query" in tool_input:
-                                context = f" (tried to search web: {tool_input["query"]})"
+                                context = f" (tried to search web: {tool_input['query']})"
                             elif tool_name == "Grep" and "pattern" in tool_input:
-                                context = f" (tried to grep: {tool_input["pattern"]})"
+                                context = f" (tried to grep: {tool_input['pattern']})"
                             elif tool_name == "Glob" and "pattern" in tool_input:
-                                context = f" (tried to find files: {tool_input["pattern"]})"
+                                context = f" (tried to find files: {tool_input['pattern']})"
 
                             yield AgentEvent(
                                 type="error",
