@@ -6,6 +6,8 @@ import type {
   ToolUseMessage,
   TraceMessage,
   SessionStats,
+  AgentMode,
+  PipelineProgress,
 } from "@/types/messages";
 
 const WS_URL = import.meta.env.VITE_WS_URL || "";
@@ -103,6 +105,9 @@ export function useWebSocket() {
     useState<ConnectionStatus>("disconnected");
   const [isAgentResponding, setIsAgentResponding] = useState(false);
   const [sessionStats, setSessionStats] = useState<SessionStats>(emptySessionStats());
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [agentMode, setAgentMode] = useState<AgentMode>("classic");
+  const [pipelineProgress, setPipelineProgress] = useState<PipelineProgress | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptRef = useRef(0);
@@ -215,13 +220,45 @@ export function useWebSocket() {
           },
         ]);
         setIsAgentResponding(false);
+        setPipelineProgress(null);
         break;
 
       case "done":
         setIsAgentResponding(false);
+        setPipelineProgress(null);
         break;
 
       case "status":
+        break;
+
+      case "conversation_started":
+        setConversationId(data.conversation_id);
+        break;
+
+      case "pipeline_progress":
+        setPipelineProgress({
+          node: data.node,
+          message: data.message,
+          nodesCompleted: data.nodes_completed,
+          totalNodes: data.total_nodes,
+        });
+        break;
+
+      case "pipeline_complete":
+        setPipelineProgress(null);
+        // Add the synthesis report as a text message
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: generateId(),
+            type: "pipeline_complete" as const,
+            synthesis_report: data.synthesis_report,
+            hypotheses_count: data.hypotheses_count,
+            entities_resolved: data.entities_resolved,
+            duration_ms: data.duration_ms,
+            timestamp: Date.now(),
+          },
+        ]);
         break;
     }
   }, [addTraceToSession]);
@@ -292,6 +329,7 @@ export function useWebSocket() {
         if (!mountedRef.current) return;
         wsRef.current = null;
         setIsAgentResponding(false);
+        setPipelineProgress(null);
         scheduleReconnect();
       };
 
@@ -353,16 +391,19 @@ export function useWebSocket() {
         JSON.stringify({
           type: "user_message",
           content,
+          agent_mode: agentMode,
         }),
       );
     },
-    [runDemoScenario],
+    [runDemoScenario, agentMode],
   );
 
   const clearMessages = useCallback(() => {
     setMessages([]);
     setIsAgentResponding(false);
     setSessionStats(emptySessionStats());
+    setConversationId(null);
+    setPipelineProgress(null);
     for (const t of demoTimeoutsRef.current) clearTimeout(t);
     demoTimeoutsRef.current = [];
   }, []);
@@ -388,6 +429,10 @@ export function useWebSocket() {
     connectionStatus,
     isAgentResponding,
     sessionStats,
+    conversationId,
+    agentMode,
+    setAgentMode,
+    pipelineProgress,
     sendMessage,
     clearMessages,
   };

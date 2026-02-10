@@ -5,7 +5,8 @@ import { ToolCallCard } from "@/components/ToolCallCard";
 import { ErrorCard } from "@/components/ErrorCard";
 import { StarterChips } from "@/components/StarterChips";
 import { TraceBar } from "@/components/TraceBar";
-import type { ChatMessage, ToolUseMessage, TraceMessage } from "@/types/messages";
+import { PipelineReportCard } from "@/components/PipelineReportCard";
+import type { ChatMessage, ToolUseMessage, TraceMessage, PipelineCompleteMessage } from "@/types/messages";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Network } from "lucide-react";
 
@@ -83,6 +84,13 @@ export function ChatArea({
               );
             case "error":
               return <ErrorCard key={msg.id} message={msg.message} />;
+            case "pipeline_complete":
+              return (
+                <PipelineReportCard
+                  key={msg.id}
+                  message={msg as PipelineCompleteMessage}
+                />
+              );
             case "done":
               return null;
             default:

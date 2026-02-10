@@ -31,7 +31,16 @@ export function getResultSummary(
   }
 
   if (cleanTool === "get_nodes") {
-    const nodes = Array.isArray(data.nodes) ? data.nodes : Array.isArray(data) ? data : [];
+    // Handle both array and object-keyed responses
+    let nodes: unknown[] = [];
+    if (Array.isArray(data.nodes)) {
+      nodes = data.nodes;
+    } else if (Array.isArray(data)) {
+      nodes = data;
+    } else if (data && typeof data === "object" && !Array.isArray(data)) {
+      // Handle object keyed by CURIE (e.g., {"REACT:R-HSA-70171": {...}})
+      nodes = Object.values(data);
+    }
     return `${nodes.length} node${nodes.length !== 1 ? "s" : ""} retrieved`;
   }
 
@@ -150,11 +159,16 @@ export interface NodeDetail {
 export function parseNodeDetails(
   data: Record<string, unknown>,
 ): NodeDetail[] {
-  const nodeArray = Array.isArray(data.nodes)
-    ? data.nodes
-    : Array.isArray(data)
-      ? data
-      : [];
+  // Handle both array and object-keyed responses
+  let nodeArray: unknown[] = [];
+  if (Array.isArray(data.nodes)) {
+    nodeArray = data.nodes;
+  } else if (Array.isArray(data)) {
+    nodeArray = data;
+  } else if (data && typeof data === "object" && !Array.isArray(data)) {
+    // Handle object keyed by CURIE (e.g., {"REACT:R-HSA-70171": {...}})
+    nodeArray = Object.values(data);
+  }
 
   return (nodeArray as Array<Record<string, unknown>>).map((node) => ({
     id: (node.id || node.curie || "") as string,
