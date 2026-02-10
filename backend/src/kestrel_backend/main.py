@@ -5,14 +5,32 @@ import json
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from typing import List, Tuple
+from typing import List, Tuple, Any
 from uuid import UUID
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from langfuse import get_client
 
 from .config import get_settings
 from .agent import run_agent_turn
+
+
+# Langfuse client for pipeline mode tracing (lazy initialized)
+_pipeline_langfuse = None
+
+
+def _get_pipeline_langfuse():
+    """Get or create Langfuse client for pipeline mode observability."""
+    global _pipeline_langfuse
+    if _pipeline_langfuse is not None:
+        return _pipeline_langfuse
+    settings = get_settings()
+    if settings.langfuse_enabled and settings.langfuse_public_key and settings.langfuse_secret_key:
+        _pipeline_langfuse = get_client()
+    return _pipeline_langfuse
+
+
 from .database import init_db, close_db, get_conversation_with_turns, create_conversation, add_turn
 from .protocol import (
     TextMessage,
@@ -227,8 +245,9 @@ async def handle_pipeline_mode(
 ) -> None:
     """
     Handle discovery pipeline mode - LangGraph multi-node workflow.
-    
+
     Executes the 9-node discovery pipeline with progress streaming.
+    Includes Langfuse tracing for observability (parallel to Classic mode).
     """
     from .graph.runner import stream_discovery
 
@@ -236,6 +255,20 @@ async def handle_pipeline_mode(
     nodes_completed = 0
     final_state = None
     nodes_seen = set()
+    node_timings: dict[str, float] = {}  # Track per-node timing
+    last_node_start = start_time
+
+    # Initialize Langfuse trace for pipeline execution
+    langfuse = _get_pipeline_langfuse()
+    trace = None
+    node_spans: dict[str, Any] = {}
+
+    if langfuse:
+        trace = langfuse.start_span(
+            name="discovery_pipeline",
+            input={"query": content, "connection_id": connection_id},
+            metadata={"mode": "pipeline", "version": "2.0"},
+        )
 
     try:
         history = conversation_history.get(connection_id, [])
@@ -248,8 +281,28 @@ async def handle_pipeline_mode(
                 node_name = event["node"]
                 # Only send progress once per node (first event)
                 if node_name in NODE_STATUS_MESSAGES and node_name not in nodes_seen:
+                    # Record timing for previous node
+                    if nodes_seen:
+                        prev_node = list(nodes_seen)[-1]
+                        node_timings[prev_node] = time.time() - last_node_start
+                        # End previous node's Langfuse span
+                        if prev_node in node_spans:
+                            node_spans[prev_node].update(
+                                output={"duration_ms": int(node_timings[prev_node] * 1000)}
+                            )
+                            node_spans[prev_node].end()
+
                     nodes_seen.add(node_name)
                     nodes_completed += 1
+                    last_node_start = time.time()
+
+                    # Start Langfuse span for this node
+                    if trace:
+                        node_spans[node_name] = trace.start_span(
+                            name=f"node_{node_name}",
+                            input={"node": node_name, "nodes_completed": nodes_completed},
+                        )
+
                     msg = PipelineProgressMessage(
                         node=node_name,
                         message=NODE_STATUS_MESSAGES[node_name],
@@ -259,6 +312,15 @@ async def handle_pipeline_mode(
 
             elif event["type"] == "complete":
                 final_state = event.get("data", {})
+                # Record final node timing
+                if nodes_seen:
+                    last_node = list(nodes_seen)[-1]
+                    node_timings[last_node] = time.time() - last_node_start
+                    if last_node in node_spans:
+                        node_spans[last_node].update(
+                            output={"duration_ms": int(node_timings[last_node] * 1000)}
+                        )
+                        node_spans[last_node].end()
 
         # Send final result
         if final_state:
@@ -266,7 +328,13 @@ async def handle_pipeline_mode(
             synthesis_report = final_state.get("synthesis_report", "")
             hypotheses = final_state.get("hypotheses", [])
             resolved_entities = final_state.get("resolved_entities", [])
-            
+
+            # Count successfully resolved entities (have CURIEs)
+            successful_resolutions = sum(
+                1 for e in resolved_entities
+                if hasattr(e, "curie") and e.curie is not None
+            )
+
             msg = PipelineCompleteMessage(
                 synthesis_report=synthesis_report,
                 hypotheses_count=len(hypotheses),
@@ -274,6 +342,25 @@ async def handle_pipeline_mode(
                 duration_ms=duration_ms,
             )
             await websocket.send_text(msg.model_dump_json())
+
+            # Finalize Langfuse trace with metrics
+            if trace and langfuse:
+                trace.update(
+                    output={
+                        "entities_total": len(resolved_entities),
+                        "entities_resolved": successful_resolutions,
+                        "resolution_rate": (
+                            successful_resolutions / len(resolved_entities)
+                            if resolved_entities else 0.0
+                        ),
+                        "hypotheses_count": len(hypotheses),
+                        "duration_ms": duration_ms,
+                        "node_timings": node_timings,
+                    },
+                    metadata={"status": "completed"},
+                )
+                trace.end()
+                langfuse.flush()
 
             # Update conversation history
             history = conversation_history[connection_id]
@@ -294,7 +381,9 @@ async def handle_pipeline_mode(
                         "mode": "pipeline",
                         "duration_ms": duration_ms,
                         "hypotheses_count": len(hypotheses),
-                        "entities_resolved": len(resolved_entities),
+                        "entities_resolved": successful_resolutions,
+                        "entities_total": len(resolved_entities),
+                        "node_timings": node_timings,
                     }
                 )
 
@@ -306,6 +395,15 @@ async def handle_pipeline_mode(
         await websocket.send_text(DoneMessage().model_dump_json())
 
     except Exception as e:
+        # Log error to Langfuse trace
+        if trace and langfuse:
+            trace.update(
+                output={"error": str(e)},
+                metadata={"status": "failed"},
+            )
+            trace.end()
+            langfuse.flush()
+
         error_msg = ErrorMessage(
             message=f"Pipeline error: {str(e)}. Try Classic mode for this query.",
             code="PIPELINE_ERROR"

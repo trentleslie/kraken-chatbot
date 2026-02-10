@@ -65,8 +65,21 @@ def extract_entities(query: str) -> list[str]:
     - Bullet points
     - Numbered lists
     - Natural language mentions
+    - Parenthetical synonyms: "hexadecanedioate (C16-DC)" → both extracted
+    - Asterisk annotations: "lignoceroylcarnitine (C24)*" → stripped
     """
     entities: list[str] = []
+
+    # NEW: Extract parenthetical synonyms first (before other processing)
+    # Pattern: "hexadecanedioate (C16-DC)" → captures both names
+    paren_pattern = r"(\b[A-Za-z][\w\-]+)\s*\(([A-Z0-9][\w\-]*)\)"
+    for match in re.finditer(paren_pattern, query):
+        main_name = match.group(1).rstrip("*").strip()
+        abbreviation = match.group(2).rstrip("*").strip()
+        if main_name and len(main_name) > 1:
+            entities.append(main_name)
+        if abbreviation and len(abbreviation) > 1:
+            entities.append(abbreviation)
 
     # First, try to find explicit list patterns
     # Pattern 1: Comma-separated (most common)
@@ -120,12 +133,19 @@ def extract_entities(query: str) -> list[str]:
         chem_pattern = re.findall(r"\b[A-Z][a-z]+(?:ose|ine|ate|ol|ide)\b", query)
         entities.extend(gene_pattern + chem_pattern)
 
+    # Clean up: strip asterisks and trailing punctuation
+    cleaned_entities = []
+    for e in entities:
+        cleaned = e.rstrip("*").strip()
+        if cleaned and len(cleaned) > 1:
+            cleaned_entities.append(cleaned)
+
     # Deduplicate while preserving order
     seen = set()
     unique_entities = []
-    for e in entities:
+    for e in cleaned_entities:
         e_lower = e.lower()
-        if e_lower not in seen and len(e) > 1:
+        if e_lower not in seen:
             seen.add(e_lower)
             unique_entities.append(e)
 
