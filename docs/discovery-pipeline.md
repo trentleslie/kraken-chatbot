@@ -14,41 +14,72 @@ The Discovery Pipeline is a **9-node LangGraph workflow** that performs deep bio
 
 ## Pipeline Flow Diagram
 
+```mermaid
+flowchart TD
+    subgraph Input["📥 Input Processing"]
+        A[/"🔍 INTAKE<br/>Query parsing, entity extraction"/]
+        B[/"🧬 ENTITY RESOLUTION<br/>CURIE mapping via Kestrel"/]
+    end
+
+    subgraph Triage["⚖️ Classification"]
+        C{{"🎯 TRIAGE<br/>Edge count classification"}}
+    end
+
+    subgraph Analysis["🔬 Parallel Analysis"]
+        D[/"📊 DIRECT KG<br/>Disease, pathway, interactions"/]
+        E[/"🔮 COLD-START<br/>Analogue-based inference"/]
+    end
+
+    subgraph Enrichment["🧩 Integration"]
+        F[/"🔗 PATHWAY ENRICHMENT<br/>Shared neighbors, themes"/]
+        G[/"🌉 INTEGRATION<br/>Bridges + gap analysis"/]
+    end
+
+    subgraph Temporal["⏱️ Conditional"]
+        H{{"📅 TEMPORAL<br/>Longitudinal classification"}}
+    end
+
+    subgraph Output["📤 Output"]
+        I[/"📝 SYNTHESIS<br/>Report + hypotheses"/]
+    end
+
+    A --> B --> C
+
+    C -->|"well_characterized<br/>moderate"| D
+    C -->|"sparse<br/>cold_start"| E
+    C -->|"no entities"| F
+
+    D --> F
+    E --> F
+    F --> G
+
+    G -->|"is_longitudinal=true"| H
+    G -->|"is_longitudinal=false"| I
+    H --> I
+
+    I --> J((END))
+
+    style A fill:#e1f5fe
+    style B fill:#e1f5fe
+    style C fill:#fff3e0
+    style D fill:#e8f5e9
+    style E fill:#fce4ec
+    style F fill:#f3e5f5
+    style G fill:#f3e5f5
+    style H fill:#fff8e1
+    style I fill:#e0f2f1
 ```
-┌─────────┐     ┌────────────────────┐     ┌─────────┐
-│ INTAKE  │ ──▶ │ ENTITY RESOLUTION  │ ──▶ │ TRIAGE  │
-└─────────┘     └────────────────────┘     └────┬────┘
-                                                │
-              ┌─────────────────────────────────┼─────────────────────────────────┐
-              │                                 │                                 │
-              ▼                                 ▼                                 ▼
-        ┌───────────┐                   ┌─────────────┐                    (skip if empty)
-        │ DIRECT KG │                   │ COLD-START  │                          │
-        └─────┬─────┘                   └──────┬──────┘                          │
-              │         (parallel)             │                                 │
-              └────────────────┬───────────────┘                                 │
-                               ▼                                                 │
-                    ┌──────────────────────┐ ◀───────────────────────────────────┘
-                    │ PATHWAY ENRICHMENT   │
-                    └──────────┬───────────┘
-                               ▼
-                    ┌──────────────────────┐
-                    │    INTEGRATION       │
-                    └──────────┬───────────┘
-                               │
-              ┌────────────────┴────────────────┐
-              │                                 │
-              ▼ (if longitudinal)               ▼ (else)
-        ┌──────────┐                            │
-        │ TEMPORAL │                            │
-        └────┬─────┘                            │
-              │                                 │
-              └─────────────▶ ┌───────────┐ ◀───┘
-                              │ SYNTHESIS │
-                              └─────┬─────┘
-                                    ▼
-                                   END
-```
+
+### Routing Logic
+
+| Condition | Route |
+|-----------|-------|
+| Has well-characterized OR moderate entities | → Direct KG |
+| Has sparse OR cold-start entities | → Cold-Start |
+| Both types present | → Both branches (parallel) |
+| No entities resolved | → Skip to Pathway Enrichment |
+| `is_longitudinal=true` | → Temporal → Synthesis |
+| `is_longitudinal=false` | → Synthesis directly |
 
 ---
 
