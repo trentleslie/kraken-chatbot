@@ -1,0 +1,640 @@
+"""
+Synthesis Node: Generate final report from resolved entities and analysis findings.
+
+Phase 3 update: Now includes structured data from direct_kg and cold_start analysis:
+- Disease associations with evidence types
+- Pathway memberships
+- Inferred associations with logic chains
+- Hub bias warnings
+
+Phase 4a update: Now includes pathway enrichment data:
+- Shared neighbors across input entities
+- Biological themes grouped by category
+
+Phase 4b update: Now includes integration and temporal data:
+- Cross-type bridges with path descriptions
+- Gap entities (expected-but-absent) with Open World Assumption framing
+- Temporal classifications (upstream/downstream/parallel) for longitudinal studies
+"""
+
+from typing import Any
+from ..state import (
+    DiscoveryState, EntityResolution, NoveltyScore, Finding,
+    DiseaseAssociation, PathwayMembership, InferredAssociation, AnalogueEntity,
+    SharedNeighbor, BiologicalTheme, Bridge, GapEntity, TemporalClassification
+)
+
+
+def format_entity_summary(resolved: list[EntityResolution]) -> str:
+    """Format resolved entities into a readable summary."""
+    if not resolved:
+        return "No entities were provided for resolution."
+
+    successful = [e for e in resolved if e.method != "failed"]
+    failed = [e for e in resolved if e.method == "failed"]
+
+    lines = []
+
+    # Header
+    lines.append(f"## Entity Resolution Summary")
+    lines.append(f"Successfully resolved: {len(successful)}/{len(resolved)} entities\n")
+
+    # Successful resolutions
+    if successful:
+        lines.append("### Resolved Entities")
+        for e in successful:
+            category_short = e.category.replace("biolink:", "") if e.category else "Unknown"
+            lines.append(f"- **{e.raw_name}** → `{e.curie}`")
+            lines.append(f"  - Name: {e.resolved_name}")
+            lines.append(f"  - Category: {category_short}")
+            lines.append(f"  - Confidence: {e.confidence:.0%} ({e.method})")
+            lines.append("")
+
+    # Failed resolutions
+    if failed:
+        lines.append("### Unresolved Entities")
+        for e in failed:
+            lines.append(f"- {e.raw_name} (not found in knowledge graph)")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_novelty_summary(scores: list[NoveltyScore]) -> str:
+    """Format novelty scores into a classification summary."""
+    if not scores:
+        return ""
+
+    lines = ["## Entity Classification\n"]
+
+    # Group by classification
+    by_class = {
+        "well_characterized": [],
+        "moderate": [],
+        "sparse": [],
+        "cold_start": [],
+    }
+    for s in scores:
+        by_class[s.classification].append(s)
+
+    # Format each group
+    if by_class["well_characterized"]:
+        lines.append("### Well-Characterized (≥200 edges)")
+        for s in by_class["well_characterized"]:
+            lines.append(f"- {s.raw_name}: {s.edge_count} edges")
+        lines.append("")
+
+    if by_class["moderate"]:
+        lines.append("### Moderate Coverage (20-199 edges)")
+        for s in by_class["moderate"]:
+            lines.append(f"- {s.raw_name}: {s.edge_count} edges")
+        lines.append("")
+
+    if by_class["sparse"]:
+        lines.append("### Sparse Coverage (1-19 edges)")
+        for s in by_class["sparse"]:
+            lines.append(f"- {s.raw_name}: {s.edge_count} edges")
+        lines.append("")
+
+    if by_class["cold_start"]:
+        lines.append("### Cold-Start (0 edges)")
+        for s in by_class["cold_start"]:
+            lines.append(f"- {s.raw_name}: no KG presence")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_disease_associations(diseases: list[DiseaseAssociation]) -> str:
+    """Format disease associations with evidence types."""
+    if not diseases:
+        return ""
+
+    lines = ["## Disease Associations\n"]
+
+    # Group by entity
+    by_entity: dict[str, list[DiseaseAssociation]] = {}
+    for d in diseases:
+        if d.entity_curie not in by_entity:
+            by_entity[d.entity_curie] = []
+        by_entity[d.entity_curie].append(d)
+
+    for entity_curie, entity_diseases in by_entity.items():
+        lines.append(f"### {entity_curie}")
+
+        # Group by evidence type
+        evidence_order = ["gwas", "curated", "text_mined", "predicted"]
+        by_evidence: dict[str, list[DiseaseAssociation]] = {}
+        for d in entity_diseases:
+            if d.evidence_type not in by_evidence:
+                by_evidence[d.evidence_type] = []
+            by_evidence[d.evidence_type].append(d)
+
+        for ev_type in evidence_order:
+            if ev_type in by_evidence:
+                evidence_label = {
+                    "gwas": "🧬 GWAS Evidence",
+                    "curated": "📚 Curated Evidence",
+                    "text_mined": "📝 Text-Mined Evidence",
+                    "predicted": "🔮 Predicted",
+                }.get(ev_type, ev_type.title())
+
+                lines.append(f"\n**{evidence_label}:**")
+                for d in by_evidence[ev_type]:
+                    pmid_str = ""
+                    if d.pmids:
+                        pmid_str = f" [PMIDs: {', '.join(d.pmids[:3])}]"
+                    lines.append(f"- {d.disease_name} (`{d.disease_curie}`){pmid_str}")
+                    lines.append(f"  - Predicate: {d.predicate}")
+                    lines.append(f"  - Source: {d.source}")
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_pathway_memberships(pathways: list[PathwayMembership]) -> str:
+    """Format pathway memberships."""
+    if not pathways:
+        return ""
+
+    lines = ["## Pathway & Biological Process Memberships\n"]
+
+    # Group by entity
+    by_entity: dict[str, list[PathwayMembership]] = {}
+    for p in pathways:
+        if p.entity_curie not in by_entity:
+            by_entity[p.entity_curie] = []
+        by_entity[p.entity_curie].append(p)
+
+    for entity_curie, entity_pathways in by_entity.items():
+        lines.append(f"### {entity_curie}")
+        for p in entity_pathways:
+            lines.append(f"- **{p.pathway_name}** (`{p.pathway_curie}`)")
+            lines.append(f"  - Predicate: {p.predicate}")
+            lines.append(f"  - Source: {p.source}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_shared_neighbors(
+    shared_neighbors: list[SharedNeighbor],
+    themes: list[BiologicalTheme]
+) -> str:
+    """Format shared neighbors and biological themes from pathway enrichment."""
+    if not shared_neighbors and not themes:
+        return ""
+
+    lines = ["## Pathway Enrichment Analysis\n"]
+    lines.append("*Shared biological context connecting multiple input entities.*\n")
+
+    # Show themes first (more useful summary)
+    if themes:
+        lines.append("### Biological Themes")
+        for theme in themes[:5]:  # Top 5 themes
+            category_short = theme.category.replace("biolink:", "")
+            hub_warning = ""
+            if theme.top_non_hub is None:
+                hub_warning = " ⚠️ (all hubs)"
+            
+            lines.append(f"\n**{category_short}** — connects {theme.input_coverage} input entities{hub_warning}")
+            for i, (curie, name) in enumerate(zip(theme.members[:5], theme.member_names[:5])):
+                is_top = "⭐" if curie == theme.top_non_hub else ""
+                lines.append(f"  - {name} (`{curie}`) {is_top}")
+            if len(theme.members) > 5:
+                lines.append(f"  - ... and {len(theme.members) - 5} more")
+        lines.append("")
+
+    # Show individual shared neighbors with details
+    if shared_neighbors:
+        # Separate hubs from specific neighbors
+        specific = [sn for sn in shared_neighbors if not sn.is_hub]
+        hubs = [sn for sn in shared_neighbors if sn.is_hub]
+
+        if specific:
+            lines.append("### Specific Shared Neighbors (Non-Hub)")
+            for sn in sorted(specific, key=lambda x: len(x.connected_inputs), reverse=True)[:10]:
+                category_short = sn.category.replace("biolink:", "")
+                lines.append(f"- **{sn.name}** (`{sn.curie}`) — {category_short}")
+                lines.append(f"  - Connects: {', '.join(sn.connected_inputs[:5])}")
+                lines.append(f"  - Degree: {sn.degree} edges")
+                if sn.predicates:
+                    lines.append(f"  - Predicates: {', '.join(list(set(sn.predicates))[:3])}")
+            lines.append("")
+
+        if hubs:
+            lines.append("### ⚠️ Hub Nodes (High Connectivity)")
+            lines.append("*These nodes have >1000 edges and may represent non-specific associations.*\n")
+            for sn in hubs[:5]:
+                lines.append(f"- {sn.name} (`{sn.curie}`) — {sn.degree} edges")
+            if len(hubs) > 5:
+                lines.append(f"- ... and {len(hubs) - 5} more hub nodes")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_inferred_associations(
+    inferences: list[InferredAssociation],
+    analogues: list[AnalogueEntity]
+) -> str:
+    """Format cold-start inferred associations with logic chains."""
+    if not inferences and not analogues:
+        return ""
+
+    lines = ["## Inferred Associations (Tier 3 - Speculative)\n"]
+    lines.append("*These associations are inferred via semantic similarity to well-characterized entities.*")
+    lines.append("*All findings require experimental validation.*\n")
+
+    # Show analogues first if any
+    if analogues:
+        lines.append("### Semantic Analogues Found")
+        # Group by similarity score
+        sorted_analogues = sorted(analogues, key=lambda a: a.similarity, reverse=True)
+        for a in sorted_analogues[:10]:  # Limit to top 10
+            category_short = a.category.replace("biolink:", "") if a.category else "Unknown"
+            lines.append(f"- **{a.name}** (`{a.curie}`) - Similarity: {a.similarity:.0%} ({category_short})")
+        lines.append("")
+
+    # Show inferences
+    if inferences:
+        lines.append("### Inferred Connections")
+        # Group by source entity
+        by_entity: dict[str, list[InferredAssociation]] = {}
+        for i in inferences:
+            if i.source_entity not in by_entity:
+                by_entity[i.source_entity] = []
+            by_entity[i.source_entity].append(i)
+
+        for entity, entity_inferences in by_entity.items():
+            lines.append(f"\n#### {entity}")
+            for i in entity_inferences:
+                confidence_emoji = {"high": "🟢", "moderate": "🟡", "low": "🔴"}.get(i.confidence, "⚪")
+                lines.append(f"\n{confidence_emoji} **{i.target_name}** (`{i.target_curie}`)")
+                lines.append(f"- Predicate: {i.predicate}")
+                lines.append(f"- Supporting analogues: {i.supporting_analogues}")
+                lines.append(f"- Logic chain: _{i.logic_chain}_")
+                lines.append(f"- **Validation step**: {i.validation_step}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_findings_summary(
+    direct_findings: list[Finding],
+    cold_start_findings: list[Finding]
+) -> str:
+    """Format analysis findings into a summary report."""
+    all_findings = direct_findings + cold_start_findings
+    if not all_findings:
+        return ""
+
+    lines = ["## Analysis Findings Summary\n"]
+
+    # Sort by tier (1 = high confidence first)
+    sorted_findings = sorted(all_findings, key=lambda f: f.tier)
+
+    # Group by tier
+    tier_labels = {
+        1: "Tier 1 (High Confidence - Direct KG Evidence)",
+        2: "Tier 2 (Moderate Confidence - Derived Associations)",
+        3: "Tier 3 (Speculative - Semantic Inference)",
+    }
+
+    for tier in [1, 2, 3]:
+        tier_findings = [f for f in sorted_findings if f.tier == tier]
+        if tier_findings:
+            lines.append(f"### {tier_labels[tier]}")
+            for f in tier_findings:
+                source_tag = f"[{f.source}]" if f.source else ""
+                confidence_emoji = {"high": "🟢", "moderate": "🟡", "low": "🔴"}.get(f.confidence, "⚪")
+                lines.append(f"- {confidence_emoji} **{f.entity}**: {f.claim} {source_tag}")
+                if f.pmids:
+                    lines.append(f"  - PMIDs: {', '.join(f.pmids[:5])}")
+                if f.logic_chain:
+                    lines.append(f"  - _Logic: {f.logic_chain}_")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_hub_warnings(hub_flags: list[str]) -> str:
+    """Format warnings about high-degree hub nodes."""
+    if not hub_flags:
+        return ""
+
+    unique_hubs = list(set(hub_flags))
+    lines = ["## ⚠️ Hub Bias Warnings\n"]
+    lines.append("*The following entities have very high connectivity (>1000 edges).*")
+    lines.append("*Associations involving these entities may be spurious due to hub bias.*\n")
+
+    for hub in unique_hubs:
+        lines.append(f"- `{hub}`")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+# =============================================================================
+# Phase 4b: Integration Formatting (Bridges + Gaps)
+# =============================================================================
+
+def format_bridges(bridges: list[Bridge]) -> str:
+    """Format cross-type bridges discovered during integration analysis."""
+    if not bridges:
+        return ""
+
+    lines = ["## Cross-Type Bridges\n"]
+    lines.append("*Multi-hop paths connecting different entity types across the analysis.*\n")
+
+    # Separate by tier
+    tier2 = [b for b in bridges if b.tier == 2]
+    tier3 = [b for b in bridges if b.tier == 3]
+
+    if tier2:
+        lines.append("### High-Confidence Bridges (Tier 2)")
+        for b in tier2:
+            novelty_tag = "📚 Known" if b.novelty == "known" else "🔮 Inferred"
+            lines.append(f"\n**{b.path_description}** [{novelty_tag}]")
+            if b.entity_names:
+                path_with_names = " → ".join(
+                    f"{name} (`{curie}`)"
+                    for name, curie in zip(b.entity_names, b.entities)
+                )
+                lines.append(f"  - Path: {path_with_names}")
+            else:
+                lines.append(f"  - Entities: {' → '.join(b.entities)}")
+            if b.predicates:
+                lines.append(f"  - Predicates: {' → '.join(b.predicates)}")
+            if b.significance:
+                lines.append(f"  - **Significance**: {b.significance}")
+        lines.append("")
+
+    if tier3:
+        lines.append("### Speculative Bridges (Tier 3)")
+        for b in tier3:
+            novelty_tag = "📚 Known" if b.novelty == "known" else "🔮 Inferred"
+            lines.append(f"\n**{b.path_description}** [{novelty_tag}]")
+            if b.entity_names:
+                path_with_names = " → ".join(
+                    f"{name} (`{curie}`)"
+                    for name, curie in zip(b.entity_names, b.entities)
+                )
+                lines.append(f"  - Path: {path_with_names}")
+            else:
+                lines.append(f"  - Entities: {' → '.join(b.entities)}")
+            if b.significance:
+                lines.append(f"  - **Significance**: {b.significance}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_gap_entities(gaps: list[GapEntity]) -> str:
+    """Format expected-but-absent entities with Open World Assumption framing."""
+    if not gaps:
+        return ""
+
+    lines = ["## Gap Analysis (Expected-But-Absent Entities)\n"]
+    lines.append("*These canonical markers were expected but not found in the analysis.*")
+    lines.append("*Using Open World Assumption: absence means 'unstudied', not 'nonexistent'.*\n")
+
+    # Separate informative vs non-informative gaps
+    informative = [g for g in gaps if g.is_informative]
+    standard = [g for g in gaps if not g.is_informative]
+
+    if informative:
+        lines.append("### ⭐ Informative Absences")
+        lines.append("*These absences may reveal unique characteristics of this cohort.*\n")
+        for g in informative:
+            category_short = g.category.replace("biolink:", "")
+            curie_str = f" (`{g.curie}`)" if g.curie else ""
+            lines.append(f"- **{g.name}**{curie_str} — {category_short}")
+            lines.append(f"  - Expected because: {g.expected_reason}")
+            lines.append(f"  - Interpretation: {g.absence_interpretation}")
+        lines.append("")
+
+    if standard:
+        lines.append("### Standard Gaps")
+        for g in standard:
+            category_short = g.category.replace("biolink:", "")
+            curie_str = f" (`{g.curie}`)" if g.curie else ""
+            lines.append(f"- **{g.name}**{curie_str} — {category_short}")
+            lines.append(f"  - Expected: {g.expected_reason}")
+            lines.append(f"  - Interpretation: {g.absence_interpretation}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# =============================================================================
+# Phase 4b: Temporal Formatting (Longitudinal Studies)
+# =============================================================================
+
+def format_temporal_classifications(classifications: list[TemporalClassification]) -> str:
+    """Format temporal classifications for longitudinal study findings."""
+    if not classifications:
+        return ""
+
+    lines = ["## Temporal Analysis\n"]
+    lines.append("*Findings classified by temporal relationship to disease progression.*\n")
+
+    # Group by classification
+    upstream = [c for c in classifications if c.classification == "upstream_cause"]
+    downstream = [c for c in classifications if c.classification == "downstream_consequence"]
+    parallel = [c for c in classifications if c.classification == "parallel_effect"]
+
+    if upstream:
+        lines.append("### ⬆️ Upstream Causes")
+        lines.append("*Metabolic shifts PRECEDING disease manifestation.*\n")
+        for c in upstream:
+            confidence_emoji = {"high": "🟢", "moderate": "🟡", "low": "🔴"}.get(c.confidence, "⚪")
+            lines.append(f"{confidence_emoji} **{c.entity}**")
+            lines.append(f"  - Finding: {c.finding_claim}")
+            lines.append(f"  - Reasoning: _{c.reasoning}_")
+        lines.append("")
+
+    if downstream:
+        lines.append("### ⬇️ Downstream Consequences")
+        lines.append("*Changes RESULTING FROM disease process.*\n")
+        for c in downstream:
+            confidence_emoji = {"high": "🟢", "moderate": "🟡", "low": "🔴"}.get(c.confidence, "⚪")
+            lines.append(f"{confidence_emoji} **{c.entity}**")
+            lines.append(f"  - Finding: {c.finding_claim}")
+            lines.append(f"  - Reasoning: _{c.reasoning}_")
+        lines.append("")
+
+    if parallel:
+        lines.append("### ↔️ Parallel Effects")
+        lines.append("*Concurrent changes not directly causal.*\n")
+        for c in parallel:
+            confidence_emoji = {"high": "🟢", "moderate": "🟡", "low": "🔴"}.get(c.confidence, "⚪")
+            lines.append(f"{confidence_emoji} **{c.entity}**")
+            lines.append(f"  - Finding: {c.finding_claim}")
+            lines.append(f"  - Reasoning: _{c.reasoning}_")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+async def run(state: DiscoveryState) -> dict[str, Any]:
+    """
+    Generate a synthesis report from all analysis phases.
+
+    Combines:
+    - Entity resolution results
+    - Novelty classification scores
+    - Disease associations with evidence types
+    - Pathway memberships
+    - Shared neighbors and biological themes (Phase 4a)
+    - Cross-type bridges (Phase 4b)
+    - Gap entities with Open World Assumption (Phase 4b)
+    - Temporal classifications for longitudinal studies (Phase 4b)
+    - Inferred associations with logic chains
+    - Hub bias warnings
+    - Findings from direct_kg and cold_start branches
+
+    Returns:
+        synthesis_report: Formatted markdown report
+    """
+    resolved = state.get("resolved_entities", [])
+    query_type = state.get("query_type", "unknown")
+    raw_query = state.get("raw_query", "")
+    is_longitudinal = state.get("is_longitudinal", False)
+    novelty_scores = state.get("novelty_scores", [])
+    direct_findings = state.get("direct_findings", [])
+    cold_start_findings = state.get("cold_start_findings", [])
+    disease_associations = state.get("disease_associations", [])
+    pathway_memberships = state.get("pathway_memberships", [])
+    inferred_associations = state.get("inferred_associations", [])
+    analogues_found = state.get("analogues_found", [])
+    hub_flags = state.get("hub_flags", [])
+    shared_neighbors = state.get("shared_neighbors", [])
+    biological_themes = state.get("biological_themes", [])
+    # Phase 4b data
+    bridges = state.get("bridges", [])
+    gap_entities = state.get("gap_entities", [])
+    temporal_classifications = state.get("temporal_classifications", [])
+
+    # Build report sections
+    report_lines = []
+
+    # Header
+    report_lines.append(f"# KRAKEN Analysis Report")
+    report_lines.append(f"**Query Type**: {query_type.title()}")
+    if is_longitudinal:
+        duration = state.get("duration_years")
+        duration_str = f" ({duration} years)" if duration else ""
+        report_lines.append(f"**Study Type**: Longitudinal{duration_str}")
+    report_lines.append(f"**Original Query**: {raw_query[:100]}{'...' if len(raw_query) > 100 else ''}\n")
+
+    # Entity resolution
+    report_lines.append(format_entity_summary(resolved))
+
+    # Novelty classification
+    novelty_section = format_novelty_summary(novelty_scores)
+    if novelty_section:
+        report_lines.append(novelty_section)
+
+    # Hub bias warnings (show early so users are aware)
+    hub_section = format_hub_warnings(hub_flags)
+    if hub_section:
+        report_lines.append(hub_section)
+
+    # Pathway enrichment (shared neighbors and themes) - Phase 4a
+    enrichment_section = format_shared_neighbors(shared_neighbors, biological_themes)
+    if enrichment_section:
+        report_lines.append(enrichment_section)
+
+    # Cross-type bridges - Phase 4b
+    bridges_section = format_bridges(bridges)
+    if bridges_section:
+        report_lines.append(bridges_section)
+
+    # Gap analysis - Phase 4b
+    gaps_section = format_gap_entities(gap_entities)
+    if gaps_section:
+        report_lines.append(gaps_section)
+
+    # Temporal classifications - Phase 4b (only for longitudinal studies)
+    temporal_section = format_temporal_classifications(temporal_classifications)
+    if temporal_section:
+        report_lines.append(temporal_section)
+
+    # Disease associations (structured data)
+    disease_section = format_disease_associations(disease_associations)
+    if disease_section:
+        report_lines.append(disease_section)
+
+    # Pathway memberships (structured data)
+    pathway_section = format_pathway_memberships(pathway_memberships)
+    if pathway_section:
+        report_lines.append(pathway_section)
+
+    # Inferred associations from cold-start (structured data)
+    inference_section = format_inferred_associations(inferred_associations, analogues_found)
+    if inference_section:
+        report_lines.append(inference_section)
+
+    # Analysis findings (summary from both branches)
+    findings_section = format_findings_summary(direct_findings, cold_start_findings)
+    if findings_section:
+        report_lines.append(findings_section)
+
+    # Summary stats
+    total_findings = len(direct_findings) + len(cold_start_findings)
+    total_diseases = len(disease_associations)
+    total_pathways = len(pathway_memberships)
+    total_inferences = len(inferred_associations)
+    total_shared = len(shared_neighbors)
+    total_themes = len(biological_themes)
+    total_bridges = len(bridges)
+    total_gaps = len(gap_entities)
+    total_temporal = len(temporal_classifications)
+
+    if any([total_findings, total_diseases, total_pathways, total_inferences,
+            total_shared, total_themes, total_bridges, total_gaps, total_temporal]):
+        report_lines.append("---")
+        stats = []
+        if total_findings > 0:
+            stats.append(f"{total_findings} findings")
+        if total_diseases > 0:
+            stats.append(f"{total_diseases} disease associations")
+        if total_pathways > 0:
+            stats.append(f"{total_pathways} pathway memberships")
+        if total_shared > 0:
+            stats.append(f"{total_shared} shared neighbors")
+        if total_themes > 0:
+            stats.append(f"{total_themes} biological themes")
+        if total_bridges > 0:
+            stats.append(f"{total_bridges} cross-type bridges")
+        if total_gaps > 0:
+            stats.append(f"{total_gaps} gap entities")
+        if total_temporal > 0:
+            stats.append(f"{total_temporal} temporal classifications")
+        if total_inferences > 0:
+            stats.append(f"{total_inferences} inferred associations")
+        report_lines.append(f"*Generated: {', '.join(stats)}*")
+
+    # Next steps hint (only if we have resolved entities but no findings)
+    successful = [e for e in resolved if e.method != "failed"]
+    if successful and not findings_section:
+        report_lines.append("---")
+        report_lines.append("*Ready for further analysis. The full workflow will explore ")
+        report_lines.append("relationships, pathways, and generate hypotheses for these entities.*")
+
+    # Errors section if any
+    errors = state.get("errors", [])
+    if errors:
+        report_lines.append("\n### ⚠️ Warnings & Errors")
+        for error in errors[:10]:  # Limit to first 10 errors
+            report_lines.append(f"- {error}")
+        if len(errors) > 10:
+            report_lines.append(f"- ... and {len(errors) - 10} more warnings")
+
+    synthesis_report = "\n".join(report_lines)
+
+    return {
+        "synthesis_report": synthesis_report,
+    }

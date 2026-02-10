@@ -1,5 +1,7 @@
 export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "reconnecting" | "demo";
 
+export type AgentMode = "classic" | "pipeline";
+
 export type UserMessage = {
   id: string;
   type: "user";
@@ -29,7 +31,7 @@ export type ErrorMessage = {
   id: string;
   type: "error";
   message: string;
-  code?: string;  // Optional error code (e.g., "AUTH_ERROR")
+  code?: string;  // Optional error code (e.g., "AUTH_ERROR", "PIPELINE_ERROR")
   timestamp: number;
 };
 
@@ -61,6 +63,27 @@ export type TraceMessage = {
   timestamp: number;
 };
 
+// Phase 6: Pipeline-specific message types
+export type PipelineProgressMessage = {
+  id: string;
+  type: "pipeline_progress";
+  node: string;
+  message: string;
+  nodes_completed: number;
+  total_nodes: number;
+  timestamp: number;
+};
+
+export type PipelineCompleteMessage = {
+  id: string;
+  type: "pipeline_complete";
+  synthesis_report: string;
+  hypotheses_count: number;
+  entities_resolved: number;
+  duration_ms: number;
+  timestamp: number;
+};
+
 export type SessionStats = {
   total_input_tokens: number;
   total_output_tokens: number;
@@ -70,13 +93,21 @@ export type SessionStats = {
   traces: TraceMessage[];
 };
 
+export type PipelineProgress = {
+  node: string;
+  message: string;
+  nodesCompleted: number;
+  totalNodes: number;
+};
+
 export type ChatMessage =
   | UserMessage
   | AgentTextMessage
   | ToolUseMessage
   | ErrorMessage
   | DoneMessage
-  | TraceMessage;
+  | TraceMessage
+  | PipelineCompleteMessage;
 
 export type IncomingMessage =
   | { type: "text"; content: string }
@@ -85,6 +116,7 @@ export type IncomingMessage =
   | { type: "error"; message: string; code?: string }
   | { type: "done" }
   | { type: "status"; status: string }
+  | { type: "conversation_started"; conversation_id: string }
   | {
       type: "trace";
       turn_id?: string;
@@ -96,4 +128,18 @@ export type IncomingMessage =
       duration_ms?: number;
       tool_calls_count?: number;
       model?: string;
+    }
+  | {
+      type: "pipeline_progress";
+      node: string;
+      message: string;
+      nodes_completed: number;
+      total_nodes: number;
+    }
+  | {
+      type: "pipeline_complete";
+      synthesis_report: string;
+      hypotheses_count: number;
+      entities_resolved: number;
+      duration_ms: number;
     };

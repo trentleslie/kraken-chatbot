@@ -6,12 +6,14 @@ import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import List, Tuple
+from uuid import UUID
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .agent import run_agent_turn
+from .database import init_db, close_db, get_conversation_with_turns, create_conversation, add_turn
 from .protocol import (
     TextMessage,
     ToolUseMessage,
@@ -19,6 +21,10 @@ from .protocol import (
     ErrorMessage,
     DoneMessage,
     TraceMessage,
+    ConversationStartedMessage,
+    PipelineProgressMessage,
+    PipelineCompleteMessage,
+    NODE_STATUS_MESSAGES,
 )
 
 
@@ -27,6 +33,12 @@ rate_limit_state: dict[str, list[float]] = defaultdict(list)
 
 # Conversation history per WebSocket connection: {connection_id: [(role, content), ...]}
 conversation_history: dict[str, List[Tuple[str, str]]] = defaultdict(list)
+
+# Database conversation IDs per WebSocket connection: {connection_id: UUID}
+conversation_ids: dict[str, UUID] = {}
+
+# Turn counter per WebSocket connection: {connection_id: int}
+turn_counters: dict[str, int] = defaultdict(int)
 
 # Maximum number of user/assistant exchanges to keep in history
 MAX_HISTORY_EXCHANGES = 10
@@ -82,8 +94,10 @@ async def lifespan(app: FastAPI):
     print(f"Starting Kestrel Backend on {settings.host}:{settings.port}")
     print(f"Allowed origins: {settings.allowed_origins}")
     print(f"Rate limit: {settings.rate_limit_per_minute} messages/minute")
+    await init_db()
     yield
     # Shutdown
+    await close_db()
     print("Shutting down Kestrel Backend")
 
 
@@ -118,14 +132,196 @@ async def api_health_check():
     return {"status": "healthy", "service": "kestrel-backend"}
 
 
+@app.get("/api/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str):
+    """Retrieve conversation by UUID for shared viewing."""
+    try:
+        uuid_id = UUID(conversation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid conversation ID format")
+
+    conversation = await get_conversation_with_turns(uuid_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return conversation
+
+
+async def handle_classic_mode(
+    websocket: WebSocket,
+    content: str,
+    connection_id: str,
+) -> None:
+    """
+    Handle classic agent mode - existing Claude Agent SDK behavior.
+    
+    This is the original single-agent approach with tool use and streaming.
+    """
+    history = conversation_history[connection_id]
+    full_prompt = build_conversation_prompt(history, content)
+    
+    # Track assistant response text for history
+    assistant_response_parts: List[str] = []
+    # Track metrics for database persistence
+    turn_metrics: dict = {}
+
+    async for event in run_agent_turn(full_prompt):
+        # Convert agent events to protocol messages
+        match event.type:
+            case "text":
+                text_content = event.data["content"]
+                assistant_response_parts.append(text_content)
+                msg = TextMessage(content=text_content)
+            case "tool_use":
+                msg = ToolUseMessage(
+                    tool=event.data["tool"],
+                    args=event.data["args"]
+                )
+            case "tool_result":
+                msg = ToolResultMessage(
+                    tool=event.data["tool"],
+                    data=event.data["data"]
+                )
+            case "error":
+                msg = ErrorMessage(
+                    message=event.data["message"],
+                    code=event.data.get("code")
+                )
+            case "trace":
+                msg = TraceMessage(**event.data)
+                turn_metrics = event.data
+            case "done":
+                msg = DoneMessage()
+            case _:
+                continue
+
+        await websocket.send_text(msg.model_dump_json())
+
+    # Update conversation history after successful exchange
+    history.append(("user", content))
+    if assistant_response_parts:
+        history.append(("assistant", "".join(assistant_response_parts)))
+
+    # Persist turn to database if conversation exists
+    conv_id = conversation_ids.get(connection_id)
+    if conv_id and assistant_response_parts:
+        turn_counters[connection_id] += 1
+        await add_turn(
+            conversation_id=conv_id,
+            turn_number=turn_counters[connection_id],
+            user_query=content,
+            assistant_response="".join(assistant_response_parts),
+            metrics=turn_metrics
+        )
+
+    # Trim history to last N exchanges (2 messages per exchange)
+    max_messages = MAX_HISTORY_EXCHANGES * 2
+    if len(history) > max_messages:
+        conversation_history[connection_id] = history[-max_messages:]
+
+
+async def handle_pipeline_mode(
+    websocket: WebSocket,
+    content: str,
+    connection_id: str,
+) -> None:
+    """
+    Handle discovery pipeline mode - LangGraph multi-node workflow.
+    
+    Executes the 9-node discovery pipeline with progress streaming.
+    """
+    from .graph.runner import stream_discovery
+
+    start_time = time.time()
+    nodes_completed = 0
+    final_state = None
+    nodes_seen = set()
+
+    try:
+        history = conversation_history.get(connection_id, [])
+
+        async for event in stream_discovery(
+            query=content,
+            conversation_history=list(history),
+        ):
+            if event["type"] == "node_event":
+                node_name = event["node"]
+                # Only send progress once per node (first event)
+                if node_name in NODE_STATUS_MESSAGES and node_name not in nodes_seen:
+                    nodes_seen.add(node_name)
+                    nodes_completed += 1
+                    msg = PipelineProgressMessage(
+                        node=node_name,
+                        message=NODE_STATUS_MESSAGES[node_name],
+                        nodes_completed=nodes_completed,
+                    )
+                    await websocket.send_text(msg.model_dump_json())
+
+            elif event["type"] == "complete":
+                final_state = event.get("data", {})
+
+        # Send final result
+        if final_state:
+            duration_ms = int((time.time() - start_time) * 1000)
+            synthesis_report = final_state.get("synthesis_report", "")
+            hypotheses = final_state.get("hypotheses", [])
+            resolved_entities = final_state.get("resolved_entities", [])
+            
+            msg = PipelineCompleteMessage(
+                synthesis_report=synthesis_report,
+                hypotheses_count=len(hypotheses),
+                entities_resolved=len(resolved_entities),
+                duration_ms=duration_ms,
+            )
+            await websocket.send_text(msg.model_dump_json())
+
+            # Update conversation history
+            history = conversation_history[connection_id]
+            history.append(("user", content))
+            if synthesis_report:
+                history.append(("assistant", synthesis_report))
+
+            # Persist turn to database
+            conv_id = conversation_ids.get(connection_id)
+            if conv_id and synthesis_report:
+                turn_counters[connection_id] += 1
+                await add_turn(
+                    conversation_id=conv_id,
+                    turn_number=turn_counters[connection_id],
+                    user_query=content,
+                    assistant_response=synthesis_report,
+                    metrics={
+                        "mode": "pipeline",
+                        "duration_ms": duration_ms,
+                        "hypotheses_count": len(hypotheses),
+                        "entities_resolved": len(resolved_entities),
+                    }
+                )
+
+            # Trim history
+            max_messages = MAX_HISTORY_EXCHANGES * 2
+            if len(history) > max_messages:
+                conversation_history[connection_id] = history[-max_messages:]
+
+        await websocket.send_text(DoneMessage().model_dump_json())
+
+    except Exception as e:
+        error_msg = ErrorMessage(
+            message=f"Pipeline error: {str(e)}. Try Classic mode for this query.",
+            code="PIPELINE_ERROR"
+        )
+        await websocket.send_text(error_msg.model_dump_json())
+        await websocket.send_text(DoneMessage().model_dump_json())
+
+
 @app.websocket("/ws/chat")
 async def websocket_chat(websocket: WebSocket):
     """
     WebSocket endpoint for chat interactions.
 
     Protocol:
-    - Client sends: {"type": "user_message", "content": "..."}
-    - Server sends: text, tool_use, tool_result, trace, done messages
+    - Client sends: {"type": "user_message", "content": "...", "agent_mode": "classic"|"pipeline"}
+    - Server sends: text, tool_use, tool_result, trace, done, pipeline_progress, pipeline_complete messages
     """
     await websocket.accept()
     connection_id = str(id(websocket))
@@ -166,57 +362,25 @@ async def websocket_chat(websocket: WebSocket):
                 )
                 continue
 
-            # Build prompt with conversation history for multi-turn context
-            history = conversation_history[connection_id]
-            full_prompt = build_conversation_prompt(history, content)
+            # Create conversation on first message
+            settings = get_settings()
+            if connection_id not in conversation_ids:
+                conv_id = await create_conversation(connection_id, settings.model or "default")
+                if conv_id:
+                    conversation_ids[connection_id] = conv_id
+                    # Send conversation_id to frontend for copy link functionality
+                    await websocket.send_text(
+                        ConversationStartedMessage(conversation_id=str(conv_id)).model_dump_json()
+                    )
 
-            # Process the message through the agent
+            # Route based on agent_mode
+            agent_mode = data.get("agent_mode", "classic")
+            
             try:
-                # Track assistant response text for history
-                assistant_response_parts: List[str] = []
-
-                async for event in run_agent_turn(full_prompt):
-                    # Convert agent events to protocol messages
-                    match event.type:
-                        case "text":
-                            # Capture text content for conversation history
-                            text_content = event.data["content"]
-                            assistant_response_parts.append(text_content)
-                            msg = TextMessage(content=text_content)
-                        case "tool_use":
-                            msg = ToolUseMessage(
-                                tool=event.data["tool"],
-                                args=event.data["args"]
-                            )
-                        case "tool_result":
-                            msg = ToolResultMessage(
-                                tool=event.data["tool"],
-                                data=event.data["data"]
-                            )
-                        case "error":
-                            msg = ErrorMessage(
-                                message=event.data["message"],
-                                code=event.data.get("code")
-                            )
-                        case "trace":
-                            msg = TraceMessage(**event.data)
-                        case "done":
-                            msg = DoneMessage()
-                        case _:
-                            continue
-
-                    await websocket.send_text(msg.model_dump_json())
-
-                # Update conversation history after successful exchange
-                history.append(("user", content))
-                if assistant_response_parts:
-                    history.append(("assistant", "".join(assistant_response_parts)))
-
-                # Trim history to last N exchanges (2 messages per exchange)
-                max_messages = MAX_HISTORY_EXCHANGES * 2
-                if len(history) > max_messages:
-                    conversation_history[connection_id] = history[-max_messages:]
-
+                if agent_mode == "pipeline":
+                    await handle_pipeline_mode(websocket, content, connection_id)
+                else:
+                    await handle_classic_mode(websocket, content, connection_id)
             except Exception as e:
                 await websocket.send_text(
                     ErrorMessage(message=f"Agent error: {str(e)}").model_dump_json()
@@ -227,10 +391,14 @@ async def websocket_chat(websocket: WebSocket):
         # Clean up state for this connection
         rate_limit_state.pop(connection_id, None)
         conversation_history.pop(connection_id, None)
+        conversation_ids.pop(connection_id, None)
+        turn_counters.pop(connection_id, None)
     except Exception as e:
         print(f"WebSocket error: {e}")
         rate_limit_state.pop(connection_id, None)
         conversation_history.pop(connection_id, None)
+        conversation_ids.pop(connection_id, None)
+        turn_counters.pop(connection_id, None)
 
 
 if __name__ == "__main__":

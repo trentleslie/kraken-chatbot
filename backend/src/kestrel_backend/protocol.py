@@ -58,13 +58,65 @@ class TraceMessage(BaseModel):
     model: str | None = None
 
 
+class ConversationStartedMessage(BaseModel):
+    """Sent when a new conversation is created in the database."""
+    type: Literal["conversation_started"] = "conversation_started"
+    conversation_id: str
+
+
+# Phase 6: Pipeline-specific message types
+
+class PipelineProgressMessage(BaseModel):
+    """Progress update during discovery pipeline execution."""
+    type: Literal["pipeline_progress"] = "pipeline_progress"
+    node: str                    # Current node name (e.g., "entity_resolution")
+    message: str                 # User-friendly status message
+    nodes_completed: int         # Number of nodes finished
+    total_nodes: int = 9         # Total nodes in pipeline
+
+
+class PipelineCompleteMessage(BaseModel):
+    """Final result from discovery pipeline execution."""
+    type: Literal["pipeline_complete"] = "pipeline_complete"
+    synthesis_report: str        # The final markdown report
+    hypotheses_count: int        # Number of hypotheses generated
+    entities_resolved: int       # Number of entities resolved
+    duration_ms: int             # Total execution time
+
+
 # Incoming messages (Client → Server)
 
 class UserMessageRequest(BaseModel):
     """User sends a chat message."""
     type: Literal["user_message"] = "user_message"
     content: str
+    agent_mode: str = "classic"  # "classic" or "pipeline"
 
 
 # Type alias for all outgoing message types
-OutgoingMessage = TextMessage | ToolUseMessage | ToolResultMessage | ErrorMessage | DoneMessage | StatusMessage | TraceMessage
+OutgoingMessage = (
+    TextMessage
+    | ToolUseMessage
+    | ToolResultMessage
+    | ErrorMessage
+    | DoneMessage
+    | StatusMessage
+    | TraceMessage
+    | ConversationStartedMessage
+    | PipelineProgressMessage
+    | PipelineCompleteMessage
+)
+
+
+# Node name to user-friendly message mapping
+NODE_STATUS_MESSAGES = {
+    "intake": "Parsing your query...",
+    "entity_resolution": "Resolving entities in knowledge graph...",
+    "triage": "Scoring entity novelty...",
+    "direct_kg": "Analyzing well-characterized entities...",
+    "cold_start": "Investigating sparse entities...",
+    "pathway_enrichment": "Finding shared biological pathways...",
+    "integration": "Detecting cross-type bridges...",
+    "temporal": "Applying temporal reasoning...",
+    "synthesis": "Generating discovery report...",
+}
