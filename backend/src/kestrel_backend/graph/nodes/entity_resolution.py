@@ -22,7 +22,7 @@ import re
 import time
 from typing import Any
 
-from ..kestrel_client import call_kestrel_tool
+from ...kestrel_client import call_kestrel_tool
 from ..state import DiscoveryState, EntityResolution
 
 logger = logging.getLogger(__name__)
