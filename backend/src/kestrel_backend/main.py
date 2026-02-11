@@ -26,12 +26,8 @@ def _get_pipeline_langfuse():
     if _pipeline_langfuse is not None:
         return _pipeline_langfuse
     settings = get_settings()
-    print(f"[LANGFUSE DEBUG] enabled={settings.langfuse_enabled}, public_key={settings.langfuse_public_key[:10] if settings.langfuse_public_key else None}...")
     if settings.langfuse_enabled and settings.langfuse_public_key and settings.langfuse_secret_key:
         _pipeline_langfuse = get_client()
-        print(f"[LANGFUSE DEBUG] client initialized: {_pipeline_langfuse}")
-    else:
-        print("[LANGFUSE DEBUG] Langfuse disabled or missing credentials")
     return _pipeline_langfuse
 
 
@@ -289,12 +285,13 @@ async def handle_pipeline_mode(
                     # Record timing for previous node (use explicit tracking, not set ordering)
                     if prev_node_name:
                         node_timings[prev_node_name] = time.time() - last_node_start
-                        # End previous node's Langfuse span
-                        if prev_node_name in node_spans:
-                            node_spans[prev_node_name].update(
+                        # End previous node's Langfuse span and remove from dict
+                        span = node_spans.pop(prev_node_name, None)
+                        if span:
+                            span.update(
                                 output={"duration_ms": int(node_timings[prev_node_name] * 1000)}
                             )
-                            node_spans[prev_node_name].end()
+                            span.end()
 
                     nodes_seen.add(node_name)
                     nodes_completed += 1
@@ -320,11 +317,13 @@ async def handle_pipeline_mode(
                 # Record final node timing (use explicit tracking, not set ordering)
                 if prev_node_name:
                     node_timings[prev_node_name] = time.time() - last_node_start
-                    if prev_node_name in node_spans:
-                        node_spans[prev_node_name].update(
+                    # End final node's Langfuse span and remove from dict
+                    span = node_spans.pop(prev_node_name, None)
+                    if span:
+                        span.update(
                             output={"duration_ms": int(node_timings[prev_node_name] * 1000)}
                         )
-                        node_spans[prev_node_name].end()
+                        span.end()
 
         # Send final result
         if final_state:
