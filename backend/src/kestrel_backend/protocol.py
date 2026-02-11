@@ -82,6 +82,11 @@ class PipelineCompleteMessage(BaseModel):
     hypotheses_count: int        # Number of hypotheses generated
     entities_resolved: int       # Number of entities resolved
     duration_ms: int             # Total execution time
+    # Token tracking fields for UI compatibility with TraceMessage
+    model: str = "claude-sonnet-4-20250514"  # Pipeline uses SDK default
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
 
 
 # Incoming messages (Client → Server)

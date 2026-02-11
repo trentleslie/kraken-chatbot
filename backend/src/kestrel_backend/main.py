@@ -359,6 +359,7 @@ async def handle_pipeline_mode(
                 hypotheses_count=len(hypotheses),
                 entities_resolved=len(resolved_entities),
                 duration_ms=duration_ms,
+                model="claude-sonnet-4-20250514",  # SDK default model
             )
             await websocket.send_text(msg.model_dump_json())
 

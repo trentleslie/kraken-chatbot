@@ -94,6 +94,17 @@ Prioritized next steps:
 5. Highlight FDR-significant entities if present
 6. Make the report ACTIONABLE - what should researchers do next?
 
+## Evidence Attribution (REQUIRED)
+
+Every factual claim in the report MUST be tagged with its evidence source:
+- [KG Evidence] — finding came from Kestrel knowledge graph query results (direct_findings, disease_associations, pathway data, edge counts)
+- [Model Knowledge] — claim is from general biomedical knowledge, not backed by KG query results in this analysis
+- [Inferred] — derived by combining KG evidence with model knowledge
+
+If a section has no KG-backed findings, state this explicitly: "No direct KG evidence was found for this connection. The following is based on [Model Knowledge]."
+
+Do NOT present model knowledge as if it were KG-derived. Scientific integrity requires honest attribution.
+
 Generate a clear, scientific report in markdown format.
 """
 

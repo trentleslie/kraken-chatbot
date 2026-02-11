@@ -35,14 +35,15 @@ logger = logging.getLogger(__name__)
 # Try to import Claude Agent SDK - graceful fallback if not available
 try:
     from claude_agent_sdk import query, ClaudeAgentOptions
-    from claude_agent_sdk.types import McpSSEServerConfig
+    from claude_agent_sdk.types import McpStdioServerConfig
     HAS_SDK = True
 except ImportError:
     HAS_SDK = False
 
 
-# Kestrel MCP server configuration
-KESTREL_URL = "https://kestrel.nathanpricelab.com/mcp"
+# Kestrel MCP command for stdio-based server (same as entity_resolution)
+KESTREL_COMMAND = "uvx"
+KESTREL_ARGS = ["mcp-client-kestrel"]
 
 
 TEMPORAL_PROMPT = """You are a temporal biomedical analyst specializing in longitudinal studies.
@@ -297,22 +298,29 @@ Classify each finding by its temporal relationship to disease progression.
 """
 
     try:
-        # Configure Kestrel MCP server (minimal tool use)
-        kestrel_config: McpSSEServerConfig = {
-            "type": "sse",
-            "url": KESTREL_URL,
-        }
+        # Configure Kestrel MCP server (stdio-based, same as entity_resolution)
+        kestrel_config = McpStdioServerConfig(
+            type="stdio",
+            command=KESTREL_COMMAND,
+            args=KESTREL_ARGS,
+        )
 
         options = ClaudeAgentOptions(
             allowed_tools=["mcp__kestrel__one_hop_query"],  # Minimal - just for validation
             mcp_servers={"kestrel": kestrel_config},
             max_turns=3,  # Lightweight reasoning-focused node
-            permission_mode="auto",
+            permission_mode="bypassPermissions",
         )
 
-        # Execute the query
-        result = await query(prompt=full_prompt, options=options)
-        result_text = result.response if hasattr(result, "response") else str(result)
+        # Execute the query using async generator pattern
+        result_text_parts = []
+        async for event in query(prompt=full_prompt, options=options):
+            if hasattr(event, 'content'):
+                for block in event.content:
+                    if hasattr(block, 'text'):
+                        result_text_parts.append(block.text)
+
+        result_text = "".join(result_text_parts)
 
         # Parse the result
         classifications, parse_errors = parse_temporal_result(result_text)

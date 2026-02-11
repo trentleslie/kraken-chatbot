@@ -152,6 +152,13 @@ async def count_edges_single(entity: EntityResolution) -> NoveltyScore:
                         result_text_parts.append(block.text)
 
         result_text = "".join(result_text_parts)
+
+        # Debug logging for triage edge counting
+        if not result_text:
+            logger.warning("Triage got empty result_text for %s", curie)
+        else:
+            logger.debug("Triage result for %s: %s", curie, result_text[:200] if len(result_text) > 200 else result_text)
+
         return parse_edge_count_result(curie, raw_name, result_text)
 
     except Exception as e:
