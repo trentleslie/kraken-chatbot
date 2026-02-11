@@ -262,6 +262,9 @@ class DiscoveryState(TypedDict, total=False):
     moderate_curies: list[str]  # 20-199 edges
     sparse_curies: list[str]  # 1-19 edges
     cold_start_curies: list[str]  # 0 edges
+    
+    # === Phase 3: Analysis Configuration ===
+    discovery_depth: Literal["standard", "deep"]  # "standard"=API-only, "deep"=API+LLM enrichment
 
     # === Phase 4: Analysis Results (parallel branches) ===
     # Both use operator.add to enable safe parallel writes from concurrent branches
