@@ -1,9 +1,15 @@
 """
 Triage & Route Node: Classify entities by KG connectivity for routing.
 
-This node performs two-phase operation:
-1. Novelty Scoring - Count edges for each resolved entity via one_hop_query
-2. Route Planning - Classify entities into buckets for conditional routing
+This node performs two-tier edge counting and classification:
+
+Tier 1 (API): Direct one_hop_query with mode="preview" (~100ms each)
+  - Fast, returns results_count which is the edge count
+  - Runs all entities in parallel
+
+Tier 2 (LLM): Falls back to Claude Agent SDK for failures
+  - Handles cases where API returns errors
+  - More expensive but can retry with different parameters
 
 Classification thresholds:
 - cold_start: 0 edges (no KG presence)
@@ -22,6 +28,7 @@ import re
 import time
 from typing import Any
 
+from ...kestrel_client import call_kestrel_tool
 from ..state import DiscoveryState, NoveltyScore, EntityResolution
 
 logger = logging.getLogger(__name__)
@@ -62,6 +69,71 @@ BATCH_SIZE = 6
 THRESHOLD_WELL_CHARACTERIZED = 200
 THRESHOLD_MODERATE = 20
 THRESHOLD_SPARSE = 1
+
+
+async def count_edges_via_api(entity: EntityResolution) -> NoveltyScore | None:
+    """
+    Tier 1: Count edges via direct Kestrel API call.
+
+    Uses one_hop_query with mode="preview" which returns results_count (edge count).
+    Returns None if API fails (triggering Tier 2 fallback).
+    """
+    curie = entity.curie
+    raw_name = entity.raw_name
+
+    # Skip entities that failed resolution
+    if not curie or entity.method == "failed":
+        return NoveltyScore(
+            curie=curie or raw_name,
+            raw_name=raw_name,
+            edge_count=0,
+            classification="cold_start",
+        )
+
+    try:
+        # Call one_hop_query with preview mode - returns counts instead of full data
+        result = await call_kestrel_tool("one_hop_query", {
+            "start_node_ids": curie,
+            "mode": "preview",
+            "direction": "both",
+            "limit": 10000,  # High limit to get accurate count
+        })
+
+        is_error = result.get("isError", False)
+        content = result.get("content", [])
+
+        if is_error or not content:
+            logger.debug("Tier 1 triage '%s': API error or no content", curie)
+            return None
+
+        # Parse response
+        text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
+
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            logger.debug("Tier 1 triage '%s': Could not parse JSON", curie)
+            return None
+
+        # results_count is the edge count
+        edge_count = int(data.get("results_count", 0))
+        classification = classify_by_edge_count(edge_count)
+
+        logger.info(
+            "Tier 1 triage '%s': edges=%d, classification=%s",
+            curie, edge_count, classification
+        )
+
+        return NoveltyScore(
+            curie=curie,
+            raw_name=raw_name,
+            edge_count=edge_count,
+            classification=classification,
+        )
+
+    except Exception as e:
+        logger.warning("Tier 1 triage '%s': Exception - %s", curie, str(e))
+        return None
 
 
 def classify_by_edge_count(edge_count: int) -> str:
@@ -183,10 +255,10 @@ def chunk(items: list, size: int) -> list[list]:
 
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
-    Triage resolved entities by KG connectivity.
+    Triage resolved entities by KG connectivity using two-tier approach.
 
-    Phase 1: Count edges for each resolved entity (parallel batches)
-    Phase 2: Classify into routing buckets
+    Tier 1 (API): Direct one_hop_query with mode="preview" for all entities
+    Tier 2 (LLM): Falls back to Claude Agent SDK for any failures
 
     Returns:
         novelty_scores: List of NoveltyScore objects
@@ -204,44 +276,113 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     valid_entities = [e for e in resolved if e.curie and e.method != "failed"]
 
     if not valid_entities:
-        # No valid entities - everything goes to cold_start or synthesis skips
+        # No valid entities - everything goes to cold_start
         failed_names = [e.raw_name for e in resolved if e.method == "failed"]
         return {
             "novelty_scores": [],
             "well_characterized_curies": [],
             "moderate_curies": [],
             "sparse_curies": [],
-            "cold_start_curies": failed_names,  # Failed resolutions as cold-start
+            "cold_start_curies": failed_names,
             "errors": [],
         }
 
-    all_scores: list[NoveltyScore] = []
+    all_scores: list[NoveltyScore | None] = [None] * len(valid_entities)
     errors: list[str] = []
 
-    # Process in batches for controlled parallelism
-    for batch in chunk(valid_entities, BATCH_SIZE):
-        batch_results = await asyncio.gather(
-            *[count_edges_single(e) for e in batch],
-            return_exceptions=True,
+    # ========== TIER 1: API Edge Counting ==========
+    tier1_start = time.time()
+    logger.info("Tier 1 (API): Counting edges for %d entities", len(valid_entities))
+
+    # Run all API calls in parallel
+    tier1_results = await asyncio.gather(
+        *[count_edges_via_api(e) for e in valid_entities],
+        return_exceptions=True,
+    )
+
+    tier1_success = 0
+    tier1_failed_indices = []
+
+    for i, (entity, result) in enumerate(zip(valid_entities, tier1_results)):
+        if isinstance(result, Exception):
+            logger.debug("Tier 1 triage '%s': Exception - %s", entity.curie, str(result))
+            tier1_failed_indices.append(i)
+        elif result is not None:
+            all_scores[i] = result
+            tier1_success += 1
+        else:
+            tier1_failed_indices.append(i)
+
+    tier1_duration = time.time() - tier1_start
+    logger.info(
+        "Tier 1 (API) counted edges for %d/%d entities in %.1fs",
+        tier1_success, len(valid_entities), tier1_duration
+    )
+
+    # ========== TIER 2: LLM Edge Counting ==========
+    if tier1_failed_indices and HAS_SDK:
+        tier2_start = time.time()
+        failed_entities = [valid_entities[i] for i in tier1_failed_indices]
+        logger.info(
+            "Tier 2 (LLM): Processing %d entities that failed Tier 1",
+            len(failed_entities)
         )
 
-        for entity, result in zip(batch, batch_results):
+        tier2_results = []
+        for batch in chunk(failed_entities, BATCH_SIZE):
+            batch_results = await asyncio.gather(
+                *[count_edges_single(e) for e in batch],
+                return_exceptions=True,
+            )
+            tier2_results.extend(batch_results)
+
+        # Map results back
+        for idx, result in zip(tier1_failed_indices, tier2_results):
             if isinstance(result, Exception):
-                errors.append(f"Edge counting failed for {entity.curie}: {str(result)}")
-                all_scores.append(NoveltyScore(
-                    curie=entity.curie or entity.raw_name,
-                    raw_name=entity.raw_name,
+                errors.append(f"Edge counting failed for {valid_entities[idx].curie}: {str(result)}")
+                all_scores[idx] = NoveltyScore(
+                    curie=valid_entities[idx].curie or valid_entities[idx].raw_name,
+                    raw_name=valid_entities[idx].raw_name,
                     edge_count=0,
                     classification="cold_start",
-                ))
+                )
             else:
-                all_scores.append(result)
+                all_scores[idx] = result
+
+        tier2_duration = time.time() - tier2_start
+        tier2_success = sum(1 for i in tier1_failed_indices if all_scores[i] and all_scores[i].edge_count > 0)
+        logger.info(
+            "Tier 2 (LLM) counted edges for %d/%d entities in %.1fs",
+            tier2_success, len(tier1_failed_indices), tier2_duration
+        )
+    elif tier1_failed_indices:
+        # SDK not available - mark remaining as cold_start
+        for idx in tier1_failed_indices:
+            all_scores[idx] = NoveltyScore(
+                curie=valid_entities[idx].curie or valid_entities[idx].raw_name,
+                raw_name=valid_entities[idx].raw_name,
+                edge_count=0,
+                classification="cold_start",
+            )
+
+    # Ensure no None values
+    final_scores = []
+    for i, s in enumerate(all_scores):
+        if s is None:
+            final_scores.append(NoveltyScore(
+                curie=valid_entities[i].curie or valid_entities[i].raw_name,
+                raw_name=valid_entities[i].raw_name,
+                edge_count=0,
+                classification="cold_start",
+            ))
+        else:
+            final_scores.append(s)
 
     # Classify into routing buckets
-    well_characterized = [s.curie for s in all_scores if s.classification == "well_characterized"]
-    moderate = [s.curie for s in all_scores if s.classification == "moderate"]
-    sparse = [s.curie for s in all_scores if s.classification == "sparse"]
-    cold_start = [s.curie for s in all_scores if s.classification == "cold_start"]
+    well_characterized = [s.curie for s in final_scores if s.classification == "well_characterized"]
+    moderate = [s.curie for s in final_scores if s.classification == "moderate"]
+    sparse = [s.curie for s in final_scores if s.classification == "sparse"]
+    cold_start = [s.curie for s in final_scores if s.classification == "cold_start"]
 
     # Add failed resolutions to cold_start bucket
     failed_names = [e.raw_name for e in resolved if e.method == "failed"]
@@ -249,12 +390,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     duration = time.time() - start
     logger.info(
-        "Completed triage in %.1fs — well_char=%d, moderate=%d, sparse=%d, cold_start=%d",
-        duration, len(well_characterized), len(moderate), len(sparse), len(cold_start)
+        "Completed triage in %.1fs — well_char=%d, moderate=%d, sparse=%d, cold_start=%d (tier1=%d, tier2=%d)",
+        duration, len(well_characterized), len(moderate), len(sparse), len(cold_start),
+        tier1_success, len(valid_entities) - tier1_success
     )
 
     return {
-        "novelty_scores": all_scores,
+        "novelty_scores": final_scores,
         "well_characterized_curies": well_characterized,
         "moderate_curies": moderate,
         "sparse_curies": sparse,
