@@ -1,23 +1,28 @@
 """
 Direct KG Analysis Node: Analyze well-characterized entities using knowledge graph traversal.
 
-This node queries the Kestrel KG for entities with good coverage (well_characterized or moderate)
-to extract:
-- Disease associations via one_hop_query filtered by biolink:Disease
-- Pathway memberships via one_hop_query filtered by biolink:Pathway / biolink:BiologicalProcess
-- Protein interactions for genes/proteins
+This node uses a two-tier architecture for optimal performance:
+- Tier 1 (API-first): Direct Kestrel API calls with structured JSON parsing (~1-2s per entity)
+- Tier 2 (LLM fallback): Claude SDK for failed API calls or complex reasoning
 
-Hub bias detection flags high-degree neighbors (>1000 edges) that could create
+Extracts:
+- Disease associations via one_hop_query filtered by biolink:Disease
+- Pathway memberships via one_hop_query filtered by biolink:BiologicalProcess
+- Gene interactions for genes/proteins
+
+Hub bias detection flags high-degree neighbors (>5000 edges) that could create
 spurious associations.
 """
 
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from typing import Any
 
+from ...kestrel_client import call_kestrel_tool
 from ..state import (
     DiscoveryState, Finding, DiseaseAssociation, PathwayMembership, NoveltyScore
 )
@@ -33,17 +38,33 @@ except ImportError:
     HAS_SDK = False
 
 
-# Kestrel MCP command for stdio-based server (same as entity_resolution)
+# =============================================================================
+# Configuration Constants
+# =============================================================================
+
+# Discovery depth configuration
+# "standard" = Tier 1 API only (fast, ~3s for 8 entities)
+# "deep" = Tier 2 LLM for well_characterized entities (slow, ~20min, but finds novel associations)
+DISCOVERY_DEPTH = os.getenv("DIRECT_KG_DEPTH", "standard")
+
+# Tier 1 API settings
+SLIM_LIMIT = 50   # edges per category filter in standard mode
+DEEP_LIMIT = 200  # edges per category filter in deep mode (still API, no LLM)
+
+# Hub detection threshold (uses edge_count from triage's novelty_scores)
+HUB_THRESHOLD = 5000  # Entities with >5000 edges are flagged as hubs
+
+# Kestrel MCP command for stdio-based server (used by Tier 2)
 KESTREL_COMMAND = "uvx"
 KESTREL_ARGS = ["mcp-client-kestrel"]
 
-# Semaphore to limit concurrent SDK calls (increased from 1 to 6 for parallelism)
+# Semaphore to limit concurrent SDK calls (Tier 2 only)
 SDK_SEMAPHORE = asyncio.Semaphore(6)
 
 # Batch size for parallel analysis
 BATCH_SIZE = 6
 
-# System prompt for direct KG analysis
+# System prompt for direct KG analysis (Tier 2 LLM fallback)
 DIRECT_KG_PROMPT = """You are a biomedical knowledge graph analyst. For the given entity (CURIE),
 use one_hop_query to retrieve and analyze its relationships.
 
@@ -78,6 +99,285 @@ If the query returns no results or fails, return:
 {"diseases": [], "pathways": [], "interactions": [], "hub_flags": []}
 """
 
+
+# =============================================================================
+# Tier 1: API-First Analysis (Fast Path)
+# =============================================================================
+
+def parse_disease_edges(
+    curie: str,
+    raw_name: str,
+    result: dict[str, Any]
+) -> tuple[list[DiseaseAssociation], list[Finding], list[str]]:
+    """
+    Parse one_hop_query response into DiseaseAssociation objects and findings.
+
+    Response structure (from actual API test):
+    - content[0]["text"] contains JSON string with:
+      - results[]: list of {end_node_id, edges: [[subj, pred, obj, qual, source, supporting, ...]], score}
+      - nodes: {curie: {name, categories, ...}}
+    - Edge indices per edge_schema: [0]=subject, [1]=predicate, [4]=primary_knowledge_source, [5]=supporting_sources
+
+    Returns: (disease_associations, findings, hub_flags)
+    """
+    diseases: list[DiseaseAssociation] = []
+    findings: list[Finding] = []
+    hub_flags: list[str] = []
+
+    if result.get("isError"):
+        return diseases, findings, hub_flags
+
+    content = result.get("content", [])
+    if not content:
+        return diseases, findings, hub_flags
+
+    try:
+        text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
+        data = json.loads(text)
+    except (json.JSONDecodeError, IndexError, KeyError):
+        return diseases, findings, hub_flags
+
+    # Get nodes dict for name lookup
+    nodes = data.get("nodes", {})
+
+    # Process each result row
+    for row in data.get("results", []):
+        try:
+            end_node_id = row.get("end_node_id", "")
+            # Get name from nodes dict, fallback to CURIE
+            end_node_info = nodes.get(end_node_id, {})
+            end_node_name = end_node_info.get("name", end_node_id)
+
+            # Extract edge info - take first edge for this end_node
+            edges = row.get("edges", [])
+            if not edges:
+                continue
+
+            edge = edges[0]  # Use first edge
+            predicate = edge[1] if len(edge) > 1 else "biolink:related_to"
+            source = edge[4] if len(edge) > 4 else "unknown"
+            supporting = edge[5] if len(edge) > 5 else None
+
+            # Determine evidence type from source
+            evidence_type = "curated"
+            if source and "gwas" in source.lower():
+                evidence_type = "gwas"
+            elif source and ("text" in source.lower() or "pubmed" in source.lower()):
+                evidence_type = "text_mined"
+            elif source and "predict" in source.lower():
+                evidence_type = "predicted"
+
+            # Extract PMIDs from supporting_sources if available
+            pmids = []
+            if supporting and isinstance(supporting, list):
+                for s in supporting:
+                    if isinstance(s, str) and s.startswith("PMID:"):
+                        pmids.append(s)
+
+            diseases.append(DiseaseAssociation(
+                entity_curie=curie,
+                disease_curie=end_node_id,
+                disease_name=end_node_name,
+                predicate=predicate,
+                source=source or "unknown",
+                pmids=pmids,
+                evidence_type=evidence_type,
+            ))
+
+            findings.append(Finding(
+                entity=curie,
+                claim=f"{raw_name} is associated with {end_node_name} via {predicate}",
+                tier=1,
+                predicate=predicate,
+                source="direct_kg",
+                pmids=pmids,
+                confidence="high" if pmids else "moderate",
+            ))
+        except Exception:
+            continue
+
+    # Hub detection: use edge_count from novelty_scores (passed separately), not from this response
+    return diseases, findings, hub_flags
+
+
+def parse_pathway_edges(
+    curie: str,
+    raw_name: str,
+    result: dict[str, Any]
+) -> tuple[list[PathwayMembership], list[Finding]]:
+    """Parse one_hop_query response into PathwayMembership objects."""
+    pathways: list[PathwayMembership] = []
+    findings: list[Finding] = []
+
+    if result.get("isError"):
+        return pathways, findings
+
+    content = result.get("content", [])
+    if not content:
+        return pathways, findings
+
+    try:
+        text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
+        data = json.loads(text)
+    except (json.JSONDecodeError, IndexError, KeyError):
+        return pathways, findings
+
+    # Get nodes dict for name lookup
+    nodes = data.get("nodes", {})
+
+    for row in data.get("results", []):
+        try:
+            end_node_id = row.get("end_node_id", "")
+            end_node_info = nodes.get(end_node_id, {})
+            end_node_name = end_node_info.get("name", end_node_id)
+            edges = row.get("edges", [])
+
+            if not edges:
+                continue
+
+            edge = edges[0]
+            predicate = edge[1] if len(edge) > 1 else "biolink:participates_in"
+            source = edge[4] if len(edge) > 4 else "unknown"
+
+            pathways.append(PathwayMembership(
+                entity_curie=curie,
+                pathway_curie=end_node_id,
+                pathway_name=end_node_name,
+                predicate=predicate,
+                source=source or "unknown",
+            ))
+
+            findings.append(Finding(
+                entity=curie,
+                claim=f"{raw_name} participates in {end_node_name}",
+                tier=1,
+                predicate=predicate,
+                source="direct_kg",
+                confidence="high",
+            ))
+        except Exception:
+            continue
+
+    return pathways, findings
+
+
+def parse_gene_edges(
+    curie: str,
+    raw_name: str,
+    result: dict[str, Any]
+) -> list[Finding]:
+    """Parse one_hop_query response into Finding objects for gene interactions."""
+    findings: list[Finding] = []
+
+    if result.get("isError"):
+        return findings
+
+    content = result.get("content", [])
+    if not content:
+        return findings
+
+    try:
+        text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
+        data = json.loads(text)
+    except (json.JSONDecodeError, IndexError, KeyError):
+        return findings
+
+    # Get nodes dict for name lookup
+    nodes = data.get("nodes", {})
+
+    for row in data.get("results", []):
+        try:
+            end_node_id = row.get("end_node_id", "")
+            end_node_info = nodes.get(end_node_id, {})
+            end_node_name = end_node_info.get("name", end_node_id)
+            edges = row.get("edges", [])
+
+            if not edges:
+                continue
+
+            edge = edges[0]
+            predicate = edge[1] if len(edge) > 1 else "biolink:interacts_with"
+
+            findings.append(Finding(
+                entity=curie,
+                claim=f"{raw_name} interacts with {end_node_name} ({end_node_id})",
+                tier=2,
+                predicate=predicate,
+                source="direct_kg",
+                confidence="moderate",
+            ))
+        except Exception:
+            continue
+
+    return findings
+
+
+async def analyze_via_api(
+    curie: str,
+    raw_name: str,
+    limit: int = SLIM_LIMIT
+) -> tuple[list[DiseaseAssociation], list[PathwayMembership], list[Finding], list[str], list[str]] | None:
+    """
+    Tier 1: Analyze entity via direct Kestrel API calls.
+
+    Makes 3 parallel filtered one_hop_query calls (Disease, BiologicalProcess, Gene)
+    and parses the structured JSON responses directly.
+
+    Args:
+        curie: Entity CURIE to analyze
+        raw_name: Human-readable name for findings
+        limit: Max edges per category (SLIM_LIMIT for standard, DEEP_LIMIT for deep mode)
+
+    Returns:
+        Tuple of (diseases, pathways, findings, hub_flags, errors) or None if API fails.
+    """
+    try:
+        # Make 3 parallel filtered queries
+        disease_task = call_kestrel_tool("one_hop_query", {
+            "start_node_ids": curie,
+            "end_category_filter": "biolink:Disease",
+            "mode": "slim",
+            "limit": limit,
+        })
+        pathway_task = call_kestrel_tool("one_hop_query", {
+            "start_node_ids": curie,
+            "end_category_filter": "biolink:BiologicalProcess",
+            "mode": "slim",
+            "limit": limit,
+        })
+        gene_task = call_kestrel_tool("one_hop_query", {
+            "start_node_ids": curie,
+            "end_category_filter": "biolink:Gene",
+            "mode": "slim",
+            "limit": limit,
+        })
+
+        disease_result, pathway_result, gene_result = await asyncio.gather(
+            disease_task, pathway_task, gene_task
+        )
+
+        # Parse results and build structured objects
+        diseases, disease_findings, hub_flags = parse_disease_edges(curie, raw_name, disease_result)
+        pathways, pathway_findings = parse_pathway_edges(curie, raw_name, pathway_result)
+        gene_findings = parse_gene_edges(curie, raw_name, gene_result)
+
+        all_findings = disease_findings + pathway_findings + gene_findings
+
+        logger.info(
+            "Tier 1 direct_kg '%s': diseases=%d, pathways=%d, genes=%d",
+            curie, len(diseases), len(pathways), len(gene_findings)
+        )
+
+        return diseases, pathways, all_findings, hub_flags, []
+
+    except Exception as e:
+        logger.warning("Tier 1 direct_kg '%s': Exception - %s", curie, str(e))
+        return None
+
+
+# =============================================================================
+# Tier 2: LLM Fallback (for API failures or complex reasoning)
+# =============================================================================
 
 def parse_direct_kg_result(
     curie: str,
@@ -217,7 +517,9 @@ async def analyze_single_entity(
     raw_name: str
 ) -> tuple[list[DiseaseAssociation], list[PathwayMembership], list[Finding], list[str], list[str]]:
     """
-    Analyze a single well-characterized entity using Claude Agent SDK.
+    Tier 2: Analyze a single entity using Claude Agent SDK with LLM reasoning.
+
+    This is the fallback path when Tier 1 API calls fail or for deep analysis.
 
     Returns:
         tuple of (diseases, pathways, findings, hub_flags, errors)
@@ -269,10 +571,16 @@ async def analyze_single_entity(
             result_text = "".join(result_text_parts)
         diseases, pathways, findings, hub_flags = parse_direct_kg_result(curie, raw_name, result_text)
 
+        logger.info(
+            "Tier 2 direct_kg '%s': diseases=%d, pathways=%d, findings=%d",
+            curie, len(diseases), len(pathways), len(findings)
+        )
+
         return diseases, pathways, findings, hub_flags, []
 
     except Exception as e:
-        error_msg = f"Direct KG analysis failed for {curie}: {str(e)}"
+        error_msg = f"Tier 2 direct_kg failed for {curie}: {str(e)}"
+        logger.error(error_msg)
         return (
             [],
             [],
@@ -287,6 +595,10 @@ async def analyze_single_entity(
             [error_msg],
         )
 
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
 
 def chunk(items: list, size: int) -> list[list]:
     """Split a list into chunks of specified size."""
@@ -309,12 +621,16 @@ def get_raw_name_for_curie(curie: str, novelty_scores: list[NoveltyScore], resol
     return curie
 
 
+# =============================================================================
+# Main Run Function
+# =============================================================================
+
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
-    Analyze entities with strong KG representation.
+    Two-tier analysis of well-characterized entities with configurable depth.
 
-    Queries the Kestrel KG for disease associations, pathway memberships,
-    and protein interactions. Flags high-degree hub nodes.
+    Tier 1 (API-first): Direct Kestrel API calls with structured JSON parsing
+    Tier 2 (LLM fallback): Claude SDK for failed API calls or deep analysis mode
 
     Receives: well_characterized_curies + moderate_curies from triage
     Returns: direct_findings, disease_associations, pathway_memberships, hub_flags, errors
@@ -323,7 +639,19 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     moderate = state.get("moderate_curies", [])
     curies = well_char + moderate
 
-    logger.info("Starting direct_kg with %d entities", len(curies))
+    # Get discovery depth from state or use default from environment
+    depth = state.get("discovery_depth", DISCOVERY_DEPTH)
+
+    # Configure based on depth mode
+    if depth == "deep":
+        limit = DEEP_LIMIT
+        use_llm_for_well_char = True
+    else:
+        limit = SLIM_LIMIT
+        use_llm_for_well_char = False
+
+    logger.info("Starting direct_kg with %d entities (depth=%s, limit=%d)",
+                len(curies), depth, limit)
     start = time.time()
 
     if not curies:
@@ -340,44 +668,109 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     novelty_scores = state.get("novelty_scores", [])
     resolved_entities = state.get("resolved_entities", [])
 
+    # Prepare result containers with indices
+    all_results: list[tuple | None] = [None] * len(curies)
+    errors: list[str] = []
+
+    # ========== TIER 1: API Analysis ==========
+    tier1_start = time.time()
+    logger.info("Tier 1 (API): Analyzing %d entities", len(curies))
+
+    tier1_tasks = []
+    for curie in curies:
+        raw_name = get_raw_name_for_curie(curie, novelty_scores, resolved_entities)
+        tier1_tasks.append(analyze_via_api(curie, raw_name, limit=limit))
+
+    tier1_results = await asyncio.gather(*tier1_tasks, return_exceptions=True)
+
+    tier1_success = 0
+    tier2_needed = []
+
+    for i, result in enumerate(tier1_results):
+        if isinstance(result, Exception):
+            logger.warning("Tier 1 exception for %s: %s", curies[i], str(result))
+            tier2_needed.append(i)  # API exception
+        elif result is None:
+            tier2_needed.append(i)  # API failed
+        else:
+            all_results[i] = result
+            tier1_success += 1
+            # In deep mode: also use LLM for well_characterized entities
+            if use_llm_for_well_char and curies[i] in well_char and i not in tier2_needed:
+                tier2_needed.append(i)  # LLM enrichment for novel associations
+
+    tier1_duration = time.time() - tier1_start
+    logger.info("Tier 1 (API) analyzed %d/%d entities in %.1fs",
+                tier1_success, len(curies), tier1_duration)
+
+    # ========== TIER 2: LLM Fallback / Enrichment ==========
+    if tier2_needed and HAS_SDK:
+        tier2_start = time.time()
+        tier2_reason = "failed Tier 1" if not use_llm_for_well_char else "failed Tier 1 + well_characterized enrichment"
+        logger.info("Tier 2 (LLM): Processing %d entities (%s)",
+                    len(tier2_needed), tier2_reason)
+
+        tier2_curies = [curies[i] for i in tier2_needed]
+        tier2_indices = tier2_needed.copy()
+
+        for batch in chunk(tier2_curies, BATCH_SIZE):
+            batch_tasks = []
+            for curie in batch:
+                raw_name = get_raw_name_for_curie(curie, novelty_scores, resolved_entities)
+                batch_tasks.append(analyze_single_entity(curie, raw_name))
+
+            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+
+            batch_indices = tier2_indices[:len(batch)]
+            tier2_indices = tier2_indices[len(batch):]
+
+            for idx, result in zip(batch_indices, batch_results):
+                if isinstance(result, Exception):
+                    errors.append(f"Tier 2 failed for {curies[idx]}: {str(result)}")
+                elif result is not None:
+                    # In deep mode, merge with existing API results
+                    if all_results[idx] is not None:
+                        # Merge: combine diseases, pathways, findings from both tiers
+                        existing = all_results[idx]
+                        diseases, pathways, findings, hub_flags, errs = result
+                        all_results[idx] = (
+                            existing[0] + diseases,
+                            existing[1] + pathways,
+                            existing[2] + findings,
+                            existing[3] + hub_flags,
+                            existing[4] + errs,
+                        )
+                    else:
+                        all_results[idx] = result
+
+        tier2_duration = time.time() - tier2_start
+        logger.info("Tier 2 (LLM) completed in %.1fs", tier2_duration)
+
+    # Aggregate results
     all_diseases: list[DiseaseAssociation] = []
     all_pathways: list[PathwayMembership] = []
     all_findings: list[Finding] = []
     all_hub_flags: list[str] = []
-    errors: list[str] = []
 
-    # Process in batches for controlled parallelism
-    for batch in chunk(curies, BATCH_SIZE):
-        batch_tasks = []
-        for curie in batch:
-            raw_name = get_raw_name_for_curie(curie, novelty_scores, resolved_entities)
-            batch_tasks.append(analyze_single_entity(curie, raw_name))
+    for result in all_results:
+        if result:
+            diseases, pathways, findings, hub_flags, errs = result
+            all_diseases.extend(diseases)
+            all_pathways.extend(pathways)
+            all_findings.extend(findings)
+            all_hub_flags.extend(hub_flags)
+            errors.extend(errs)
 
-        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-
-        for curie, result in zip(batch, batch_results):
-            if isinstance(result, Exception):
-                errors.append(f"Exception analyzing {curie}: {str(result)}")
-                all_findings.append(Finding(
-                    entity=curie,
-                    claim=f"Analysis exception for {curie}",
-                    tier=1,
-                    source="direct_kg",
-                    confidence="low",
-                ))
-            else:
-                diseases, pathways, findings, hub_flags, errs = result
-                all_diseases.extend(diseases)
-                all_pathways.extend(pathways)
-                all_findings.extend(findings)
-                all_hub_flags.extend(hub_flags)
-                errors.extend(errs)
+    # Flag hubs based on novelty_scores edge_count
+    for score in novelty_scores:
+        if score.edge_count > HUB_THRESHOLD:
+            if score.curie not in all_hub_flags:
+                all_hub_flags.append(score.curie)
+                logger.info("Flagged hub entity: %s (edges=%d)", score.curie, score.edge_count)
 
     duration = time.time() - start
-    logger.info(
-        "Completed direct_kg in %.1fs — findings=%d, diseases=%d, pathways=%d",
-        duration, len(all_findings), len(all_diseases), len(all_pathways)
-    )
+    logger.info("Completed direct_kg in %.1fs — findings=%d, diseases=%d, pathways=%d (depth=%s)",
+                duration, len(all_findings), len(all_diseases), len(all_pathways), depth)
 
     return {
         "direct_findings": all_findings,
