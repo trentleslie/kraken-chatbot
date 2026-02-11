@@ -245,7 +245,7 @@ Find shared neighbors and biological themes for these {len(valid_entities)} enti
         )
 
         # Execute the query
-        result = await query(full_prompt, options=options)
+        result = await query(prompt=full_prompt, options=options)
         result_text = result.response if hasattr(result, "response") else str(result)
 
         # Parse the result

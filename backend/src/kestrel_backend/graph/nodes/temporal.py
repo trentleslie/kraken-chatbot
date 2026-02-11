@@ -311,7 +311,7 @@ Classify each finding by its temporal relationship to disease progression.
         )
 
         # Execute the query
-        result = await query(full_prompt, options=options)
+        result = await query(prompt=full_prompt, options=options)
         result_text = result.response if hasattr(result, "response") else str(result)
 
         # Parse the result

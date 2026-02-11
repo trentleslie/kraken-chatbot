@@ -29,14 +29,15 @@ logger = logging.getLogger(__name__)
 # Try to import Claude Agent SDK - graceful fallback if not available
 try:
     from claude_agent_sdk import query, ClaudeAgentOptions
-    from claude_agent_sdk.types import McpSSEServerConfig
+    from claude_agent_sdk.types import McpStdioServerConfig
     HAS_SDK = True
 except ImportError:
     HAS_SDK = False
 
 
-# Kestrel MCP server configuration
-KESTREL_URL = "https://kestrel.nathanpricelab.com/mcp"
+# Kestrel MCP command for stdio-based server (same as entity_resolution)
+KESTREL_COMMAND = "uvx"
+KESTREL_ARGS = ["mcp-client-kestrel"]
 
 # Concise prompt for edge counting
 EDGE_COUNT_PROMPT = """You are a knowledge graph edge counter.
@@ -126,9 +127,10 @@ async def count_edges_single(entity: EntityResolution) -> NoveltyScore:
         )
 
     try:
-        kestrel_config = McpSSEServerConfig(
-            type="sse",
-            url=KESTREL_URL,
+        kestrel_config = McpStdioServerConfig(
+            type="stdio",
+            command=KESTREL_COMMAND,
+            args=KESTREL_ARGS,
         )
 
         options = ClaudeAgentOptions(
@@ -153,6 +155,7 @@ async def count_edges_single(entity: EntityResolution) -> NoveltyScore:
         return parse_edge_count_result(curie, raw_name, result_text)
 
     except Exception as e:
+        logger.warning("Edge counting failed for %s: %s", curie, str(e))
         return NoveltyScore(
             curie=curie,
             raw_name=raw_name,

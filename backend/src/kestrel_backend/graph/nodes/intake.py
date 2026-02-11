@@ -74,17 +74,6 @@ def extract_entities(query: str) -> list[str]:
     """
     entities: list[str] = []
 
-    # NEW: Extract parenthetical synonyms first (before other processing)
-    # Pattern: "hexadecanedioate (C16-DC)" → captures both names
-    paren_pattern = r"(\b[A-Za-z][\w\-]+)\s*\(([A-Z0-9][\w\-]*)\)"
-    for match in re.finditer(paren_pattern, query):
-        main_name = match.group(1).rstrip("*").strip()
-        abbreviation = match.group(2).rstrip("*").strip()
-        if main_name and len(main_name) > 1:
-            entities.append(main_name)
-        if abbreviation and len(abbreviation) > 1:
-            entities.append(abbreviation)
-
     # First, try to find explicit list patterns
     # Pattern 1: Comma-separated (most common)
     if "," in query:
@@ -103,11 +92,21 @@ def extract_entities(query: str) -> list[str]:
 
         # If no pattern matched but commas exist, try extracting from comma-separated list
         if not entities:
-            # Look for patterns like "X, Y, and Z"
-            comma_list_match = re.search(r"([A-Za-z]+(?:,\s*[A-Za-z]+)+(?:,?\s*and\s+[A-Za-z]+)?)", query)
-            if comma_list_match:
-                items = re.split(r",\s*(?:and\s+)?|\s+and\s+", comma_list_match.group(1))
-                entities.extend(item.strip() for item in items if item.strip() and len(item.strip()) > 2)
+            # Check if query is primarily a raw comma-separated list (no question words at start)
+            query_stripped = query.strip()
+            if not re.match(r"^(what|how|why|where|which|who|when|can|does|is|are)\b", query_stripped, re.IGNORECASE):
+                # Direct split on commas, handling "and" as well
+                items = re.split(r",\s*(?:and\s+)?|\s+and\s+", query_stripped)
+                for item in items:
+                    cleaned = item.strip().rstrip("*")
+                    if cleaned and len(cleaned) > 1:
+                        entities.append(cleaned)
+            else:
+                # Fall back to old pattern for question-like queries
+                comma_list_match = re.search(r"([A-Za-z]+(?:,\s*[A-Za-z]+)+(?:,?\s*and\s+[A-Za-z]+)?)", query)
+                if comma_list_match:
+                    items = re.split(r",\s*(?:and\s+)?|\s+and\s+", comma_list_match.group(1))
+                    entities.extend(item.strip() for item in items if item.strip() and len(item.strip()) > 2)
 
         # If still empty, try splitting the whole query
         if not entities:
@@ -138,11 +137,22 @@ def extract_entities(query: str) -> list[str]:
         entities.extend(gene_pattern + chem_pattern)
 
     # Clean up: strip asterisks and trailing punctuation
+    # Also extract parenthetical abbreviations as separate entities
     cleaned_entities = []
     for e in entities:
         cleaned = e.rstrip("*").strip()
         if cleaned and len(cleaned) > 1:
-            cleaned_entities.append(cleaned)
+            # Check for parenthetical abbreviation: "hexadecanedioate (C16-DC)"
+            paren_match = re.match(r"(.+?)\s*\(([^)]+)\)\s*\*?$", cleaned)
+            if paren_match:
+                main_name = paren_match.group(1).strip()
+                abbreviation = paren_match.group(2).strip()
+                if main_name and len(main_name) > 1:
+                    cleaned_entities.append(main_name)
+                if abbreviation and len(abbreviation) > 1:
+                    cleaned_entities.append(abbreviation)
+            else:
+                cleaned_entities.append(cleaned)
 
     # Deduplicate while preserving order
     seen = set()

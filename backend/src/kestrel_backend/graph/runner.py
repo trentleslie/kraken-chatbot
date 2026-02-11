@@ -70,31 +70,54 @@ async def stream_discovery(
         "conversation_history": conversation_history or [],
     }
 
-    # Use astream_log for detailed event streaming
-    async for event in graph.astream_log(initial_state):
-        # Transform LangGraph events into our simplified format
-        ops = event.ops if hasattr(event, 'ops') else []
-        for op in ops:
-            if op.get("path", "").startswith("/logs/"):
-                # Extract node name from path
-                path_parts = op["path"].split("/")
-                if len(path_parts) >= 3:
-                    node_name = path_parts[2]
+    final_state = None
+    prev_keys: set[str] = set()
 
-                    yield {
-                        "type": "node_event",
-                        "node": node_name,
-                        "op": op.get("op"),
-                        "data": op.get("value"),
-                    }
+    # Use astream with stream_mode="values" for full state snapshots
+    async for state in graph.astream(initial_state, stream_mode="values"):
+        final_state = state  # Each yield is the full accumulated state
 
-            elif op.get("path") == "/final_output":
-                duration = time.time() - start_time
-                logger.info("Stream complete in %.1fs", duration)
-                yield {
-                    "type": "complete",
-                    "data": op.get("value"),
-                }
+        # Detect which node just ran by checking for new keys
+        current_keys = set(state.keys())
+        new_keys = current_keys - prev_keys
+        prev_keys = current_keys
+
+        # Infer node name from new keys added to state
+        node_name = None
+        if "raw_entities" in new_keys:
+            node_name = "intake"
+        elif "resolved_entities" in new_keys:
+            node_name = "entity_resolution"
+        elif "novelty_scores" in new_keys:
+            node_name = "triage"
+        elif "direct_findings" in new_keys and "disease_associations" in new_keys:
+            node_name = "direct_kg"
+        elif "cold_start_findings" in new_keys:
+            node_name = "cold_start"
+        elif "shared_neighbors" in new_keys:
+            node_name = "pathway_enrichment"
+        elif "bridges" in new_keys:
+            node_name = "integration"
+        elif "temporal_classifications" in new_keys:
+            node_name = "temporal"
+        elif "synthesis_report" in new_keys:
+            node_name = "synthesis"
+
+        if node_name:
+            yield {
+                "type": "node_event",
+                "node": node_name,
+                "op": "add",
+                "data": state,
+            }
+
+    duration = time.time() - start_time
+    logger.info("Stream complete in %.1fs", duration)
+
+    yield {
+        "type": "complete",
+        "data": final_state,  # Full accumulated state with all fields
+    }
 
 
 # Convenience function for synchronous contexts
