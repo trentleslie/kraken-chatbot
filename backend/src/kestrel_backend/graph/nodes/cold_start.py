@@ -37,8 +37,8 @@ except ImportError:
 KESTREL_COMMAND = "uvx"
 KESTREL_ARGS = ["mcp-client-kestrel"]
 
-# Semaphore to serialize SDK calls and prevent concurrent CLI spawn issues
-SDK_SEMAPHORE = asyncio.Semaphore(1)
+# Semaphore to limit concurrent SDK calls (increased from 1 to 6 for parallelism)
+SDK_SEMAPHORE = asyncio.Semaphore(6)
 
 # Batch size for parallel analysis
 BATCH_SIZE = 6
