@@ -4,7 +4,7 @@ Entity Resolution Node: Parallel entity name resolution using Kestrel KG.
 This node resolves raw entity names to knowledge graph identifiers (CURIEs)
 by querying the Kestrel MCP server in parallel batches.
 
-Uses the Claude Agent SDK with McpSSEServerConfig for direct HTTP communication.
+Uses the Claude Agent SDK with McpStdioServerConfig for uvx-based MCP server.
 """
 
 import asyncio
@@ -17,26 +17,67 @@ from ..state import DiscoveryState, EntityResolution
 # Try to import Claude Agent SDK - graceful fallback if not available
 try:
     from claude_agent_sdk import query, ClaudeAgentOptions
-    from claude_agent_sdk.types import McpSSEServerConfig
+    from claude_agent_sdk.types import McpStdioServerConfig
     HAS_SDK = True
 except ImportError:
     HAS_SDK = False
 
 
-# Kestrel MCP server configuration
-KESTREL_URL = "https://kestrel.nathanpricelab.com/mcp"
+# Kestrel MCP command for stdio-based server
+KESTREL_COMMAND = "uvx"
+KESTREL_ARGS = ["mcp-client-kestrel"]
 
-# Concise prompt for entity resolution
-RESOLUTION_PROMPT = """You are an entity resolver for biomedical knowledge graphs.
-Given an entity name, use hybrid_search to find it in the Kestrel knowledge graph.
+# Enhanced prompt for entity resolution with retry strategies
+RESOLUTION_PROMPT = """You are an expert biomedical entity resolver for the Kestrel knowledge graph.
 
-Return ONLY a valid JSON object with this exact structure (no other text):
+## Your Task
+Resolve the given entity name to its canonical CURIE (Compact URI) identifier.
+
+## Resolution Strategy (try in order)
+1. **Exact match**: Use hybrid_search with the exact entity name first
+2. **Synonym search**: If no result, try common synonyms:
+   - Chemical abbreviations: "BHBA" → "beta-hydroxybutyrate" → "3-hydroxybutyric acid"
+   - Gene aliases: Many genes have multiple symbols
+3. **Gene symbol handling**: For all-caps 2-6 character names (like KIF6, NLGN1, TP53):
+   - These are likely gene symbols → search directly, expect NCBIGene CURIEs
+4. **Metabolite variants**: Try without prefixes/suffixes:
+   - "N-lactoyl phenylalanine" → also try "lactoylphenylalanine"
+   - "16-hydroxypalmitate" → also try "hydroxypalmitate"
+5. **Partial matching**: Use text_search for fuzzy matches if hybrid_search fails
+
+## Important
+- Always try at least 2-3 search variations before giving up
+- Gene symbols (all caps, 2-6 chars) are common - search as-is
+- Metabolites may need chemical name variations
+
+## Output Format
+Return ONLY valid JSON (no other text):
 {"curie": "PREFIX:ID", "name": "Canonical Name", "category": "biolink:Category", "confidence": 0.95}
 
-If the entity cannot be found, return:
-{"curie": null, "name": null, "category": null, "confidence": 0.0}
+If truly not found after trying all strategies:
+{"curie": null, "name": null, "category": null, "confidence": 0.0}"""
 
-Be extremely concise. No explanations or additional text."""
+# More aggressive retry prompt for failed entities
+RETRY_PROMPT = """You are an expert biomedical entity resolver. This entity FAILED initial resolution - try harder!
+
+## Aggressive Search Strategies
+1. **Alternative spellings**: Try with/without hyphens, spaces, prefixes (N-, 16-, etc.)
+2. **Chemical synonyms**: Search IUPAC names, common names, and abbreviations
+3. **Partial matches**: Use text_search with key substrings
+4. **Category hints**: If it looks like a gene (all caps, 2-6 chars), search gene databases
+5. **Metabolite variations**: Strip numeric prefixes, try base compound names
+
+## Examples of successful resolutions
+- "N-lactoyl phenylalanine" → try "lactoylphenylalanine", "lactoyl-phenylalanine"
+- "16-hydroxypalmitate" → try "hydroxypalmitate", "hydroxypalmitic acid"
+- "hexadecanedioate" → try "hexadecanedioic acid", "C16-DC"
+- "KIF6" → search as gene symbol directly (NCBIGene)
+
+## Output
+Return ONLY valid JSON:
+{"curie": "PREFIX:ID", "name": "Canonical Name", "category": "biolink:Category", "confidence": 0.95}
+
+If truly not found: {"curie": null, "name": null, "category": null, "confidence": 0.0}"""
 
 # Batch size for parallel resolution
 BATCH_SIZE = 6
@@ -91,9 +132,13 @@ def parse_resolution_result(entity: str, result_text: str) -> EntityResolution:
     )
 
 
-async def resolve_single_entity(entity: str) -> EntityResolution:
+async def resolve_single_entity(entity: str, is_retry: bool = False) -> EntityResolution:
     """
     Resolve a single entity name to a CURIE using Claude Agent SDK.
+
+    Args:
+        entity: The entity name to resolve
+        is_retry: If True, use more aggressive retry prompt
 
     Returns EntityResolution with method="failed" on any error.
     """
@@ -109,28 +154,36 @@ async def resolve_single_entity(entity: str) -> EntityResolution:
         )
 
     try:
-        kestrel_config = McpSSEServerConfig(
-            type="sse",
-            url=KESTREL_URL,
+        kestrel_config = McpStdioServerConfig(
+            type="stdio",
+            command=KESTREL_COMMAND,
+            args=KESTREL_ARGS,
         )
 
+        # Use more aggressive prompt for retry attempts
+        prompt_to_use = RESOLUTION_PROMPT
+        if is_retry:
+            prompt_to_use = RETRY_PROMPT
+
         options = ClaudeAgentOptions(
-            system_prompt=RESOLUTION_PROMPT,
+            system_prompt=prompt_to_use,
             allowed_tools=[
                 "mcp__kestrel__hybrid_search",
                 "mcp__kestrel__text_search",
                 "mcp__kestrel__get_nodes",
+                "mcp__kestrel__get_node_info",
+                "mcp__kestrel__get_neighbors",
             ],
             mcp_servers={"kestrel": kestrel_config},
-            max_turns=2,
+            max_turns=5,  # Increased from 2 to allow iterative search refinement
             permission_mode="bypassPermissions",
         )
 
         result_text_parts = []
         async for event in query(prompt=f"Resolve: {entity}", options=options):
-            if hasattr(event, 'content'):
+            if hasattr(event, "content"):
                 for block in event.content:
-                    if hasattr(block, 'text'):
+                    if hasattr(block, "text"):
                         result_text_parts.append(block.text)
 
         result_text = "".join(result_text_parts)
@@ -159,6 +212,10 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     Processes entities in parallel batches of BATCH_SIZE (6) to avoid
     overwhelming the Kestrel server while maintaining good throughput.
 
+    Implements two-pass resolution:
+    1. First pass: Standard resolution for all entities
+    2. Second pass: Aggressive retry for failed entities with enhanced prompts
+
     Returns resolved_entities list and any errors encountered.
     """
     entities = state.get("raw_entities", [])
@@ -172,7 +229,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     all_results: list[EntityResolution] = []
     errors: list[str] = []
 
-    # Process in batches for controlled parallelism
+    # First pass: Standard resolution
     for batch in chunk(entities, BATCH_SIZE):
         batch_results = await asyncio.gather(
             *[resolve_single_entity(e) for e in batch],
@@ -192,6 +249,28 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 ))
             else:
                 all_results.append(result)
+
+    # Second pass: Retry failed entities with aggressive prompt
+    failed_indices = [i for i, r in enumerate(all_results) if r.curie is None]
+
+    if failed_indices and HAS_SDK:
+        failed_entities = [all_results[i].raw_name for i in failed_indices]
+
+        # Retry in smaller batches (more resources per entity)
+        retry_batch_size = max(2, BATCH_SIZE // 2)
+        retry_results = []
+
+        for batch in chunk(failed_entities, retry_batch_size):
+            batch_results = await asyncio.gather(
+                *[resolve_single_entity(e, is_retry=True) for e in batch],
+                return_exceptions=True,
+            )
+            retry_results.extend(batch_results)
+
+        # Merge successful retries back into results
+        for idx, retry_result in zip(failed_indices, retry_results):
+            if isinstance(retry_result, EntityResolution) and retry_result.curie:
+                all_results[idx] = retry_result
 
     return {
         "resolved_entities": all_results,
