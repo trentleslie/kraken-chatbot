@@ -249,9 +249,7 @@ async def handle_pipeline_mode(
     Executes the 9-node discovery pipeline with progress streaming.
     Includes Langfuse tracing for observability (parallel to Classic mode).
     """
-    print(f"[PIPELINE DEBUG] Entered handle_pipeline_mode with query: {content[:50]}...", flush=True)
     from .graph.runner import stream_discovery
-    print("[PIPELINE DEBUG] stream_discovery imported successfully", flush=True)
 
     start_time = time.time()
     nodes_completed = 0
@@ -485,14 +483,11 @@ async def websocket_chat(websocket: WebSocket):
 
             # Route based on agent_mode
             agent_mode = data.get("agent_mode", "classic")
-            print(f"[WS DEBUG] agent_mode={agent_mode}, routing to {'pipeline' if agent_mode == 'pipeline' else 'classic'}", flush=True)
 
             try:
                 if agent_mode == "pipeline":
-                    print("[WS DEBUG] Calling handle_pipeline_mode", flush=True)
                     await handle_pipeline_mode(websocket, content, connection_id)
                 else:
-                    print("[WS DEBUG] Calling handle_classic_mode", flush=True)
                     await handle_classic_mode(websocket, content, connection_id)
             except Exception as e:
                 await websocket.send_text(
