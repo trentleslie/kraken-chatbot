@@ -26,8 +26,12 @@ def _get_pipeline_langfuse():
     if _pipeline_langfuse is not None:
         return _pipeline_langfuse
     settings = get_settings()
+    print(f"[LANGFUSE DEBUG] enabled={settings.langfuse_enabled}, public_key={settings.langfuse_public_key[:10] if settings.langfuse_public_key else None}...")
     if settings.langfuse_enabled and settings.langfuse_public_key and settings.langfuse_secret_key:
         _pipeline_langfuse = get_client()
+        print(f"[LANGFUSE DEBUG] client initialized: {_pipeline_langfuse}")
+    else:
+        print("[LANGFUSE DEBUG] Langfuse disabled or missing credentials")
     return _pipeline_langfuse
 
 
