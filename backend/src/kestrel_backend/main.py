@@ -257,6 +257,7 @@ async def handle_pipeline_mode(
     nodes_seen = set()
     node_timings: dict[str, float] = {}  # Track per-node timing
     last_node_start = start_time
+    prev_node_name: str | None = None  # Explicit tracking for correct timing attribution
 
     # Initialize Langfuse trace for pipeline execution
     langfuse = _get_pipeline_langfuse()
@@ -281,20 +282,20 @@ async def handle_pipeline_mode(
                 node_name = event["node"]
                 # Only send progress once per node (first event)
                 if node_name in NODE_STATUS_MESSAGES and node_name not in nodes_seen:
-                    # Record timing for previous node
-                    if nodes_seen:
-                        prev_node = list(nodes_seen)[-1]
-                        node_timings[prev_node] = time.time() - last_node_start
+                    # Record timing for previous node (use explicit tracking, not set ordering)
+                    if prev_node_name:
+                        node_timings[prev_node_name] = time.time() - last_node_start
                         # End previous node's Langfuse span
-                        if prev_node in node_spans:
-                            node_spans[prev_node].update(
-                                output={"duration_ms": int(node_timings[prev_node] * 1000)}
+                        if prev_node_name in node_spans:
+                            node_spans[prev_node_name].update(
+                                output={"duration_ms": int(node_timings[prev_node_name] * 1000)}
                             )
-                            node_spans[prev_node].end()
+                            node_spans[prev_node_name].end()
 
                     nodes_seen.add(node_name)
                     nodes_completed += 1
                     last_node_start = time.time()
+                    prev_node_name = node_name  # Update previous node tracker
 
                     # Start Langfuse span for this node
                     if trace:
@@ -312,15 +313,14 @@ async def handle_pipeline_mode(
 
             elif event["type"] == "complete":
                 final_state = event.get("data", {})
-                # Record final node timing
-                if nodes_seen:
-                    last_node = list(nodes_seen)[-1]
-                    node_timings[last_node] = time.time() - last_node_start
-                    if last_node in node_spans:
-                        node_spans[last_node].update(
-                            output={"duration_ms": int(node_timings[last_node] * 1000)}
+                # Record final node timing (use explicit tracking, not set ordering)
+                if prev_node_name:
+                    node_timings[prev_node_name] = time.time() - last_node_start
+                    if prev_node_name in node_spans:
+                        node_spans[prev_node_name].update(
+                            output={"duration_ms": int(node_timings[prev_node_name] * 1000)}
                         )
-                        node_spans[last_node].end()
+                        node_spans[prev_node_name].end()
 
         # Send final result
         if final_state:
@@ -397,6 +397,13 @@ async def handle_pipeline_mode(
     except Exception as e:
         # Log error to Langfuse trace
         if trace and langfuse:
+            # Close any dangling node spans before ending parent trace
+            for span in node_spans.values():
+                try:
+                    span.end()
+                except Exception:
+                    pass  # Span may already be ended
+
             trace.update(
                 output={"error": str(e)},
                 metadata={"status": "failed"},
