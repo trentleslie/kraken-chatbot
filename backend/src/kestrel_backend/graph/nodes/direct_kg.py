@@ -696,7 +696,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             all_results[i] = result
             tier1_success += 1
             # In deep mode: also use LLM for well_characterized entities
-            if use_llm_for_well_char and curies[i] in well_char:
+            if use_llm_for_well_char and curies[i] in well_char and i not in tier2_needed:
                 tier2_needed.append(i)  # LLM enrichment for novel associations
 
     tier1_duration = time.time() - tier1_start
