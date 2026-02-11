@@ -31,6 +31,9 @@ except ImportError:
 KESTREL_COMMAND = "uvx"
 KESTREL_ARGS = ["mcp-client-kestrel"]
 
+# Semaphore to serialize SDK calls and prevent concurrent CLI spawn issues
+SDK_SEMAPHORE = asyncio.Semaphore(1)
+
 # Enhanced prompt for entity resolution with retry strategies
 RESOLUTION_PROMPT = """You are an expert biomedical entity resolver for the Kestrel knowledge graph.
 
@@ -158,40 +161,42 @@ async def resolve_single_entity(entity: str, is_retry: bool = False) -> EntityRe
         )
 
     try:
-        kestrel_config = McpStdioServerConfig(
-            type="stdio",
-            command=KESTREL_COMMAND,
-            args=KESTREL_ARGS,
-        )
+        async with SDK_SEMAPHORE:
+            kestrel_config = McpStdioServerConfig(
+                type="stdio",
+                command=KESTREL_COMMAND,
+                args=KESTREL_ARGS,
+            )
 
-        # Use more aggressive prompt for retry attempts
-        prompt_to_use = RESOLUTION_PROMPT
-        if is_retry:
-            prompt_to_use = RETRY_PROMPT
+            # Use more aggressive prompt for retry attempts
+            prompt_to_use = RESOLUTION_PROMPT
+            if is_retry:
+                prompt_to_use = RETRY_PROMPT
 
-        options = ClaudeAgentOptions(
-            system_prompt=prompt_to_use,
-            allowed_tools=[
-                "mcp__kestrel__hybrid_search",
-                "mcp__kestrel__text_search",
-                "mcp__kestrel__get_nodes",
-                "mcp__kestrel__get_node_info",
-                "mcp__kestrel__get_neighbors",
-            ],
-            mcp_servers={"kestrel": kestrel_config},
-            max_turns=5,  # Increased from 2 to allow iterative search refinement
-            permission_mode="bypassPermissions",
-        )
+            options = ClaudeAgentOptions(
+                system_prompt=prompt_to_use,
+                allowed_tools=[
+                    "mcp__kestrel__hybrid_search",
+                    "mcp__kestrel__text_search",
+                    "mcp__kestrel__get_nodes",
+                    "mcp__kestrel__get_node_info",
+                    "mcp__kestrel__get_neighbors",
+                ],
+                mcp_servers={"kestrel": kestrel_config},
+                max_turns=5,  # Increased from 2 to allow iterative search refinement
+                permission_mode="bypassPermissions",
+                max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for large KG responses
+            )
 
-        result_text_parts = []
-        async for event in query(prompt=f"Resolve: {entity}", options=options):
-            if hasattr(event, "content"):
-                for block in event.content:
-                    if hasattr(block, "text"):
-                        result_text_parts.append(block.text)
+            result_text_parts = []
+            async for event in query(prompt=f"Resolve: {entity}", options=options):
+                if hasattr(event, "content"):
+                    for block in event.content:
+                        if hasattr(block, "text"):
+                            result_text_parts.append(block.text)
 
-        result_text = "".join(result_text_parts)
-        return parse_resolution_result(entity, result_text)
+            result_text = "".join(result_text_parts)
+            return parse_resolution_result(entity, result_text)
 
     except Exception as e:
         return EntityResolution(

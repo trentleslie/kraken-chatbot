@@ -27,14 +27,18 @@ logger = logging.getLogger(__name__)
 # Try to import Claude Agent SDK - graceful fallback if not available
 try:
     from claude_agent_sdk import query, ClaudeAgentOptions
-    from claude_agent_sdk.types import McpSSEServerConfig
+    from claude_agent_sdk.types import McpStdioServerConfig
     HAS_SDK = True
 except ImportError:
     HAS_SDK = False
 
 
-# Kestrel MCP server configuration
-KESTREL_URL = "https://kestrel.nathanpricelab.com/mcp"
+# Kestrel MCP command for stdio-based server (same as entity_resolution)
+KESTREL_COMMAND = "uvx"
+KESTREL_ARGS = ["mcp-client-kestrel"]
+
+# Semaphore to serialize SDK calls and prevent concurrent CLI spawn issues
+SDK_SEMAPHORE = asyncio.Semaphore(1)
 
 # Batch size for parallel analysis
 BATCH_SIZE = 6
@@ -220,37 +224,40 @@ async def analyze_cold_start_entity(
         )
 
     try:
-        kestrel_config = McpSSEServerConfig(
-            type="sse",
-            url=KESTREL_URL,
-        )
+        async with SDK_SEMAPHORE:
+            kestrel_config = McpStdioServerConfig(
+                type="stdio",
+                command=KESTREL_COMMAND,
+                args=KESTREL_ARGS,
+            )
 
-        # Format prompt with edge count context
-        system_prompt = COLD_START_PROMPT.format(edge_count=edge_count)
+            # Format prompt with edge count context
+            system_prompt = COLD_START_PROMPT.format(edge_count=edge_count)
 
-        options = ClaudeAgentOptions(
-            system_prompt=system_prompt,
-            allowed_tools=[
-                "mcp__kestrel__similar_nodes",
-                "mcp__kestrel__one_hop_query",
-                "mcp__kestrel__vector_search",
-            ],
-            mcp_servers={"kestrel": kestrel_config},
-            max_turns=5,
-            permission_mode="bypassPermissions",
-        )
+            options = ClaudeAgentOptions(
+                system_prompt=system_prompt,
+                allowed_tools=[
+                    "mcp__kestrel__similar_nodes",
+                    "mcp__kestrel__one_hop_query",
+                    "mcp__kestrel__vector_search",
+                ],
+                mcp_servers={"kestrel": kestrel_config},
+                max_turns=5,
+                permission_mode="bypassPermissions",
+                max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for large KG responses
+            )
 
-        result_text_parts = []
-        async for event in query(
-            prompt=f"Analyze cold-start entity: {raw_name} ({curie}, {edge_count} edges)",
-            options=options
-        ):
-            if hasattr(event, 'content'):
-                for block in event.content:
-                    if hasattr(block, 'text'):
-                        result_text_parts.append(block.text)
+            result_text_parts = []
+            async for event in query(
+                prompt=f"Analyze cold-start entity: {raw_name} ({curie}, {edge_count} edges)",
+                options=options
+            ):
+                if hasattr(event, 'content'):
+                    for block in event.content:
+                        if hasattr(block, 'text'):
+                            result_text_parts.append(block.text)
 
-        result_text = "".join(result_text_parts)
+            result_text = "".join(result_text_parts)
         analogues, inferences, findings = parse_cold_start_result(
             curie, raw_name, edge_count, result_text
         )

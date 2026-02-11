@@ -39,6 +39,9 @@ except ImportError:
 KESTREL_COMMAND = "uvx"
 KESTREL_ARGS = ["mcp-client-kestrel"]
 
+# Semaphore to serialize SDK calls and prevent concurrent CLI spawn issues
+SDK_SEMAPHORE = asyncio.Semaphore(1)
+
 # Concise prompt for edge counting
 EDGE_COUNT_PROMPT = """You are a knowledge graph edge counter.
 Given a CURIE, use one_hop_query to retrieve its neighbors.
@@ -127,31 +130,33 @@ async def count_edges_single(entity: EntityResolution) -> NoveltyScore:
         )
 
     try:
-        kestrel_config = McpStdioServerConfig(
-            type="stdio",
-            command=KESTREL_COMMAND,
-            args=KESTREL_ARGS,
-        )
+        async with SDK_SEMAPHORE:
+            kestrel_config = McpStdioServerConfig(
+                type="stdio",
+                command=KESTREL_COMMAND,
+                args=KESTREL_ARGS,
+            )
 
-        options = ClaudeAgentOptions(
-            system_prompt=EDGE_COUNT_PROMPT,
-            allowed_tools=[
-                "mcp__kestrel__one_hop_query",
-                "mcp__kestrel__get_nodes",
-            ],
-            mcp_servers={"kestrel": kestrel_config},
-            max_turns=2,
-            permission_mode="bypassPermissions",
-        )
+            options = ClaudeAgentOptions(
+                system_prompt=EDGE_COUNT_PROMPT,
+                allowed_tools=[
+                    "mcp__kestrel__one_hop_query",
+                    "mcp__kestrel__get_nodes",
+                ],
+                mcp_servers={"kestrel": kestrel_config},
+                max_turns=2,
+                permission_mode="bypassPermissions",
+                max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for large KG responses
+            )
 
-        result_text_parts = []
-        async for event in query(prompt=f"Count edges for: {curie}", options=options):
-            if hasattr(event, 'content'):
-                for block in event.content:
-                    if hasattr(block, 'text'):
-                        result_text_parts.append(block.text)
+            result_text_parts = []
+            async for event in query(prompt=f"Count edges for: {curie}", options=options):
+                if hasattr(event, 'content'):
+                    for block in event.content:
+                        if hasattr(block, 'text'):
+                            result_text_parts.append(block.text)
 
-        result_text = "".join(result_text_parts)
+            result_text = "".join(result_text_parts)
 
         # Debug logging for triage edge counting
         if not result_text:

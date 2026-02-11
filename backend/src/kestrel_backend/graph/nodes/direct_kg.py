@@ -27,14 +27,18 @@ logger = logging.getLogger(__name__)
 # Try to import Claude Agent SDK - graceful fallback if not available
 try:
     from claude_agent_sdk import query, ClaudeAgentOptions
-    from claude_agent_sdk.types import McpSSEServerConfig
+    from claude_agent_sdk.types import McpStdioServerConfig
     HAS_SDK = True
 except ImportError:
     HAS_SDK = False
 
 
-# Kestrel MCP server configuration
-KESTREL_URL = "https://kestrel.nathanpricelab.com/mcp"
+# Kestrel MCP command for stdio-based server (same as entity_resolution)
+KESTREL_COMMAND = "uvx"
+KESTREL_ARGS = ["mcp-client-kestrel"]
+
+# Semaphore to serialize SDK calls and prevent concurrent CLI spawn issues
+SDK_SEMAPHORE = asyncio.Semaphore(1)
 
 # Batch size for parallel analysis
 BATCH_SIZE = 6
@@ -235,31 +239,34 @@ async def analyze_single_entity(
         )
 
     try:
-        kestrel_config = McpSSEServerConfig(
-            type="sse",
-            url=KESTREL_URL,
-        )
+        async with SDK_SEMAPHORE:
+            kestrel_config = McpStdioServerConfig(
+                type="stdio",
+                command=KESTREL_COMMAND,
+                args=KESTREL_ARGS,
+            )
 
-        options = ClaudeAgentOptions(
-            system_prompt=DIRECT_KG_PROMPT,
-            allowed_tools=[
-                "mcp__kestrel__one_hop_query",
-                "mcp__kestrel__get_nodes",
-                "mcp__kestrel__get_edges",
-            ],
-            mcp_servers={"kestrel": kestrel_config},
-            max_turns=4,
-            permission_mode="bypassPermissions",
-        )
+            options = ClaudeAgentOptions(
+                system_prompt=DIRECT_KG_PROMPT,
+                allowed_tools=[
+                    "mcp__kestrel__one_hop_query",
+                    "mcp__kestrel__get_nodes",
+                    "mcp__kestrel__get_edges",
+                ],
+                mcp_servers={"kestrel": kestrel_config},
+                max_turns=4,
+                permission_mode="bypassPermissions",
+                max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for large KG responses
+            )
 
-        result_text_parts = []
-        async for event in query(prompt=f"Analyze entity: {raw_name} ({curie})", options=options):
-            if hasattr(event, 'content'):
-                for block in event.content:
-                    if hasattr(block, 'text'):
-                        result_text_parts.append(block.text)
+            result_text_parts = []
+            async for event in query(prompt=f"Analyze entity: {raw_name} ({curie})", options=options):
+                if hasattr(event, 'content'):
+                    for block in event.content:
+                        if hasattr(block, 'text'):
+                            result_text_parts.append(block.text)
 
-        result_text = "".join(result_text_parts)
+            result_text = "".join(result_text_parts)
         diseases, pathways, findings, hub_flags = parse_direct_kg_result(curie, raw_name, result_text)
 
         return diseases, pathways, findings, hub_flags, []
