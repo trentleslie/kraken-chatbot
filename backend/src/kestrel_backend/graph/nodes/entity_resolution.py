@@ -190,9 +190,17 @@ async def resolve_via_api(entity: str) -> EntityResolution | None:
             )
             return None
 
+        # Map confidence to method (same logic as LLM parser)
+        if confidence >= 0.9:
+            method = "exact"
+        elif confidence >= 0.7:
+            method = "fuzzy"
+        else:
+            method = "semantic"
+
         logger.info(
-            "Tier 1 '%s': resolved to %s (score=%.2f, confidence=%.2f)",
-            entity, curie, score, confidence
+            "Tier 1 '%s': resolved to %s (score=%.2f, confidence=%.2f, method=%s)",
+            entity, curie, score, confidence, method
         )
 
         return EntityResolution(
@@ -201,7 +209,7 @@ async def resolve_via_api(entity: str) -> EntityResolution | None:
             resolved_name=name,
             category=category,
             confidence=confidence,
-            method="api",  # Mark as API-resolved
+            method=method,
         )
 
     except Exception as e:
@@ -491,9 +499,9 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     duration = time.time() - start
     rate = 100 * len(resolved) / len(final_results) if final_results else 0
 
-    # Log resolution method breakdown
-    api_resolved = sum(1 for r in final_results if r.method == "api")
-    llm_resolved = len(resolved) - api_resolved
+    # tier1_resolved was counted during Tier 1 processing
+    # llm_resolved is everything else that succeeded
+    llm_resolved = len(resolved) - tier1_resolved
 
     if failed:
         failed_names = [r.raw_name for r in failed[:5]]
@@ -503,8 +511,8 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         )
 
     logger.info(
-        "Completed entity_resolution in %.1fs — resolved=%d (api=%d, llm=%d), failed=%d (%.0f%%)",
-        duration, len(resolved), api_resolved, llm_resolved, len(failed), rate
+        "Completed entity_resolution in %.1fs — resolved=%d (tier1=%d, tier2=%d), failed=%d (%.0f%%)",
+        duration, len(resolved), tier1_resolved, llm_resolved, len(failed), rate
     )
 
     return {
