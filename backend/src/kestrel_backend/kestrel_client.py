@@ -28,8 +28,11 @@ def _get_headers() -> dict[str, str]:
         "Accept": "application/json, text/event-stream",
         "Content-Type": "application/json",
     }
-    if KESTREL_API_KEY:
-        headers["X-API-Key"] = KESTREL_API_KEY
+    # Read API key at request time (not module import time) to handle
+    # cases where env vars are set after module is first loaded
+    api_key = os.getenv("KESTREL_API_KEY", "") or KESTREL_API_KEY
+    if api_key:
+        headers["X-API-Key"] = api_key
     return headers
 
 

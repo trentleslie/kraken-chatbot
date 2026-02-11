@@ -118,9 +118,9 @@ async def resolve_via_api(entity: str) -> EntityResolution | None:
     - score < 0.6 → fall through to Tier 2 (returns None)
     """
     try:
-        # Call hybrid_search directly
+        # Call hybrid_search directly - parameter is 'search_text' not 'query'
         result = await call_kestrel_tool("hybrid_search", {
-            "query": entity,
+            "search_text": entity,
             "limit": 1,  # Only need top result
         })
 
@@ -150,8 +150,15 @@ async def resolve_via_api(entity: str) -> EntityResolution | None:
             logger.info("Tier 1 '%s': Could not parse JSON response", entity)
             return None
 
-        # Handle both list and dict responses
-        results = data if isinstance(data, list) else data.get("results", [])
+        # Response format is {search_text: [results]} - extract our entity's results
+        if isinstance(data, dict):
+            # Try exact key match first, then case-insensitive
+            results = data.get(entity) or data.get(entity.lower()) or []
+            if not results and len(data) == 1:
+                # Single result dict - take the first (and only) value
+                results = list(data.values())[0]
+        else:
+            results = data
 
         if not results:
             logger.info("Tier 1 '%s': No search results", entity)
@@ -160,9 +167,11 @@ async def resolve_via_api(entity: str) -> EntityResolution | None:
         # Take top result
         top = results[0]
         score = float(top.get("score", 0))
-        curie = top.get("curie") or top.get("id")
+        curie = top.get("id") or top.get("curie")
         name = top.get("name") or top.get("label")
-        category = top.get("category")
+        # categories is a list in the API response
+        categories = top.get("categories", [])
+        category = categories[0] if categories else top.get("category")
 
         # Map score to confidence
         if score > 1.5:
