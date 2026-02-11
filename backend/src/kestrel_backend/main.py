@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -15,6 +16,13 @@ from langfuse import get_client
 from .config import get_settings
 from .agent import run_agent_turn
 
+# Configure root logger for pipeline observability
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S"
+)
+logger = logging.getLogger(__name__)
 
 # Langfuse client for pipeline mode tracing (lazy initialized)
 _pipeline_langfuse = None
@@ -251,6 +259,9 @@ async def handle_pipeline_mode(
     """
     from .graph.runner import stream_discovery
 
+    query_preview = content[:50] + "..." if len(content) > 50 else content
+    logger.info("Pipeline started — query=%r mode=pipeline", query_preview)
+
     start_time = time.time()
     nodes_completed = 0
     final_state = None
@@ -285,6 +296,11 @@ async def handle_pipeline_mode(
                     # Record timing for previous node (use explicit tracking, not set ordering)
                     if prev_node_name:
                         node_timings[prev_node_name] = time.time() - last_node_start
+                        cumulative = time.time() - start_time
+                        logger.info(
+                            "Node transition: %s -> %s (prev=%.1fs, cumulative=%.1fs)",
+                            prev_node_name, node_name, node_timings[prev_node_name], cumulative
+                        )
                         # End previous node's Langfuse span and remove from dict
                         span = node_spans.pop(prev_node_name, None)
                         if span:
@@ -346,6 +362,11 @@ async def handle_pipeline_mode(
             )
             await websocket.send_text(msg.model_dump_json())
 
+            logger.info(
+                "Pipeline complete in %.1fs — entities=%d, resolved=%d, hypotheses=%d",
+                duration_ms / 1000.0, len(resolved_entities), successful_resolutions, len(hypotheses)
+            )
+
             # Finalize Langfuse trace with metrics
             if trace and langfuse:
                 trace.update(
@@ -398,6 +419,12 @@ async def handle_pipeline_mode(
         await websocket.send_text(DoneMessage().model_dump_json())
 
     except Exception as e:
+        duration = time.time() - start_time
+        logger.error(
+            "Pipeline failed after %.1fs — error=%s, nodes_completed=%d",
+            duration, str(e), nodes_completed, exc_info=True
+        )
+
         # Log error to Langfuse trace
         if trace and langfuse:
             # Close any dangling node spans before ending parent trace

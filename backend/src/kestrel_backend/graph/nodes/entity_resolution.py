@@ -9,10 +9,14 @@ Uses the Claude Agent SDK with McpStdioServerConfig for uvx-based MCP server.
 
 import asyncio
 import json
+import logging
 import re
+import time
 from typing import Any
 
 from ..state import DiscoveryState, EntityResolution
+
+logger = logging.getLogger(__name__)
 
 # Try to import Claude Agent SDK - graceful fallback if not available
 try:
@@ -219,8 +223,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     Returns resolved_entities list and any errors encountered.
     """
     entities = state.get("raw_entities", [])
+    logger.info("Starting entity_resolution with %d entities", len(entities))
+    start = time.time()
 
     if not entities:
+        logger.info("No entities to resolve, skipping")
         return {
             "resolved_entities": [],
             "errors": [],
@@ -271,6 +278,24 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         for idx, retry_result in zip(failed_indices, retry_results):
             if isinstance(retry_result, EntityResolution) and retry_result.curie:
                 all_results[idx] = retry_result
+
+    # Calculate final stats
+    resolved = [r for r in all_results if r.curie]
+    failed = [r for r in all_results if not r.curie]
+    duration = time.time() - start
+    rate = 100 * len(resolved) / len(all_results) if all_results else 0
+
+    if failed:
+        failed_names = [r.raw_name for r in failed[:5]]
+        logger.warning(
+            "Failed to resolve %d entities: %s%s",
+            len(failed), failed_names, "..." if len(failed) > 5 else ""
+        )
+
+    logger.info(
+        "Completed entity_resolution in %.1fs — resolved=%d, failed=%d (%.0f%%)",
+        duration, len(resolved), len(failed), rate
+    )
 
     return {
         "resolved_entities": all_results,

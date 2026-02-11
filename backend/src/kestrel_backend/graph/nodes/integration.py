@@ -16,13 +16,17 @@ The node synthesizes findings from all previous analysis steps:
 
 import asyncio
 import json
+import logging
 import re
+import time
 from typing import Any
 
 from ..state import (
     DiscoveryState, Bridge, GapEntity, Finding,
     DiseaseAssociation, PathwayMembership, InferredAssociation, BiologicalTheme
 )
+
+logger = logging.getLogger(__name__)
 
 # Try to import Claude Agent SDK - graceful fallback if not available
 try:
@@ -264,6 +268,9 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         direct_findings: Findings generated from bridges
         errors: Any errors encountered
     """
+    logger.info("Starting integration")
+    start = time.time()
+
     # Check if we have any findings to integrate
     disease_associations = state.get("disease_associations", [])
     pathway_memberships = state.get("pathway_memberships", [])
@@ -274,6 +281,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     # If nothing to integrate, return empty
     if not any([disease_associations, pathway_memberships, inferred_associations,
                 biological_themes, resolved]):
+        logger.info("No findings to integrate, skipping")
         return {
             "bridges": [],
             "gap_entities": [],
@@ -375,6 +383,12 @@ Analyze these findings to identify cross-type bridges and expected-but-absent en
                     confidence="moderate",
                 ))
 
+        duration = time.time() - start
+        logger.info(
+            "Completed integration in %.1fs — bridges=%d, gaps=%d",
+            duration, len(bridges), len(gaps)
+        )
+
         return {
             "bridges": bridges,
             "gap_entities": gaps,
@@ -383,6 +397,8 @@ Analyze these findings to identify cross-type bridges and expected-but-absent en
         }
 
     except Exception as e:
+        duration = time.time() - start
+        logger.error("Integration analysis failed after %.1fs: %s", duration, str(e))
         return {
             "bridges": [],
             "gap_entities": [],

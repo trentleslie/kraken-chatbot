@@ -17,10 +17,14 @@ to route entities to the appropriate analysis branches (direct_kg or cold_start)
 
 import asyncio
 import json
+import logging
 import re
+import time
 from typing import Any
 
 from ..state import DiscoveryState, NoveltyScore, EntityResolution
+
+logger = logging.getLogger(__name__)
 
 # Try to import Claude Agent SDK - graceful fallback if not available
 try:
@@ -176,6 +180,9 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         sparse_curies: CURIEs with 1-19 edges
         cold_start_curies: CURIEs with 0 edges
     """
+    logger.info("Starting triage")
+    start = time.time()
+
     resolved = state.get("resolved_entities", [])
 
     # Filter to only entities with valid CURIEs
@@ -224,6 +231,12 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     # Add failed resolutions to cold_start bucket
     failed_names = [e.raw_name for e in resolved if e.method == "failed"]
     cold_start.extend(failed_names)
+
+    duration = time.time() - start
+    logger.info(
+        "Completed triage in %.1fs — well_char=%d, moderate=%d, sparse=%d, cold_start=%d",
+        duration, len(well_characterized), len(moderate), len(sparse), len(cold_start)
+    )
 
     return {
         "novelty_scores": all_scores,

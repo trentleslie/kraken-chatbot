@@ -9,9 +9,13 @@ This node processes the raw user query to:
 No LLM call for v1 - uses heuristic parsing for speed.
 """
 
+import logging
 import re
+import time
 from typing import Any
 from ..state import DiscoveryState
+
+logger = logging.getLogger(__name__)
 
 
 # Trigger phrases that indicate discovery mode
@@ -211,6 +215,9 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     This is the entry point node for the KRAKEN discovery workflow.
     Returns only the fields this node sets (LangGraph merges with existing state).
     """
+    logger.info("Starting intake")
+    start = time.time()
+
     query = state.get("raw_query", "")
 
     # Extract entities from query
@@ -221,6 +228,12 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     # Detect longitudinal context
     is_longitudinal, duration = detect_longitudinal_context(query)
+
+    duration_sec = time.time() - start
+    logger.info(
+        "Completed intake in %.1fs — entities=%d, type=%s, longitudinal=%s",
+        duration_sec, len(entities), query_type, is_longitudinal
+    )
 
     return {
         "query_type": query_type,

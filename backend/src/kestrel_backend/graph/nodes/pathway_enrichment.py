@@ -15,12 +15,16 @@ Key capabilities:
 
 import asyncio
 import json
+import logging
 import re
+import time
 from typing import Any
 
 from ..state import (
     DiscoveryState, SharedNeighbor, BiologicalTheme, Finding
 )
+
+logger = logging.getLogger(__name__)
 
 # Try to import Claude Agent SDK - graceful fallback if not available
 try:
@@ -175,14 +179,18 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         biological_themes: Themes grouped by category
         errors: Any errors encountered during analysis
     """
+    logger.info("Starting pathway_enrichment")
+    start = time.time()
+
     # Collect all resolved entities with valid CURIEs
     resolved = state.get("resolved_entities", [])
     valid_entities = [
-        e for e in resolved 
+        e for e in resolved
         if e.curie and e.method != "failed"
     ]
 
     if not valid_entities:
+        logger.warning("Skipped pathway_enrichment: no valid entities")
         return {
             "shared_neighbors": [],
             "biological_themes": [],
@@ -191,6 +199,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     # Skip if only 1 entity (need 2+ to find shared neighbors)
     if len(valid_entities) < 2:
+        logger.warning("Skipped pathway_enrichment: need at least 2 entities (have %d)", len(valid_entities))
         return {
             "shared_neighbors": [],
             "biological_themes": [],
@@ -259,6 +268,12 @@ Find shared neighbors and biological themes for these {len(valid_entities)} enti
                     confidence="high" if non_hub_count > 0 else "moderate",
                 ))
 
+        duration = time.time() - start
+        logger.info(
+            "Completed pathway_enrichment in %.1fs — themes=%d, shared_neighbors=%d",
+            duration, len(themes), len(shared_neighbors)
+        )
+
         return {
             "shared_neighbors": shared_neighbors,
             "biological_themes": themes,
@@ -267,6 +282,8 @@ Find shared neighbors and biological themes for these {len(valid_entities)} enti
         }
 
     except Exception as e:
+        duration = time.time() - start
+        logger.error("Pathway enrichment failed after %.1fs: %s", duration, str(e))
         return {
             "shared_neighbors": [],
             "biological_themes": [],

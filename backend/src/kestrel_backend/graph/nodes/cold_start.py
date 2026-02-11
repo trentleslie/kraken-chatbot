@@ -13,12 +13,16 @@ The Open World Assumption applies: missing connections are "unstudied", not "non
 
 import asyncio
 import json
+import logging
 import re
+import time
 from typing import Any
 
 from ..state import (
     DiscoveryState, Finding, InferredAssociation, AnalogueEntity, NoveltyScore
 )
+
+logger = logging.getLogger(__name__)
 
 # Try to import Claude Agent SDK - graceful fallback if not available
 try:
@@ -314,7 +318,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     cold_start = state.get("cold_start_curies", [])
     entities = sparse + cold_start
 
+    logger.info("Starting cold_start with %d sparse + %d cold entities", len(sparse), len(cold_start))
+    start = time.time()
+
     if not entities:
+        logger.info("No sparse/cold entities, skipping cold_start")
         return {
             "cold_start_findings": [],
             "inferred_associations": [],
@@ -358,6 +366,12 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 all_inferences.extend(inferences)
                 all_findings.extend(findings)
                 errors.extend(errs)
+
+    duration = time.time() - start
+    logger.info(
+        "Completed cold_start in %.1fs — analogues=%d, inferences=%d",
+        duration, len(all_analogues), len(all_inferences)
+    )
 
     return {
         "cold_start_findings": all_findings,

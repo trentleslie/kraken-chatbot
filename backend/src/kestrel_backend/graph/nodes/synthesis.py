@@ -14,6 +14,8 @@ systematic review data showing that approximately 18% of computational predictio
 progress to clinical investigation.
 """
 
+import logging
+import time
 from typing import Any
 from ..state import (
     DiscoveryState, EntityResolution, NoveltyScore, Finding,
@@ -21,6 +23,8 @@ from ..state import (
     SharedNeighbor, BiologicalTheme, Bridge, GapEntity, TemporalClassification,
     Hypothesis
 )
+
+logger = logging.getLogger(__name__)
 
 # Try to import Claude Agent SDK - graceful fallback if not available
 try:
@@ -930,6 +934,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         synthesis_report: Formatted markdown report
         hypotheses: List of Hypothesis objects with validation steps and gap calibration
     """
+    # Count input findings
+    direct_findings = state.get("direct_findings", [])
+    cold_start_findings = state.get("cold_start_findings", [])
+    total_findings = len(direct_findings) + len(cold_start_findings)
+    logger.info("Starting synthesis with %d findings", total_findings)
+    start = time.time()
+
     # Phase A: Assemble context (always done)
     context = assemble_synthesis_context(state)
     
@@ -960,7 +971,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     
     # Extract structured hypotheses (always, from state not LLM output)
     hypotheses = extract_hypotheses(state)
-    
+
+    duration = time.time() - start
+    logger.info(
+        "Completed synthesis in %.1fs — hypotheses=%d, report_length=%d",
+        duration, len(hypotheses), len(report)
+    )
+
     return {
         "synthesis_report": report,
         "hypotheses": hypotheses,

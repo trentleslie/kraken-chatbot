@@ -13,12 +13,16 @@ spurious associations.
 
 import asyncio
 import json
+import logging
 import re
+import time
 from typing import Any
 
 from ..state import (
     DiscoveryState, Finding, DiseaseAssociation, PathwayMembership, NoveltyScore
 )
+
+logger = logging.getLogger(__name__)
 
 # Try to import Claude Agent SDK - graceful fallback if not available
 try:
@@ -312,7 +316,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     moderate = state.get("moderate_curies", [])
     curies = well_char + moderate
 
+    logger.info("Starting direct_kg with %d entities", len(curies))
+    start = time.time()
+
     if not curies:
+        logger.info("No entities to analyze, skipping direct_kg")
         return {
             "direct_findings": [],
             "disease_associations": [],
@@ -357,6 +365,12 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 all_findings.extend(findings)
                 all_hub_flags.extend(hub_flags)
                 errors.extend(errs)
+
+    duration = time.time() - start
+    logger.info(
+        "Completed direct_kg in %.1fs — findings=%d, diseases=%d, pathways=%d",
+        duration, len(all_findings), len(all_diseases), len(all_pathways)
+    )
 
     return {
         "direct_findings": all_findings,

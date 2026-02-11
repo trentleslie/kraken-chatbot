@@ -5,10 +5,14 @@ Provides both synchronous and streaming execution modes.
 """
 
 import asyncio
+import logging
+import time
 from typing import AsyncIterator, Any
 
 from .builder import build_discovery_graph
 from .state import DiscoveryState
+
+logger = logging.getLogger(__name__)
 
 
 async def run_discovery(
@@ -55,6 +59,10 @@ async def stream_discovery(
     Yields:
         Event dicts with type, node, and data fields
     """
+    query_preview = query[:50] + "..." if len(query) > 50 else query
+    logger.info("Stream started — query=%r", query_preview)
+    start_time = time.time()
+
     graph = build_discovery_graph()
 
     initial_state: DiscoveryState = {
@@ -81,6 +89,8 @@ async def stream_discovery(
                     }
 
             elif op.get("path") == "/final_output":
+                duration = time.time() - start_time
+                logger.info("Stream complete in %.1fs", duration)
                 yield {
                     "type": "complete",
                     "data": op.get("value"),

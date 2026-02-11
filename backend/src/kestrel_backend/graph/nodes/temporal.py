@@ -20,13 +20,17 @@ with minimal tool use for occasional pathway validation.
 
 import asyncio
 import json
+import logging
 import re
+import time
 from typing import Any
 
 from ..state import (
     DiscoveryState, TemporalClassification, Finding,
     DiseaseAssociation, PathwayMembership, InferredAssociation, Bridge
 )
+
+logger = logging.getLogger(__name__)
 
 # Try to import Claude Agent SDK - graceful fallback if not available
 try:
@@ -244,8 +248,12 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         temporal_classifications: Classified findings
         errors: Any errors encountered
     """
+    logger.info("Starting temporal")
+    start = time.time()
+
     # Double-check longitudinal flag (should be handled by routing, but be safe)
     if not state.get("is_longitudinal", False):
+        logger.warning("Skipped temporal: not a longitudinal study")
         return {
             "temporal_classifications": [],
             "errors": ["Temporal analysis skipped: not a longitudinal study"],
@@ -309,12 +317,25 @@ Classify each finding by its temporal relationship to disease progression.
         # Parse the result
         classifications, parse_errors = parse_temporal_result(result_text)
 
+        # Count classifications by type
+        upstream = sum(1 for c in classifications if c.classification == "upstream_cause")
+        downstream = sum(1 for c in classifications if c.classification == "downstream_consequence")
+        parallel = sum(1 for c in classifications if c.classification == "parallel_effect")
+
+        duration = time.time() - start
+        logger.info(
+            "Completed temporal in %.1fs — upstream=%d, downstream=%d, parallel=%d",
+            duration, upstream, downstream, parallel
+        )
+
         return {
             "temporal_classifications": classifications,
             "errors": parse_errors,
         }
 
     except Exception as e:
+        duration = time.time() - start
+        logger.error("Temporal analysis failed after %.1fs: %s", duration, str(e))
         return {
             "temporal_classifications": [],
             "errors": [f"Temporal analysis failed: {str(e)}"],
