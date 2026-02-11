@@ -1,10 +1,18 @@
 """
-Entity Resolution Node: Parallel entity name resolution using Kestrel KG.
+Entity Resolution Node: Two-tier entity name resolution using Kestrel KG.
 
 This node resolves raw entity names to knowledge graph identifiers (CURIEs)
-by querying the Kestrel MCP server in parallel batches.
+using a two-tier approach:
 
-Uses the Claude Agent SDK with McpStdioServerConfig for uvx-based MCP server.
+Tier 1 (API): Direct hybrid_search calls via Kestrel HTTP client (~100ms each)
+  - Fast, reliable - uses Kestrel's ranking which is typically accurate
+  - Top result with score > 0.6 is accepted
+
+Tier 2 (LLM): Falls back to Claude Agent SDK for ambiguous cases
+  - Handles complex synonyms, abbreviations, partial matches
+  - More expensive but can reason about alternatives
+
+This hybrid approach optimizes for speed while maintaining accuracy.
 """
 
 import asyncio
@@ -14,6 +22,7 @@ import re
 import time
 from typing import Any
 
+from ..kestrel_client import call_kestrel_tool
 from ..state import DiscoveryState, EntityResolution
 
 logger = logging.getLogger(__name__)
@@ -88,6 +97,107 @@ If truly not found: {"curie": null, "name": null, "category": null, "confidence"
 
 # Batch size for parallel resolution
 BATCH_SIZE = 6
+
+# Minimum score threshold for Tier 1 API resolution
+# Below this score, entities fall through to Tier 2 LLM
+TIER1_MIN_SCORE = 0.6
+
+
+async def resolve_via_api(entity: str) -> EntityResolution | None:
+    """
+    Tier 1: Attempt to resolve entity via direct Kestrel API call.
+
+    Uses hybrid_search and takes the top-scored result if confidence is high enough.
+    Returns None if resolution fails or confidence is too low (triggering Tier 2).
+
+    Confidence mapping from hybrid_search score:
+    - score > 1.5 → confidence 0.95 (exact + vector match)
+    - score > 1.0 → confidence 0.90
+    - score > 0.8 → confidence 0.80
+    - score > 0.6 → confidence 0.70
+    - score < 0.6 → fall through to Tier 2 (returns None)
+    """
+    try:
+        # Call hybrid_search directly
+        result = await call_kestrel_tool("hybrid_search", {
+            "query": entity,
+            "limit": 1,  # Only need top result
+        })
+
+        # Debug logging - show raw API response
+        is_error = result.get("isError", False)
+        content = result.get("content", [])
+        logger.info(
+            "Tier 1 '%s': isError=%s, content_len=%d",
+            entity, is_error, len(content)
+        )
+
+        if is_error:
+            logger.debug("Tier 1 '%s': API returned error", entity)
+            return None
+
+        # Parse the search results
+        if not content:
+            logger.info("Tier 1 '%s': No content in response", entity)
+            return None
+
+        # Extract JSON from content
+        text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
+
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            logger.info("Tier 1 '%s': Could not parse JSON response", entity)
+            return None
+
+        # Handle both list and dict responses
+        results = data if isinstance(data, list) else data.get("results", [])
+
+        if not results:
+            logger.info("Tier 1 '%s': No search results", entity)
+            return None
+
+        # Take top result
+        top = results[0]
+        score = float(top.get("score", 0))
+        curie = top.get("curie") or top.get("id")
+        name = top.get("name") or top.get("label")
+        category = top.get("category")
+
+        # Map score to confidence
+        if score > 1.5:
+            confidence = 0.95
+        elif score > 1.0:
+            confidence = 0.90
+        elif score > 0.8:
+            confidence = 0.80
+        elif score > TIER1_MIN_SCORE:
+            confidence = 0.70
+        else:
+            # Score too low - fall through to Tier 2
+            logger.info(
+                "Tier 1 '%s': Score %.2f below threshold %.2f, falling through to Tier 2",
+                entity, score, TIER1_MIN_SCORE
+            )
+            return None
+
+        logger.info(
+            "Tier 1 '%s': resolved to %s (score=%.2f, confidence=%.2f)",
+            entity, curie, score, confidence
+        )
+
+        return EntityResolution(
+            raw_name=entity,
+            curie=curie,
+            resolved_name=name,
+            category=category,
+            confidence=confidence,
+            method="api",  # Mark as API-resolved
+        )
+
+    except Exception as e:
+        logger.warning("Tier 1 '%s': Exception - %s", entity, str(e))
+        return None
 
 
 def parse_resolution_result(entity: str, result_text: str) -> EntityResolution:
@@ -218,12 +328,15 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     """
     Resolve all raw entities to knowledge graph identifiers.
 
-    Processes entities in parallel batches of BATCH_SIZE (6) to avoid
-    overwhelming the Kestrel server while maintaining good throughput.
+    Implements two-tier resolution:
 
-    Implements two-pass resolution:
-    1. First pass: Standard resolution for all entities
-    2. Second pass: Aggressive retry for failed entities with enhanced prompts
+    Tier 1 (API): Try direct hybrid_search for all entities in parallel
+      - Fast (~100ms each), uses Kestrel's reliable ranking
+      - Accepts top result if score > 0.6
+
+    Tier 2 (LLM): Falls back to Claude Agent SDK for failed entities
+      - Handles complex synonyms, abbreviations, partial matches
+      - Uses standard prompt first, then aggressive retry prompt
 
     Returns resolved_entities list and any errors encountered.
     """
@@ -238,57 +351,140 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             "errors": [],
         }
 
-    all_results: list[EntityResolution] = []
+    all_results: list[EntityResolution | None] = [None] * len(entities)
     errors: list[str] = []
 
-    # First pass: Standard resolution
-    for batch in chunk(entities, BATCH_SIZE):
-        batch_results = await asyncio.gather(
-            *[resolve_single_entity(e) for e in batch],
-            return_exceptions=True,
+    # ========== TIER 1: API Resolution ==========
+    tier1_start = time.time()
+    logger.info("Tier 1 (API): Attempting direct resolution for %d entities", len(entities))
+
+    # Run all API calls in parallel (they're fast and independent)
+    tier1_results = await asyncio.gather(
+        *[resolve_via_api(e) for e in entities],
+        return_exceptions=True,
+    )
+
+    tier1_resolved = 0
+    tier1_failed_indices = []
+
+    for i, (entity, result) in enumerate(zip(entities, tier1_results)):
+        if isinstance(result, Exception):
+            logger.debug("Tier 1 '%s': Exception - %s", entity, str(result))
+            tier1_failed_indices.append(i)
+        elif result is not None:
+            # Successfully resolved via API
+            all_results[i] = result
+            tier1_resolved += 1
+        else:
+            # Returned None - needs Tier 2
+            tier1_failed_indices.append(i)
+
+    tier1_duration = time.time() - tier1_start
+    logger.info(
+        "Tier 1 (API) resolved %d/%d entities in %.1fs",
+        tier1_resolved, len(entities), tier1_duration
+    )
+
+    # ========== TIER 2: LLM Resolution ==========
+    if tier1_failed_indices and HAS_SDK:
+        tier2_start = time.time()
+        failed_entities = [entities[i] for i in tier1_failed_indices]
+        logger.info(
+            "Tier 2 (LLM): Processing %d entities that failed Tier 1",
+            len(failed_entities)
         )
 
-        for entity, result in zip(batch, batch_results):
+        # First pass: Standard resolution in batches
+        tier2_results = []
+        for batch in chunk(failed_entities, BATCH_SIZE):
+            batch_results = await asyncio.gather(
+                *[resolve_single_entity(e) for e in batch],
+                return_exceptions=True,
+            )
+            tier2_results.extend(batch_results)
+
+        # Map results back to all_results
+        for idx, result in zip(tier1_failed_indices, tier2_results):
             if isinstance(result, Exception):
-                errors.append(f"Resolution failed for '{entity}': {str(result)}")
-                all_results.append(EntityResolution(
-                    raw_name=entity,
+                errors.append(f"Resolution failed for '{entities[idx]}': {str(result)}")
+                all_results[idx] = EntityResolution(
+                    raw_name=entities[idx],
                     curie=None,
                     resolved_name=None,
                     category=None,
                     confidence=0.0,
                     method="failed",
-                ))
+                )
             else:
-                all_results.append(result)
+                all_results[idx] = result
 
-    # Second pass: Retry failed entities with aggressive prompt
-    failed_indices = [i for i, r in enumerate(all_results) if r.curie is None]
+        # Second pass: Aggressive retry for still-failed entities
+        still_failed_indices = [i for i in tier1_failed_indices if all_results[i] and not all_results[i].curie]
 
-    if failed_indices and HAS_SDK:
-        failed_entities = [all_results[i].raw_name for i in failed_indices]
-
-        # Retry in smaller batches (more resources per entity)
-        retry_batch_size = max(2, BATCH_SIZE // 2)
-        retry_results = []
-
-        for batch in chunk(failed_entities, retry_batch_size):
-            batch_results = await asyncio.gather(
-                *[resolve_single_entity(e, is_retry=True) for e in batch],
-                return_exceptions=True,
+        if still_failed_indices:
+            still_failed_entities = [entities[i] for i in still_failed_indices]
+            logger.info(
+                "Tier 2 retry: %d entities still unresolved, trying aggressive prompt",
+                len(still_failed_entities)
             )
-            retry_results.extend(batch_results)
 
-        # Merge successful retries back into results
-        for idx, retry_result in zip(failed_indices, retry_results):
-            if isinstance(retry_result, EntityResolution) and retry_result.curie:
-                all_results[idx] = retry_result
+            retry_batch_size = max(2, BATCH_SIZE // 2)
+            retry_results = []
+
+            for batch in chunk(still_failed_entities, retry_batch_size):
+                batch_results = await asyncio.gather(
+                    *[resolve_single_entity(e, is_retry=True) for e in batch],
+                    return_exceptions=True,
+                )
+                retry_results.extend(batch_results)
+
+            # Merge successful retries back
+            for idx, retry_result in zip(still_failed_indices, retry_results):
+                if isinstance(retry_result, EntityResolution) and retry_result.curie:
+                    all_results[idx] = retry_result
+
+        tier2_duration = time.time() - tier2_start
+        tier2_resolved = sum(1 for i in tier1_failed_indices if all_results[i] and all_results[i].curie)
+        logger.info(
+            "Tier 2 (LLM) resolved %d/%d entities in %.1fs",
+            tier2_resolved, len(tier1_failed_indices), tier2_duration
+        )
+    elif tier1_failed_indices:
+        # SDK not available - mark remaining as failed
+        for idx in tier1_failed_indices:
+            all_results[idx] = EntityResolution(
+                raw_name=entities[idx],
+                curie=None,
+                resolved_name=None,
+                category=None,
+                confidence=0.0,
+                method="failed",
+            )
+
+    # Ensure no None values remain
+    final_results = []
+    for i, r in enumerate(all_results):
+        if r is None:
+            final_results.append(EntityResolution(
+                raw_name=entities[i],
+                curie=None,
+                resolved_name=None,
+                category=None,
+                confidence=0.0,
+                method="failed",
+            ))
+        else:
+            final_results.append(r)
 
     # Calculate final stats
-    resolved = [r for r in all_results if r.curie]
-    failed = [r for r in all_results if not r.curie]
+    resolved = [r for r in final_results if r.curie]
+    failed = [r for r in final_results if not r.curie]
     duration = time.time() - start
-    rate = 100 * len(resolved) / len(all_results) if all_results else 0
+    rate = 100 * len(resolved) / len(final_results) if final_results else 0
+
+    # Log resolution method breakdown
+    api_resolved = sum(1 for r in final_results if r.method == "api")
+    llm_resolved = len(resolved) - api_resolved
 
     if failed:
         failed_names = [r.raw_name for r in failed[:5]]
@@ -298,11 +494,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         )
 
     logger.info(
-        "Completed entity_resolution in %.1fs — resolved=%d, failed=%d (%.0f%%)",
-        duration, len(resolved), len(failed), rate
+        "Completed entity_resolution in %.1fs — resolved=%d (api=%d, llm=%d), failed=%d (%.0f%%)",
+        duration, len(resolved), api_resolved, llm_resolved, len(failed), rate
     )
 
     return {
-        "resolved_entities": all_results,
+        "resolved_entities": final_results,
         "errors": errors,
     }
