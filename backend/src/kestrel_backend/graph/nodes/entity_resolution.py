@@ -8,7 +8,11 @@ Tier 1 (API): Direct hybrid_search calls via Kestrel HTTP client (~100ms each)
   - Fast, reliable - uses Kestrel's ranking which is typically accurate
   - Top result with score > 0.6 is accepted
 
-Tier 2 (LLM): Falls back to Claude Agent SDK for ambiguous cases
+Tier 1.5 (Alias): For Tier 1 failures, try known aliases before falling back to LLM
+  - Uses entity_aliases extracted by intake node
+  - Avoids expensive LLM calls for entities with known alternative names
+
+Tier 2 (LLM): Falls back to Claude Agent SDK for remaining ambiguous cases
   - Handles complex synonyms, abbreviations, partial matches
   - More expensive but can reason about alternatives
 
@@ -345,20 +349,26 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     """
     Resolve all raw entities to knowledge graph identifiers.
 
-    Implements two-tier resolution:
+    Implements three-tier resolution:
 
     Tier 1 (API): Try direct hybrid_search for all entities in parallel
       - Fast (~100ms each), uses Kestrel's reliable ranking
       - Accepts top result if score > 0.6
 
-    Tier 2 (LLM): Falls back to Claude Agent SDK for failed entities
+    Tier 1.5 (Alias): For Tier 1 failures, try known aliases from intake
+      - Uses entity_aliases dict to find alternative names
+      - Avoids expensive LLM calls for entities with known aliases
+
+    Tier 2 (LLM): Falls back to Claude Agent SDK for remaining failed entities
       - Handles complex synonyms, abbreviations, partial matches
       - Uses standard prompt first, then aggressive retry prompt
 
     Returns resolved_entities list and any errors encountered.
     """
     entities = state.get("raw_entities", [])
-    logger.info("Starting entity_resolution with %d entities", len(entities))
+    aliases = state.get("entity_aliases", {})  # NEW: Get alias mappings from intake
+    logger.info("Starting entity_resolution with %d entities, %d alias mappings",
+                len(entities), len(aliases))
     start = time.time()
 
     if not entities:
@@ -393,7 +403,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             all_results[i] = result
             tier1_resolved += 1
         else:
-            # Returned None - needs Tier 2
+            # Returned None - needs Tier 1.5 or Tier 2
             tier1_failed_indices.append(i)
 
     tier1_duration = time.time() - tier1_start
@@ -402,12 +412,58 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         tier1_resolved, len(entities), tier1_duration
     )
 
-    # ========== TIER 2: LLM Resolution ==========
-    if tier1_failed_indices and HAS_SDK:
-        tier2_start = time.time()
-        failed_entities = [entities[i] for i in tier1_failed_indices]
+    # ========== TIER 1.5: ALIAS Resolution ==========
+    tier15_start = time.time()
+    tier15_resolved = 0
+    tier2_needed_indices = []
+
+    for idx in tier1_failed_indices:
+        entity = entities[idx]
+        
+        # Check if this entity has known aliases
+        if entity in aliases:
+            entity_aliases = aliases[entity]
+            logger.info("Tier 1.5: Trying %d aliases for '%s': %s",
+                       len(entity_aliases), entity, entity_aliases)
+            
+            resolved_via_alias = False
+            for alias in entity_aliases:
+                alias_result = await resolve_via_api(alias)
+                if alias_result is not None:
+                    # Use alias resolution but keep original raw_name
+                    all_results[idx] = EntityResolution(
+                        raw_name=entity,  # Keep original name
+                        curie=alias_result.curie,
+                        resolved_name=alias_result.resolved_name,
+                        category=alias_result.category,
+                        confidence=alias_result.confidence,
+                        method=f"alias:{alias}",  # Track that alias was used
+                    )
+                    tier15_resolved += 1
+                    resolved_via_alias = True
+                    logger.info("Tier 1.5 '%s': resolved via alias '%s' to %s",
+                               entity, alias, alias_result.curie)
+                    break
+            
+            if not resolved_via_alias:
+                tier2_needed_indices.append(idx)
+        else:
+            # No aliases for this entity
+            tier2_needed_indices.append(idx)
+
+    tier15_duration = time.time() - tier15_start
+    if tier1_failed_indices:
         logger.info(
-            "Tier 2 (LLM): Processing %d entities that failed Tier 1",
+            "Tier 1.5 (Alias) resolved %d/%d failed entities in %.1fs",
+            tier15_resolved, len(tier1_failed_indices), tier15_duration
+        )
+
+    # ========== TIER 2: LLM Resolution ==========
+    if tier2_needed_indices and HAS_SDK:
+        tier2_start = time.time()
+        failed_entities = [entities[i] for i in tier2_needed_indices]
+        logger.info(
+            "Tier 2 (LLM): Processing %d entities that failed Tier 1 and 1.5",
             len(failed_entities)
         )
 
@@ -421,7 +477,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             tier2_results.extend(batch_results)
 
         # Map results back to all_results
-        for idx, result in zip(tier1_failed_indices, tier2_results):
+        for idx, result in zip(tier2_needed_indices, tier2_results):
             if isinstance(result, Exception):
                 errors.append(f"Resolution failed for '{entities[idx]}': {str(result)}")
                 all_results[idx] = EntityResolution(
@@ -436,7 +492,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 all_results[idx] = result
 
         # Second pass: Aggressive retry for still-failed entities
-        still_failed_indices = [i for i in tier1_failed_indices if all_results[i] and not all_results[i].curie]
+        still_failed_indices = [i for i in tier2_needed_indices if all_results[i] and not all_results[i].curie]
 
         if still_failed_indices:
             still_failed_entities = [entities[i] for i in still_failed_indices]
@@ -461,14 +517,14 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                     all_results[idx] = retry_result
 
         tier2_duration = time.time() - tier2_start
-        tier2_resolved = sum(1 for i in tier1_failed_indices if all_results[i] and all_results[i].curie)
+        tier2_resolved = sum(1 for i in tier2_needed_indices if all_results[i] and all_results[i].curie)
         logger.info(
             "Tier 2 (LLM) resolved %d/%d entities in %.1fs",
-            tier2_resolved, len(tier1_failed_indices), tier2_duration
+            tier2_resolved, len(tier2_needed_indices), tier2_duration
         )
-    elif tier1_failed_indices:
+    elif tier2_needed_indices:
         # SDK not available - mark remaining as failed
-        for idx in tier1_failed_indices:
+        for idx in tier2_needed_indices:
             all_results[idx] = EntityResolution(
                 raw_name=entities[idx],
                 curie=None,
@@ -499,9 +555,9 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     duration = time.time() - start
     rate = 100 * len(resolved) / len(final_results) if final_results else 0
 
-    # tier1_resolved was counted during Tier 1 processing
-    # llm_resolved is everything else that succeeded
-    llm_resolved = len(resolved) - tier1_resolved
+    # Count by tier
+    alias_resolved = sum(1 for r in final_results if r.method and r.method.startswith("alias:"))
+    llm_resolved = len(resolved) - tier1_resolved - alias_resolved
 
     if failed:
         failed_names = [r.raw_name for r in failed[:5]]
@@ -511,8 +567,8 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         )
 
     logger.info(
-        "Completed entity_resolution in %.1fs — resolved=%d (tier1=%d, tier2=%d), failed=%d (%.0f%%)",
-        duration, len(resolved), tier1_resolved, llm_resolved, len(failed), rate
+        "Completed entity_resolution in %.1fs — resolved=%d (tier1=%d, alias=%d, tier2=%d), failed=%d (%.0f%%)",
+        duration, len(resolved), tier1_resolved, alias_resolved, llm_resolved, len(failed), rate
     )
 
     return {

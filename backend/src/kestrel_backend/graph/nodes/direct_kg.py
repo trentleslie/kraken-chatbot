@@ -1,9 +1,15 @@
 """
-Direct KG Analysis Node: Analyze well-characterized entities using knowledge graph traversal.
+Direct KG Analysis Node: Analyze entities using knowledge graph traversal with ranking presets.
 
-This node uses a two-tier architecture for optimal performance:
-- Tier 1 (API-first): Direct Kestrel API calls with structured JSON parsing (~1-2s per entity)
-- Tier 2 (LLM fallback): Claude SDK for failed API calls or complex reasoning
+This node uses a two-tier architecture with Kestrel's ranking presets:
+- Tier 1 (API-first): 6 parallel API calls (3 categories × 2 presets) per entity
+- Tier 2 (LLM fallback): Claude SDK for failed API calls only
+
+Ranking Presets:
+- "established": Well-characterized, high-evidence connections
+- "hidden_gems": Novel/less-studied connections that may reveal new biology
+
+# Future: Add "frontier" and "speculative" presets for deeper exploration
 
 Extracts:
 - Disease associations via one_hop_query filtered by biolink:Disease
@@ -17,7 +23,6 @@ spurious associations.
 import asyncio
 import json
 import logging
-import os
 import re
 import time
 from typing import Any
@@ -42,14 +47,11 @@ except ImportError:
 # Configuration Constants
 # =============================================================================
 
-# Discovery depth configuration
-# "standard" = Tier 1 API only (fast, ~3s for 8 entities)
-# "deep" = Tier 2 LLM for well_characterized entities (slow, ~20min, but finds novel associations)
-DISCOVERY_DEPTH = os.getenv("DIRECT_KG_DEPTH", "standard")
+# Edges per preset per category (6 calls × 25 = 150 max per entity)
+PRESET_LIMIT = 25
 
-# Tier 1 API settings
-SLIM_LIMIT = 50   # edges per category filter in standard mode
-DEEP_LIMIT = 200  # edges per category filter in deep mode (still API, no LLM)
+# Ranking presets to use (Kestrel API supports these)
+PRESETS = ["established", "hidden_gems"]
 
 # Hub detection threshold (uses edge_count from triage's novelty_scores)
 HUB_THRESHOLD = 5000  # Entities with >5000 edges are flagged as hubs
@@ -101,274 +103,296 @@ If the query returns no results or fails, return:
 
 
 # =============================================================================
-# Tier 1: API-First Analysis (Fast Path)
+# Deduplication and Merging Helpers
 # =============================================================================
 
-def parse_disease_edges(
-    curie: str,
-    raw_name: str,
-    result: dict[str, Any]
-) -> tuple[list[DiseaseAssociation], list[Finding], list[str]]:
+def _merge_into_deduped(
+    deduped: dict[str, dict],
+    results: list[dict],
+    preset: str,
+    nodes: dict[str, dict]
+) -> None:
     """
-    Parse one_hop_query response into DiseaseAssociation objects and findings.
+    Merge API results into deduplicated dict, tracking which presets found each.
 
-    Response structure (from actual API test):
-    - content[0]["text"] contains JSON string with:
-      - results[]: list of {end_node_id, edges: [[subj, pred, obj, qual, source, supporting, ...]], score}
-      - nodes: {curie: {name, categories, ...}}
-    - Edge indices per edge_schema: [0]=subject, [1]=predicate, [4]=primary_knowledge_source, [5]=supporting_sources
-
-    Returns: (disease_associations, findings, hub_flags)
+    Args:
+        deduped: Dict keyed by end_node_id, value contains edge info and presets
+        results: List of result rows from API response
+        preset: Which preset found these results ("established" or "hidden_gems")
+        nodes: Nodes dict from API response for name lookup
     """
-    diseases: list[DiseaseAssociation] = []
-    findings: list[Finding] = []
-    hub_flags: list[str] = []
-
-    if result.get("isError"):
-        return diseases, findings, hub_flags
-
-    content = result.get("content", [])
-    if not content:
-        return diseases, findings, hub_flags
-
-    try:
-        text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
-        data = json.loads(text)
-    except (json.JSONDecodeError, IndexError, KeyError):
-        return diseases, findings, hub_flags
-
-    # Get nodes dict for name lookup
-    nodes = data.get("nodes", {})
-
-    # Process each result row
-    for row in data.get("results", []):
-        try:
-            end_node_id = row.get("end_node_id", "")
-            # Get name from nodes dict, fallback to CURIE
-            end_node_info = nodes.get(end_node_id, {})
-            end_node_name = end_node_info.get("name", end_node_id)
-
-            # Extract edge info - take first edge for this end_node
-            edges = row.get("edges", [])
-            if not edges:
-                continue
-
-            edge = edges[0]  # Use first edge
-            predicate = edge[1] if len(edge) > 1 else "biolink:related_to"
-            source = edge[4] if len(edge) > 4 else "unknown"
-            supporting = edge[5] if len(edge) > 5 else None
-
-            # Determine evidence type from source
-            evidence_type = "curated"
-            if source and "gwas" in source.lower():
-                evidence_type = "gwas"
-            elif source and ("text" in source.lower() or "pubmed" in source.lower()):
-                evidence_type = "text_mined"
-            elif source and "predict" in source.lower():
-                evidence_type = "predicted"
-
-            # Extract PMIDs from supporting_sources if available
-            pmids = []
-            if supporting and isinstance(supporting, list):
-                for s in supporting:
-                    if isinstance(s, str) and s.startswith("PMID:"):
-                        pmids.append(s)
-
-            diseases.append(DiseaseAssociation(
-                entity_curie=curie,
-                disease_curie=end_node_id,
-                disease_name=end_node_name,
-                predicate=predicate,
-                source=source or "unknown",
-                pmids=pmids,
-                evidence_type=evidence_type,
-            ))
-
-            findings.append(Finding(
-                entity=curie,
-                claim=f"{raw_name} is associated with {end_node_name} via {predicate}",
-                tier=1,
-                predicate=predicate,
-                source="direct_kg",
-                pmids=pmids,
-                confidence="high" if pmids else "moderate",
-            ))
-        except Exception:
+    for row in results:
+        end_node_id = row.get("end_node_id", "")
+        if not end_node_id:
             continue
 
-    # Hub detection: use edge_count from novelty_scores (passed separately), not from this response
-    return diseases, findings, hub_flags
+        # Get node info
+        node_info = nodes.get(end_node_id, {})
+        node_name = node_info.get("name", end_node_id)
+
+        # Get edge info
+        edges = row.get("edges", [])
+        if not edges:
+            continue
+
+        edge = edges[0]
+        predicate = edge[1] if len(edge) > 1 else "biolink:related_to"
+        source = edge[4] if len(edge) > 4 else "unknown"
+        supporting = edge[5] if len(edge) > 5 else None
+
+        # Extract PMIDs from supporting_sources
+        pmids = []
+        if supporting and isinstance(supporting, list):
+            for s in supporting:
+                if isinstance(s, str) and s.startswith("PMID:"):
+                    pmids.append(s)
+
+        if end_node_id in deduped:
+            # Already seen - track that both presets found it
+            existing = deduped[end_node_id]
+            if existing["preset"] != preset:
+                existing["preset"] = "both"
+            # Merge PMIDs
+            existing["pmids"] = list(set(existing["pmids"] + pmids))
+        else:
+            # New entry
+            deduped[end_node_id] = {
+                "end_node_id": end_node_id,
+                "name": node_name,
+                "predicate": predicate,
+                "source": source,
+                "pmids": pmids,
+                "preset": preset,
+            }
 
 
-def parse_pathway_edges(
+def _determine_evidence_type(source: str) -> str:
+    """Determine evidence type from source string."""
+    if not source:
+        return "curated"
+    source_lower = source.lower()
+    if "gwas" in source_lower:
+        return "gwas"
+    elif "text" in source_lower or "pubmed" in source_lower:
+        return "text_mined"
+    elif "predict" in source_lower:
+        return "predicted"
+    return "curated"
+
+
+# =============================================================================
+# Tier 1: API-First Analysis with Ranking Presets
+# =============================================================================
+
+def parse_deduped_diseases(
     curie: str,
     raw_name: str,
-    result: dict[str, Any]
+    deduped: dict[str, dict]
+) -> tuple[list[DiseaseAssociation], list[Finding]]:
+    """Convert deduplicated disease results into structured objects."""
+    diseases: list[DiseaseAssociation] = []
+    findings: list[Finding] = []
+
+    for end_node_id, data in deduped.items():
+        evidence_type = _determine_evidence_type(data["source"])
+        preset = data["preset"]
+
+        diseases.append(DiseaseAssociation(
+            entity_curie=curie,
+            disease_curie=end_node_id,
+            disease_name=data["name"],
+            predicate=data["predicate"],
+            source=data["source"] or "unknown",
+            pmids=data["pmids"],
+            evidence_type=evidence_type,
+            discovery_preset=preset,
+        ))
+
+        # Highlight hidden_gems in finding claim
+        novelty_note = ""
+        if preset == "hidden_gems":
+            novelty_note = " [novel connection]"
+        elif preset == "both":
+            novelty_note = " [established + novel]"
+
+        findings.append(Finding(
+            entity=curie,
+            claim=f"{raw_name} is associated with {data['name']}{novelty_note} via {data['predicate']}",
+            tier=1,
+            predicate=data["predicate"],
+            source=f"direct_kg:{preset}",
+            pmids=data["pmids"],
+            confidence="high" if data["pmids"] else "moderate",
+        ))
+
+    return diseases, findings
+
+
+def parse_deduped_pathways(
+    curie: str,
+    raw_name: str,
+    deduped: dict[str, dict]
 ) -> tuple[list[PathwayMembership], list[Finding]]:
-    """Parse one_hop_query response into PathwayMembership objects."""
+    """Convert deduplicated pathway results into structured objects."""
     pathways: list[PathwayMembership] = []
     findings: list[Finding] = []
 
-    if result.get("isError"):
-        return pathways, findings
+    for end_node_id, data in deduped.items():
+        preset = data["preset"]
 
-    content = result.get("content", [])
-    if not content:
-        return pathways, findings
+        pathways.append(PathwayMembership(
+            entity_curie=curie,
+            pathway_curie=end_node_id,
+            pathway_name=data["name"],
+            predicate=data["predicate"],
+            source=data["source"] or "unknown",
+            discovery_preset=preset,
+        ))
 
-    try:
-        text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
-        data = json.loads(text)
-    except (json.JSONDecodeError, IndexError, KeyError):
-        return pathways, findings
+        novelty_note = ""
+        if preset == "hidden_gems":
+            novelty_note = " [novel connection]"
+        elif preset == "both":
+            novelty_note = " [established + novel]"
 
-    # Get nodes dict for name lookup
-    nodes = data.get("nodes", {})
-
-    for row in data.get("results", []):
-        try:
-            end_node_id = row.get("end_node_id", "")
-            end_node_info = nodes.get(end_node_id, {})
-            end_node_name = end_node_info.get("name", end_node_id)
-            edges = row.get("edges", [])
-
-            if not edges:
-                continue
-
-            edge = edges[0]
-            predicate = edge[1] if len(edge) > 1 else "biolink:participates_in"
-            source = edge[4] if len(edge) > 4 else "unknown"
-
-            pathways.append(PathwayMembership(
-                entity_curie=curie,
-                pathway_curie=end_node_id,
-                pathway_name=end_node_name,
-                predicate=predicate,
-                source=source or "unknown",
-            ))
-
-            findings.append(Finding(
-                entity=curie,
-                claim=f"{raw_name} participates in {end_node_name}",
-                tier=1,
-                predicate=predicate,
-                source="direct_kg",
-                confidence="high",
-            ))
-        except Exception:
-            continue
+        findings.append(Finding(
+            entity=curie,
+            claim=f"{raw_name} participates in {data['name']}{novelty_note}",
+            tier=1,
+            predicate=data["predicate"],
+            source=f"direct_kg:{preset}",
+            confidence="high",
+        ))
 
     return pathways, findings
 
 
-def parse_gene_edges(
+def parse_deduped_genes(
     curie: str,
     raw_name: str,
-    result: dict[str, Any]
+    deduped: dict[str, dict]
 ) -> list[Finding]:
-    """Parse one_hop_query response into Finding objects for gene interactions."""
+    """Convert deduplicated gene interaction results into findings."""
     findings: list[Finding] = []
 
-    if result.get("isError"):
-        return findings
+    for end_node_id, data in deduped.items():
+        preset = data["preset"]
 
-    content = result.get("content", [])
-    if not content:
-        return findings
+        novelty_note = ""
+        if preset == "hidden_gems":
+            novelty_note = " [novel connection]"
+        elif preset == "both":
+            novelty_note = " [established + novel]"
 
-    try:
-        text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
-        data = json.loads(text)
-    except (json.JSONDecodeError, IndexError, KeyError):
-        return findings
-
-    # Get nodes dict for name lookup
-    nodes = data.get("nodes", {})
-
-    for row in data.get("results", []):
-        try:
-            end_node_id = row.get("end_node_id", "")
-            end_node_info = nodes.get(end_node_id, {})
-            end_node_name = end_node_info.get("name", end_node_id)
-            edges = row.get("edges", [])
-
-            if not edges:
-                continue
-
-            edge = edges[0]
-            predicate = edge[1] if len(edge) > 1 else "biolink:interacts_with"
-
-            findings.append(Finding(
-                entity=curie,
-                claim=f"{raw_name} interacts with {end_node_name} ({end_node_id})",
-                tier=2,
-                predicate=predicate,
-                source="direct_kg",
-                confidence="moderate",
-            ))
-        except Exception:
-            continue
+        findings.append(Finding(
+            entity=curie,
+            claim=f"{raw_name} interacts with {data['name']} ({end_node_id}){novelty_note}",
+            tier=2,
+            predicate=data["predicate"],
+            source=f"direct_kg:{preset}",
+            confidence="moderate",
+        ))
 
     return findings
 
 
 async def analyze_via_api(
     curie: str,
-    raw_name: str,
-    limit: int = SLIM_LIMIT
+    raw_name: str
 ) -> tuple[list[DiseaseAssociation], list[PathwayMembership], list[Finding], list[str], list[str]] | None:
     """
-    Tier 1: Analyze entity via direct Kestrel API calls.
+    Tier 1: Analyze entity via direct Kestrel API calls with ranking presets.
 
-    Makes 3 parallel filtered one_hop_query calls (Disease, BiologicalProcess, Gene)
-    and parses the structured JSON responses directly.
+    Makes 6 parallel calls: 3 categories × 2 presets (established + hidden_gems)
+    Deduplicates results by end_node_id, tracking which presets found each.
 
     Args:
         curie: Entity CURIE to analyze
         raw_name: Human-readable name for findings
-        limit: Max edges per category (SLIM_LIMIT for standard, DEEP_LIMIT for deep mode)
 
     Returns:
         Tuple of (diseases, pathways, findings, hub_flags, errors) or None if API fails.
     """
     try:
-        # Make 3 parallel filtered queries
-        disease_task = call_kestrel_tool("one_hop_query", {
-            "start_node_ids": curie,
-            "end_category_filter": "biolink:Disease",
-            "mode": "slim",
-            "limit": limit,
-        })
-        pathway_task = call_kestrel_tool("one_hop_query", {
-            "start_node_ids": curie,
-            "end_category_filter": "biolink:BiologicalProcess",
-            "mode": "slim",
-            "limit": limit,
-        })
-        gene_task = call_kestrel_tool("one_hop_query", {
-            "start_node_ids": curie,
-            "end_category_filter": "biolink:Gene",
-            "mode": "slim",
-            "limit": limit,
-        })
+        categories = [
+            ("biolink:Disease", "disease"),
+            ("biolink:BiologicalProcess", "pathway"),
+            ("biolink:Gene", "gene"),
+        ]
 
-        disease_result, pathway_result, gene_result = await asyncio.gather(
-            disease_task, pathway_task, gene_task
-        )
+        # Build 6 parallel tasks
+        tasks = []
+        task_labels = []
 
-        # Parse results and build structured objects
-        diseases, disease_findings, hub_flags = parse_disease_edges(curie, raw_name, disease_result)
-        pathways, pathway_findings = parse_pathway_edges(curie, raw_name, pathway_result)
-        gene_findings = parse_gene_edges(curie, raw_name, gene_result)
+        for cat_filter, cat_key in categories:
+            for preset in PRESETS:
+                tasks.append(call_kestrel_tool("one_hop_query", {
+                    "start_node_ids": curie,
+                    "end_category_filter": cat_filter,
+                    "ranking": {"preset": preset},
+                    "mode": "slim",
+                    "limit": PRESET_LIMIT,
+                }))
+                task_labels.append((cat_key, preset))
+
+        # Execute all 6 calls in parallel
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Organize results by category, deduplicate within each
+        disease_deduped: dict[str, dict] = {}
+        pathway_deduped: dict[str, dict] = {}
+        gene_deduped: dict[str, dict] = {}
+
+        for i, result in enumerate(results):
+            cat_key, preset = task_labels[i]
+
+            if isinstance(result, Exception):
+                logger.warning("API call failed for %s/%s/%s: %s",
+                              curie, cat_key, preset, str(result))
+                continue
+
+            if result.get("isError"):
+                continue
+
+            content = result.get("content", [])
+            if not content:
+                continue
+
+            try:
+                text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
+                data = json.loads(text)
+            except (json.JSONDecodeError, IndexError, KeyError):
+                continue
+
+            nodes = data.get("nodes", {})
+            api_results = data.get("results", [])
+
+            if cat_key == "disease":
+                _merge_into_deduped(disease_deduped, api_results, preset, nodes)
+            elif cat_key == "pathway":
+                _merge_into_deduped(pathway_deduped, api_results, preset, nodes)
+            elif cat_key == "gene":
+                _merge_into_deduped(gene_deduped, api_results, preset, nodes)
+
+        # Convert deduplicated results to structured objects
+        diseases, disease_findings = parse_deduped_diseases(curie, raw_name, disease_deduped)
+        pathways, pathway_findings = parse_deduped_pathways(curie, raw_name, pathway_deduped)
+        gene_findings = parse_deduped_genes(curie, raw_name, gene_deduped)
 
         all_findings = disease_findings + pathway_findings + gene_findings
 
+        # Count by preset for logging
+        established_count = sum(1 for d in disease_deduped.values() if d["preset"] == "established")
+        hidden_gems_count = sum(1 for d in disease_deduped.values() if d["preset"] == "hidden_gems")
+        both_count = sum(1 for d in disease_deduped.values() if d["preset"] == "both")
+
         logger.info(
-            "Tier 1 direct_kg '%s': diseases=%d, pathways=%d, genes=%d",
-            curie, len(diseases), len(pathways), len(gene_findings)
+            "Tier 1 direct_kg '%s': diseases=%d (est=%d, hg=%d, both=%d), pathways=%d, genes=%d",
+            curie, len(diseases), established_count, hidden_gems_count, both_count,
+            len(pathways), len(gene_findings)
         )
 
-        return diseases, pathways, all_findings, hub_flags, []
+        return diseases, pathways, all_findings, [], []  # Hub flags detected later
 
     except Exception as e:
         logger.warning("Tier 1 direct_kg '%s': Exception - %s", curie, str(e))
@@ -376,7 +400,7 @@ async def analyze_via_api(
 
 
 # =============================================================================
-# Tier 2: LLM Fallback (for API failures or complex reasoning)
+# Tier 2: LLM Fallback (for API failures)
 # =============================================================================
 
 def parse_direct_kg_result(
@@ -409,13 +433,25 @@ def parse_direct_kg_result(
 
     # Tier 2: Look for bare JSON object (handle nested objects)
     if data is None:
-        # Match outermost braces with nested content
-        json_match = re.search(r'\{(?:[^{}]|\{[^{}]*\}|\{(?:[^{}]|\{[^{}]*\})*\})*\}', result_text)
-        if json_match:
-            try:
-                data = json.loads(json_match.group())
-            except json.JSONDecodeError:
-                pass
+        # Match outermost braces with nested content - simplified pattern
+        start_idx = result_text.find('{')
+        if start_idx != -1:
+            # Find matching closing brace by counting
+            depth = 0
+            end_idx = start_idx
+            for i, c in enumerate(result_text[start_idx:], start_idx):
+                if c == '{':
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end_idx = i + 1
+                        break
+            if end_idx > start_idx:
+                try:
+                    data = json.loads(result_text[start_idx:end_idx])
+                except json.JSONDecodeError:
+                    pass
 
     # Tier 3: Try the entire response
     if data is None:
@@ -431,15 +467,8 @@ def parse_direct_kg_result(
     # Parse disease associations
     for d in data.get("diseases", []):
         try:
-            # Determine evidence type from source
             source = d.get("source", "unknown")
-            evidence_type = "curated"
-            if "gwas" in source.lower():
-                evidence_type = "gwas"
-            elif "text" in source.lower() or "pubmed" in source.lower():
-                evidence_type = "text_mined"
-            elif "predict" in source.lower():
-                evidence_type = "predicted"
+            evidence_type = _determine_evidence_type(source)
 
             diseases.append(DiseaseAssociation(
                 entity_curie=curie,
@@ -449,20 +478,19 @@ def parse_direct_kg_result(
                 source=source,
                 pmids=d.get("pmids", []),
                 evidence_type=evidence_type,
+                discovery_preset="llm_fallback",
             ))
 
-            # Create Tier 1 finding for each disease association
             findings.append(Finding(
                 entity=curie,
                 claim=f"{raw_name} is associated with {d.get('name', 'unknown disease')} via {d.get('predicate', 'unknown')}",
                 tier=1,
                 predicate=d.get("predicate"),
-                source="direct_kg",
+                source="direct_kg:llm_fallback",
                 pmids=d.get("pmids", []),
                 confidence="high" if d.get("pmids") else "moderate",
             ))
 
-            # Check for hub flag
             if d.get("is_hub", False):
                 hub_flags.append(d.get("curie", ""))
 
@@ -478,21 +506,21 @@ def parse_direct_kg_result(
                 pathway_name=p.get("name", "Unknown"),
                 predicate=p.get("predicate", "biolink:participates_in"),
                 source=p.get("source", "unknown"),
+                discovery_preset="llm_fallback",
             ))
 
-            # Create Tier 1 finding for pathway
             findings.append(Finding(
                 entity=curie,
                 claim=f"{raw_name} participates in {p.get('name', 'unknown pathway')}",
                 tier=1,
                 predicate=p.get("predicate"),
-                source="direct_kg",
+                source="direct_kg:llm_fallback",
                 confidence="high",
             ))
         except Exception:
             continue
 
-    # Parse protein interactions (findings only, no separate model)
+    # Parse protein interactions
     for i in data.get("interactions", []):
         try:
             findings.append(Finding(
@@ -500,13 +528,12 @@ def parse_direct_kg_result(
                 claim=f"{raw_name} interacts with {i.get('name', 'unknown')} ({i.get('curie', '')})",
                 tier=2,
                 predicate=i.get("predicate"),
-                source="direct_kg",
+                source="direct_kg:llm_fallback",
                 confidence="moderate",
             ))
         except Exception:
             continue
 
-    # Collect hub flags
     hub_flags.extend(data.get("hub_flags", []))
 
     return diseases, pathways, findings, hub_flags
@@ -519,13 +546,12 @@ async def analyze_single_entity(
     """
     Tier 2: Analyze a single entity using Claude Agent SDK with LLM reasoning.
 
-    This is the fallback path when Tier 1 API calls fail or for deep analysis.
+    This is the fallback path when Tier 1 API calls fail.
 
     Returns:
         tuple of (diseases, pathways, findings, hub_flags, errors)
     """
     if not HAS_SDK:
-        # SDK not available - return placeholder for testing
         return (
             [],
             [],
@@ -558,7 +584,7 @@ async def analyze_single_entity(
                 mcp_servers={"kestrel": kestrel_config},
                 max_turns=4,
                 permission_mode="bypassPermissions",
-                max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for large KG responses
+                max_buffer_size=10 * 1024 * 1024,
             )
 
             result_text_parts = []
@@ -607,17 +633,14 @@ def chunk(items: list, size: int) -> list[list]:
 
 def get_raw_name_for_curie(curie: str, novelty_scores: list[NoveltyScore], resolved_entities: list) -> str:
     """Look up the raw name for a CURIE from novelty scores or resolved entities."""
-    # Check novelty scores first
     for score in novelty_scores:
         if score.curie == curie:
             return score.raw_name
 
-    # Fall back to resolved entities
     for entity in resolved_entities:
         if hasattr(entity, 'curie') and entity.curie == curie:
             return entity.raw_name
 
-    # Default to CURIE if no name found
     return curie
 
 
@@ -627,10 +650,10 @@ def get_raw_name_for_curie(curie: str, novelty_scores: list[NoveltyScore], resol
 
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
-    Two-tier analysis of well-characterized entities with configurable depth.
+    Analyze entities using Kestrel ranking presets for established vs novel connections.
 
-    Tier 1 (API-first): Direct Kestrel API calls with structured JSON parsing
-    Tier 2 (LLM fallback): Claude SDK for failed API calls or deep analysis mode
+    Tier 1 (API-first): 6 parallel API calls per entity (3 categories × 2 presets)
+    Tier 2 (LLM fallback): Claude SDK for failed API calls only
 
     Receives: well_characterized_curies + moderate_curies from triage
     Returns: direct_findings, disease_associations, pathway_memberships, hub_flags, errors
@@ -639,19 +662,8 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     moderate = state.get("moderate_curies", [])
     curies = well_char + moderate
 
-    # Get discovery depth from state or use default from environment
-    depth = state.get("discovery_depth", DISCOVERY_DEPTH)
-
-    # Configure based on depth mode
-    if depth == "deep":
-        limit = DEEP_LIMIT
-        use_llm_for_well_char = True
-    else:
-        limit = SLIM_LIMIT
-        use_llm_for_well_char = False
-
-    logger.info("Starting direct_kg with %d entities (depth=%s, limit=%d)",
-                len(curies), depth, limit)
+    logger.info("Starting direct_kg with %d entities (presets=%s)",
+                len(curies), PRESETS)
     start = time.time()
 
     if not curies:
@@ -668,18 +680,27 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     novelty_scores = state.get("novelty_scores", [])
     resolved_entities = state.get("resolved_entities", [])
 
-    # Prepare result containers with indices
+    # Track processed entities to avoid duplicates
+    processed_curies = set()
+
+    # Prepare result containers
     all_results: list[tuple | None] = [None] * len(curies)
     errors: list[str] = []
 
-    # ========== TIER 1: API Analysis ==========
+    # ========== TIER 1: API Analysis with Ranking Presets ==========
     tier1_start = time.time()
-    logger.info("Tier 1 (API): Analyzing %d entities", len(curies))
+    logger.info("Tier 1 (API): Analyzing %d entities with ranking presets", len(curies))
 
     tier1_tasks = []
     for curie in curies:
+        # Skip duplicates
+        if curie in processed_curies:
+            tier1_tasks.append(asyncio.sleep(0))  # Placeholder
+            continue
+        processed_curies.add(curie)
+
         raw_name = get_raw_name_for_curie(curie, novelty_scores, resolved_entities)
-        tier1_tasks.append(analyze_via_api(curie, raw_name, limit=limit))
+        tier1_tasks.append(analyze_via_api(curie, raw_name))
 
     tier1_results = await asyncio.gather(*tier1_tasks, return_exceptions=True)
 
@@ -689,26 +710,23 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     for i, result in enumerate(tier1_results):
         if isinstance(result, Exception):
             logger.warning("Tier 1 exception for %s: %s", curies[i], str(result))
-            tier2_needed.append(i)  # API exception
+            tier2_needed.append(i)
         elif result is None:
-            tier2_needed.append(i)  # API failed
+            tier2_needed.append(i)
+        elif result == ():  # asyncio.sleep placeholder for duplicates
+            continue
         else:
             all_results[i] = result
             tier1_success += 1
-            # In deep mode: also use LLM for well_characterized entities
-            if use_llm_for_well_char and curies[i] in well_char and i not in tier2_needed:
-                tier2_needed.append(i)  # LLM enrichment for novel associations
 
     tier1_duration = time.time() - tier1_start
     logger.info("Tier 1 (API) analyzed %d/%d entities in %.1fs",
                 tier1_success, len(curies), tier1_duration)
 
-    # ========== TIER 2: LLM Fallback / Enrichment ==========
+    # ========== TIER 2: LLM Fallback ==========
     if tier2_needed and HAS_SDK:
         tier2_start = time.time()
-        tier2_reason = "failed Tier 1" if not use_llm_for_well_char else "failed Tier 1 + well_characterized enrichment"
-        logger.info("Tier 2 (LLM): Processing %d entities (%s)",
-                    len(tier2_needed), tier2_reason)
+        logger.info("Tier 2 (LLM): Processing %d entities that failed Tier 1", len(tier2_needed))
 
         tier2_curies = [curies[i] for i in tier2_needed]
         tier2_indices = tier2_needed.copy()
@@ -728,20 +746,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 if isinstance(result, Exception):
                     errors.append(f"Tier 2 failed for {curies[idx]}: {str(result)}")
                 elif result is not None:
-                    # In deep mode, merge with existing API results
-                    if all_results[idx] is not None:
-                        # Merge: combine diseases, pathways, findings from both tiers
-                        existing = all_results[idx]
-                        diseases, pathways, findings, hub_flags, errs = result
-                        all_results[idx] = (
-                            existing[0] + diseases,
-                            existing[1] + pathways,
-                            existing[2] + findings,
-                            existing[3] + hub_flags,
-                            existing[4] + errs,
-                        )
-                    else:
-                        all_results[idx] = result
+                    all_results[idx] = result
 
         tier2_duration = time.time() - tier2_start
         logger.info("Tier 2 (LLM) completed in %.1fs", tier2_duration)
@@ -753,7 +758,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     all_hub_flags: list[str] = []
 
     for result in all_results:
-        if result:
+        if result and isinstance(result, tuple) and len(result) >= 5:
             diseases, pathways, findings, hub_flags, errs = result
             all_diseases.extend(diseases)
             all_pathways.extend(pathways)
@@ -768,9 +773,16 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 all_hub_flags.append(score.curie)
                 logger.info("Flagged hub entity: %s (edges=%d)", score.curie, score.edge_count)
 
+    # Count findings by preset for logging
+    established_findings = sum(1 for f in all_findings if "established" in (f.source or ""))
+    hidden_gems_findings = sum(1 for f in all_findings if "hidden_gems" in (f.source or ""))
+
     duration = time.time() - start
-    logger.info("Completed direct_kg in %.1fs — findings=%d, diseases=%d, pathways=%d (depth=%s)",
-                duration, len(all_findings), len(all_diseases), len(all_pathways), depth)
+    logger.info(
+        "Completed direct_kg in %.1fs — findings=%d (established=%d, hidden_gems=%d), diseases=%d, pathways=%d",
+        duration, len(all_findings), established_findings, hidden_gems_findings,
+        len(all_diseases), len(all_pathways)
+    )
 
     return {
         "direct_findings": all_findings,
