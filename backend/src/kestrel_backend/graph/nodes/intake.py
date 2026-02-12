@@ -206,7 +206,7 @@ def extract_aliases(query: str) -> dict[str, list[str]]:
     
     # Pattern: "primary_name (ALIAS)" or "primary_name (ALIAS)*"
     # Matches: word/phrase followed by parenthetical content
-    pattern = r"([A-Za-z0-9][\w\-\s]*?)\s*\(([^)]+)\)\s*\*?"
+    pattern = r"([A-Za-z0-9][\w\-\s]+?)\s*\(([^)]+)\)\s*\*?"
     
     for match in re.finditer(pattern, query):
         primary = match.group(1).strip()

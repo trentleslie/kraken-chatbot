@@ -680,8 +680,15 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     novelty_scores = state.get("novelty_scores", [])
     resolved_entities = state.get("resolved_entities", [])
 
-    # Track processed entities to avoid duplicates
-    processed_curies = set()
+    # Deduplicate curies BEFORE creating tasks
+    unique_curies: list[str] = []
+    curie_to_indices: dict[str, list[int]] = {}
+
+    for i, curie in enumerate(curies):
+        if curie not in curie_to_indices:
+            curie_to_indices[curie] = []
+            unique_curies.append(curie)
+        curie_to_indices[curie].append(i)
 
     # Prepare result containers
     all_results: list[tuple | None] = [None] * len(curies)
@@ -689,49 +696,44 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     # ========== TIER 1: API Analysis with Ranking Presets ==========
     tier1_start = time.time()
-    logger.info("Tier 1 (API): Analyzing %d entities with ranking presets", len(curies))
+    logger.info("Tier 1 (API): Analyzing %d unique entities (%d total with duplicates)",
+                len(unique_curies), len(curies))
 
     tier1_tasks = []
-    for curie in curies:
-        # Skip duplicates
-        if curie in processed_curies:
-            tier1_tasks.append(asyncio.sleep(0))  # Placeholder
-            continue
-        processed_curies.add(curie)
-
+    for curie in unique_curies:
         raw_name = get_raw_name_for_curie(curie, novelty_scores, resolved_entities)
         tier1_tasks.append(analyze_via_api(curie, raw_name))
 
     tier1_results = await asyncio.gather(*tier1_tasks, return_exceptions=True)
 
     tier1_success = 0
-    tier2_needed = []
+    tier2_needed_curies: list[str] = []
 
-    for i, result in enumerate(tier1_results):
+    for curie, result in zip(unique_curies, tier1_results):
+        indices = curie_to_indices[curie]
+
         if isinstance(result, Exception):
-            logger.warning("Tier 1 exception for %s: %s", curies[i], str(result))
-            tier2_needed.append(i)
+            logger.warning("Tier 1 exception for %s: %s", curie, str(result))
+            tier2_needed_curies.append(curie)
         elif result is None:
-            tier2_needed.append(i)
-        elif result == ():  # asyncio.sleep placeholder for duplicates
-            continue
+            tier2_needed_curies.append(curie)
         else:
-            all_results[i] = result
+            # Copy result to all indices where this curie appears
+            for idx in indices:
+                all_results[idx] = result
             tier1_success += 1
 
     tier1_duration = time.time() - tier1_start
-    logger.info("Tier 1 (API) analyzed %d/%d entities in %.1fs",
-                tier1_success, len(curies), tier1_duration)
+    logger.info("Tier 1 (API) analyzed %d/%d unique entities in %.1fs",
+                tier1_success, len(unique_curies), tier1_duration)
 
     # ========== TIER 2: LLM Fallback ==========
-    if tier2_needed and HAS_SDK:
+    if tier2_needed_curies and HAS_SDK:
         tier2_start = time.time()
-        logger.info("Tier 2 (LLM): Processing %d entities that failed Tier 1", len(tier2_needed))
+        logger.info("Tier 2 (LLM): Processing %d unique entities that failed Tier 1",
+                    len(tier2_needed_curies))
 
-        tier2_curies = [curies[i] for i in tier2_needed]
-        tier2_indices = tier2_needed.copy()
-
-        for batch in chunk(tier2_curies, BATCH_SIZE):
+        for batch in chunk(tier2_needed_curies, BATCH_SIZE):
             batch_tasks = []
             for curie in batch:
                 raw_name = get_raw_name_for_curie(curie, novelty_scores, resolved_entities)
@@ -739,14 +741,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
             batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
 
-            batch_indices = tier2_indices[:len(batch)]
-            tier2_indices = tier2_indices[len(batch):]
-
-            for idx, result in zip(batch_indices, batch_results):
+            for curie, result in zip(batch, batch_results):
+                indices = curie_to_indices[curie]
                 if isinstance(result, Exception):
-                    errors.append(f"Tier 2 failed for {curies[idx]}: {str(result)}")
+                    errors.append(f"Tier 2 failed for {curie}: {str(result)}")
                 elif result is not None:
-                    all_results[idx] = result
+                    for idx in indices:
+                        all_results[idx] = result
 
         tier2_duration = time.time() - tier2_start
         logger.info("Tier 2 (LLM) completed in %.1fs", tier2_duration)
