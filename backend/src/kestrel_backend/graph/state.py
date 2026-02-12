@@ -73,6 +73,9 @@ class DiseaseAssociation(BaseModel):
     evidence_type: Literal["gwas", "curated", "text_mined", "predicted"] = Field(
         "curated", description="Type of evidence supporting this association"
     )
+    discovery_preset: str = Field(
+        "", description="Ranking preset that found this: established, hidden_gems, or both"
+    )
 
 
 class PathwayMembership(BaseModel):
@@ -85,6 +88,9 @@ class PathwayMembership(BaseModel):
     pathway_name: str = Field(..., description="Pathway canonical name")
     predicate: str = Field(..., description="Relationship predicate")
     source: str = Field(..., description="Source database (e.g., Reactome, KEGG)")
+    discovery_preset: str = Field(
+        "", description="Ranking preset that found this: established, hidden_gems, or both"
+    )
 
 
 class InferredAssociation(BaseModel):
@@ -247,8 +253,14 @@ class DiscoveryState(TypedDict, total=False):
     # === Study Context (for longitudinal analysis) ===
     is_longitudinal: bool
     duration_years: int | None
-    fdr_entities: list[str]  # First-degree relatives
-    marginal_entities: list[str]  # Entities with marginal significance
+    fdr_entities: list[str]  # Entities that survived FDR correction (statistically significant)
+    marginal_entities: list[str]  # Entities with marginal/nominal significance (q > 0.05)
+
+    # === Structured Intake Context (from intake node) ===
+    entity_aliases: dict[str, list[str]]  # primary_name -> [alias1, alias2, ...]
+    entity_type_hints: dict[str, str]  # entity_name -> "metabolite"|"protein"|"gene"
+    study_context: dict[str, str]  # Structured study metadata (type, design, timepoints, etc.)
+    analytical_directives: list[str]  # User's specific analysis priorities/requests
 
     # === Phase 2: Entity Resolution ===
     # Uses operator.add reducer for parallel batch writes
@@ -262,9 +274,6 @@ class DiscoveryState(TypedDict, total=False):
     moderate_curies: list[str]  # 20-199 edges
     sparse_curies: list[str]  # 1-19 edges
     cold_start_curies: list[str]  # 0 edges
-    
-    # === Phase 3: Analysis Configuration ===
-    discovery_depth: Literal["standard", "deep"]  # "standard"=API-only, "deep"=API+LLM enrichment
 
     # === Phase 4: Analysis Results (parallel branches) ===
     # Both use operator.add to enable safe parallel writes from concurrent branches
