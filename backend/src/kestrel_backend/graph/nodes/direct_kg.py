@@ -328,7 +328,7 @@ async def analyze_via_api(
             for preset in PRESETS:
                 tasks.append(call_kestrel_tool("one_hop_query", {
                     "start_node_ids": curie,
-                    "end_category_filter": cat_filter,
+                    "end_node_category": cat_filter,
                     "ranking": {"preset": preset},
                     "mode": "slim",
                     "limit": PRESET_LIMIT,

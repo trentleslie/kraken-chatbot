@@ -23,7 +23,7 @@ from .kestrel_client import call_kestrel_tool
         "start_node_ids": str,  # Single CURIE or list
         "direction": str,       # 'forward', 'reverse', or 'both'
         "predicate_filter": str,
-        "end_category_filter": str,
+        "end_node_category": str,
         "end_node_ids": str,
         "mode": str,            # 'slim', 'full', or 'preview'
         "limit": int,

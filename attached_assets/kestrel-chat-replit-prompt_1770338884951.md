@@ -162,7 +162,7 @@ High-frequency predicates by edge count: related_to (862), subclass_of (405), ha
 For most questions, follow this pattern:
 1. **Resolve**: hybrid_search to convert entity name → CURIE(s)
 2. **Explore**: one_hop_query (preview mode first) to find relationships
-3. **Filter**: Apply predicate_filter and/or end_category_filter to narrow results
+3. **Filter**: Apply predicate_filter and/or end_node_category to narrow results
 4. **Detail**: get_nodes on interesting results for full information
 5. **Present**: Summarize findings with entity names, CURIEs, and relationship types
 
