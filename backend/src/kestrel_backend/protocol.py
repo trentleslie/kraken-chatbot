@@ -75,6 +75,15 @@ class PipelineProgressMessage(BaseModel):
     total_nodes: int = 9         # Total nodes in pipeline
 
 
+class PipelineNodeDetailMessage(BaseModel):
+    """Intermediate output from a completed pipeline node."""
+    type: Literal["pipeline_node_detail"] = "pipeline_node_detail"
+    node: str
+    summary: str
+    duration_ms: int
+    details: dict[str, Any]
+
+
 class PipelineCompleteMessage(BaseModel):
     """Final result from discovery pipeline execution."""
     type: Literal["pipeline_complete"] = "pipeline_complete"
@@ -109,6 +118,7 @@ OutgoingMessage = (
     | TraceMessage
     | ConversationStartedMessage
     | PipelineProgressMessage
+    | PipelineNodeDetailMessage
     | PipelineCompleteMessage
 )
 

@@ -49,9 +49,11 @@ from .protocol import (
     TraceMessage,
     ConversationStartedMessage,
     PipelineProgressMessage,
+    PipelineNodeDetailMessage,
     PipelineCompleteMessage,
     NODE_STATUS_MESSAGES,
 )
+from .graph.node_detail_extractors import extract_node_details
 
 
 # Rate limiting state: connection_id -> list of message timestamps
@@ -254,8 +256,9 @@ async def handle_pipeline_mode(
     """
     Handle discovery pipeline mode - LangGraph multi-node workflow.
 
-    Executes the 9-node discovery pipeline with progress streaming.
-    Includes Langfuse tracing for observability (parallel to Classic mode).
+    Uses stream_mode="updates" with accumulated state tracking.
+    After each node completes, sends both PipelineProgressMessage and
+    PipelineNodeDetailMessage with extracted structured details.
     """
     from .graph.runner import stream_discovery
 
@@ -264,13 +267,10 @@ async def handle_pipeline_mode(
 
     start_time = time.time()
     nodes_completed = 0
-    final_state = None
-    nodes_seen = set()
-    node_timings: dict[str, float] = {}  # Track per-node timing
-    last_node_start = start_time
-    prev_node_name: str | None = None  # Explicit tracking for correct timing attribution
+    accumulated_state: dict[str, Any] = {}
+    node_timings: dict[str, float] = {}
+    node_start_times: dict[str, float] = {}
 
-    # Initialize Langfuse trace for pipeline execution
     langfuse = _get_pipeline_langfuse()
     trace = None
     node_spans: dict[str, Any] = {}
@@ -289,133 +289,133 @@ async def handle_pipeline_mode(
             query=content,
             conversation_history=list(history),
         ):
-            if event["type"] == "node_event":
-                node_name = event["node"]
-                # Only send progress once per node (first event)
-                if node_name in NODE_STATUS_MESSAGES and node_name not in nodes_seen:
-                    # Record timing for previous node (use explicit tracking, not set ordering)
-                    if prev_node_name:
-                        node_timings[prev_node_name] = time.time() - last_node_start
-                        cumulative = time.time() - start_time
-                        logger.info(
-                            "Node transition: %s -> %s (prev=%.1fs, cumulative=%.1fs)",
-                            prev_node_name, node_name, node_timings[prev_node_name], cumulative
-                        )
-                        # End previous node's Langfuse span and remove from dict
-                        span = node_spans.pop(prev_node_name, None)
-                        if span:
-                            span.update(
-                                output={"duration_ms": int(node_timings[prev_node_name] * 1000)}
-                            )
-                            span.end()
+            if event["type"] != "node_update":
+                continue
 
-                    nodes_seen.add(node_name)
-                    nodes_completed += 1
-                    last_node_start = time.time()
-                    prev_node_name = node_name  # Update previous node tracker
+            node_name = event["node"]
+            node_output = event["node_output"]
 
-                    # Start Langfuse span for this node
-                    if trace:
-                        node_spans[node_name] = trace.start_span(
-                            name=f"node_{node_name}",
-                            input={"node": node_name, "nodes_completed": nodes_completed},
-                        )
+            if node_name == "__start__" or node_name not in NODE_STATUS_MESSAGES:
+                continue
 
-                    msg = PipelineProgressMessage(
-                        node=node_name,
-                        message=NODE_STATUS_MESSAGES[node_name],
-                        nodes_completed=nodes_completed,
-                    )
-                    await websocket.send_text(msg.model_dump_json())
+            for key, value in node_output.items():
+                existing = accumulated_state.get(key)
+                if isinstance(existing, list) and isinstance(value, list):
+                    accumulated_state[key] = existing + value
+                else:
+                    accumulated_state[key] = value
 
-            elif event["type"] == "complete":
-                final_state = event.get("data", {})
-                # Record final node timing (use explicit tracking, not set ordering)
-                if prev_node_name:
-                    node_timings[prev_node_name] = time.time() - last_node_start
-                    # End final node's Langfuse span and remove from dict
-                    span = node_spans.pop(prev_node_name, None)
-                    if span:
-                        span.update(
-                            output={"duration_ms": int(node_timings[prev_node_name] * 1000)}
-                        )
-                        span.end()
+            now = time.time()
+            node_start = node_start_times.get(node_name, now)
+            duration_ms = int((now - node_start) * 1000)
+            node_timings[node_name] = now - node_start
 
-        # Send final result
-        if final_state:
-            duration_ms = int((time.time() - start_time) * 1000)
-            synthesis_report = final_state.get("synthesis_report", "")
-            hypotheses = final_state.get("hypotheses", [])
-            resolved_entities = final_state.get("resolved_entities", [])
+            if node_name not in node_start_times:
+                node_start_times[node_name] = now
 
-            # Count successfully resolved entities (have CURIEs)
-            successful_resolutions = sum(
-                1 for e in resolved_entities
-                if hasattr(e, "curie") and e.curie is not None
+            nodes_completed += 1
+
+            if trace:
+                span = node_spans.pop(node_name, None)
+                if span:
+                    span.update(output={"duration_ms": duration_ms})
+                    span.end()
+                node_spans[node_name] = trace.start_span(
+                    name=f"node_{node_name}",
+                    input={"node": node_name, "nodes_completed": nodes_completed},
+                )
+
+            progress_msg = PipelineProgressMessage(
+                node=node_name,
+                message=NODE_STATUS_MESSAGES[node_name],
+                nodes_completed=nodes_completed,
             )
+            await websocket.send_text(progress_msg.model_dump_json())
 
-            msg = PipelineCompleteMessage(
-                synthesis_report=synthesis_report,
-                hypotheses_count=len(hypotheses),
-                entities_resolved=len(resolved_entities),
+            summary, details = extract_node_details(node_name, accumulated_state)
+            detail_msg = PipelineNodeDetailMessage(
+                node=node_name,
+                summary=summary,
                 duration_ms=duration_ms,
-                model="claude-sonnet-4-20250514",  # SDK default model
+                details=details,
             )
-            await websocket.send_text(msg.model_dump_json())
+            await websocket.send_text(detail_msg.model_dump_json())
 
-            logger.info(
-                "Pipeline complete in %.1fs — entities=%d, resolved=%d, hypotheses=%d",
-                duration_ms / 1000.0, len(resolved_entities), successful_resolutions, len(hypotheses)
+            if trace:
+                span = node_spans.get(node_name)
+                if span:
+                    span.update(output={"duration_ms": duration_ms, "summary": summary})
+                    span.end()
+                    node_spans.pop(node_name, None)
+
+        duration_ms = int((time.time() - start_time) * 1000)
+        synthesis_report = accumulated_state.get("synthesis_report", "")
+        hypotheses = accumulated_state.get("hypotheses", [])
+        resolved_entities = accumulated_state.get("resolved_entities", [])
+
+        successful_resolutions = sum(
+            1 for e in resolved_entities
+            if hasattr(e, "curie") and e.curie is not None
+        )
+
+        msg = PipelineCompleteMessage(
+            synthesis_report=synthesis_report,
+            hypotheses_count=len(hypotheses),
+            entities_resolved=len(resolved_entities),
+            duration_ms=duration_ms,
+            model="claude-sonnet-4-20250514",
+        )
+        await websocket.send_text(msg.model_dump_json())
+
+        logger.info(
+            "Pipeline complete in %.1fs — entities=%d, resolved=%d, hypotheses=%d",
+            duration_ms / 1000.0, len(resolved_entities), successful_resolutions, len(hypotheses)
+        )
+
+        if trace and langfuse:
+            trace.update(
+                output={
+                    "entities_total": len(resolved_entities),
+                    "entities_resolved": successful_resolutions,
+                    "resolution_rate": (
+                        successful_resolutions / len(resolved_entities)
+                        if resolved_entities else 0.0
+                    ),
+                    "hypotheses_count": len(hypotheses),
+                    "duration_ms": duration_ms,
+                    "node_timings": node_timings,
+                },
+                metadata={"status": "completed"},
+            )
+            trace.end()
+            langfuse.flush()
+
+        history = conversation_history[connection_id]
+        history.append(("user", content))
+        if synthesis_report:
+            history.append(("assistant", synthesis_report))
+
+        conv_id = conversation_ids.get(connection_id)
+        if conv_id and synthesis_report:
+            turn_counters[connection_id] += 1
+            await add_turn(
+                conversation_id=conv_id,
+                turn_number=turn_counters[connection_id],
+                user_query=content,
+                assistant_response=synthesis_report,
+                metrics={
+                    "mode": "pipeline",
+                    "duration_ms": duration_ms,
+                    "hypotheses_count": len(hypotheses),
+                    "entities_resolved": successful_resolutions,
+                    "entities_total": len(resolved_entities),
+                    "node_timings": node_timings,
+                }
             )
 
-            # Finalize Langfuse trace with metrics
-            if trace and langfuse:
-                trace.update(
-                    output={
-                        "entities_total": len(resolved_entities),
-                        "entities_resolved": successful_resolutions,
-                        "resolution_rate": (
-                            successful_resolutions / len(resolved_entities)
-                            if resolved_entities else 0.0
-                        ),
-                        "hypotheses_count": len(hypotheses),
-                        "duration_ms": duration_ms,
-                        "node_timings": node_timings,
-                    },
-                    metadata={"status": "completed"},
-                )
-                trace.end()
-                langfuse.flush()
-
-            # Update conversation history
-            history = conversation_history[connection_id]
-            history.append(("user", content))
-            if synthesis_report:
-                history.append(("assistant", synthesis_report))
-
-            # Persist turn to database
-            conv_id = conversation_ids.get(connection_id)
-            if conv_id and synthesis_report:
-                turn_counters[connection_id] += 1
-                await add_turn(
-                    conversation_id=conv_id,
-                    turn_number=turn_counters[connection_id],
-                    user_query=content,
-                    assistant_response=synthesis_report,
-                    metrics={
-                        "mode": "pipeline",
-                        "duration_ms": duration_ms,
-                        "hypotheses_count": len(hypotheses),
-                        "entities_resolved": successful_resolutions,
-                        "entities_total": len(resolved_entities),
-                        "node_timings": node_timings,
-                    }
-                )
-
-            # Trim history
-            max_messages = MAX_HISTORY_EXCHANGES * 2
-            if len(history) > max_messages:
-                conversation_history[connection_id] = history[-max_messages:]
+        max_messages = MAX_HISTORY_EXCHANGES * 2
+        if len(history) > max_messages:
+            conversation_history[connection_id] = history[-max_messages:]
 
         await websocket.send_text(DoneMessage().model_dump_json())
 
@@ -426,14 +426,12 @@ async def handle_pipeline_mode(
             duration, str(e), nodes_completed, exc_info=True
         )
 
-        # Log error to Langfuse trace
         if trace and langfuse:
-            # Close any dangling node spans before ending parent trace
             for span in node_spans.values():
                 try:
                     span.end()
                 except Exception:
-                    pass  # Span may already be ended
+                    pass
 
             trace.update(
                 output={"error": str(e)},

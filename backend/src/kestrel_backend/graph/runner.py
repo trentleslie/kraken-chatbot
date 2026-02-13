@@ -47,17 +47,15 @@ async def stream_discovery(
     """
     Stream discovery workflow events for real-time updates.
 
-    Yields events as the graph executes, useful for:
-    - WebSocket updates to frontend
-    - Progress indicators
-    - Intermediate result display
+    Uses stream_mode="updates" so each yield is {node_name: node_output}.
+    The caller accumulates state incrementally.
 
     Args:
         query: User's input query
         conversation_history: Optional list of (role, content) tuples
 
     Yields:
-        Event dicts with type, node, and data fields
+        Event dicts with type, node, and node_output fields
     """
     query_preview = query[:50] + "..." if len(query) > 50 else query
     logger.info("Stream started — query=%r", query_preview)
@@ -70,54 +68,16 @@ async def stream_discovery(
         "conversation_history": conversation_history or [],
     }
 
-    final_state = None
-    prev_keys: set[str] = set()
-
-    # Use astream with stream_mode="values" for full state snapshots
-    async for state in graph.astream(initial_state, stream_mode="values"):
-        final_state = state  # Each yield is the full accumulated state
-
-        # Detect which node just ran by checking for new keys
-        current_keys = set(state.keys())
-        new_keys = current_keys - prev_keys
-        prev_keys = current_keys
-
-        # Infer node name from new keys added to state
-        node_name = None
-        if "raw_entities" in new_keys:
-            node_name = "intake"
-        elif "resolved_entities" in new_keys:
-            node_name = "entity_resolution"
-        elif "novelty_scores" in new_keys:
-            node_name = "triage"
-        elif "direct_findings" in new_keys and "disease_associations" in new_keys:
-            node_name = "direct_kg"
-        elif "cold_start_findings" in new_keys:
-            node_name = "cold_start"
-        elif "shared_neighbors" in new_keys:
-            node_name = "pathway_enrichment"
-        elif "bridges" in new_keys:
-            node_name = "integration"
-        elif "temporal_classifications" in new_keys:
-            node_name = "temporal"
-        elif "synthesis_report" in new_keys:
-            node_name = "synthesis"
-
-        if node_name:
+    async for event in graph.astream(initial_state, stream_mode="updates"):
+        for node_name, node_output in event.items():
             yield {
-                "type": "node_event",
+                "type": "node_update",
                 "node": node_name,
-                "op": "add",
-                "data": state,
+                "node_output": node_output,
             }
 
     duration = time.time() - start_time
     logger.info("Stream complete in %.1fs", duration)
-
-    yield {
-        "type": "complete",
-        "data": final_state,  # Full accumulated state with all fields
-    }
 
 
 # Convenience function for synchronous contexts

@@ -74,6 +74,16 @@ export type PipelineProgressMessage = {
   timestamp: number;
 };
 
+export type PipelineNodeDetailMessage = {
+  id: string;
+  type: "pipeline_node_detail";
+  node: string;
+  summary: string;
+  duration_ms: number;
+  details: Record<string, unknown>;
+  timestamp: number;
+};
+
 export type PipelineCompleteMessage = {
   id: string;
   type: "pipeline_complete";
@@ -107,6 +117,7 @@ export type ChatMessage =
   | ErrorMessage
   | DoneMessage
   | TraceMessage
+  | PipelineNodeDetailMessage
   | PipelineCompleteMessage;
 
 export type IncomingMessage =
@@ -135,6 +146,13 @@ export type IncomingMessage =
       message: string;
       nodes_completed: number;
       total_nodes: number;
+    }
+  | {
+      type: "pipeline_node_detail";
+      node: string;
+      summary: string;
+      duration_ms: number;
+      details: Record<string, unknown>;
     }
   | {
       type: "pipeline_complete";
