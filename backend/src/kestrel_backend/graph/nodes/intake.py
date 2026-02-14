@@ -87,6 +87,7 @@ def extract_entities(query: str) -> list[str]:
     Extract entity mentions from query text.
 
     Handles:
+    - Labeled sections: "Significant Metabolites:\nglucose, fructose, ..." (PRIORITY 1)
     - Comma-separated lists: "glucose, fructose, mannose"
     - Newline-separated lists
     - Bullet points
@@ -95,19 +96,46 @@ def extract_entities(query: str) -> list[str]:
     - Parenthetical aliases: "hexadecanedioate (C16-DC)" → extracts ONLY primary name
     - Asterisk annotations: "lignoceroylcarnitine (C24)*" → stripped
 
-    NOTE: Parenthetical aliases are NOT extracted here. Use extract_aliases() 
+    NOTE: Parenthetical aliases are NOT extracted here. Use extract_aliases()
     to get the alias mappings for entity resolution fallback.
     """
     entities: list[str] = []
 
-    # First, try to find explicit list patterns
-    # Pattern 1: Comma-separated (most common)
-    if "," in query:
+    # PRIORITY 1: Extract from labeled sections (most reliable for structured queries)
+    # Pattern matches: "Significant Metabolites:\n..." or "Proteins (context):\n..."
+    # Captures content until next section header (line starting with capital letter + colon)
+    section_pattern = r"(?:Significant\s+)?(Metabolites?|Proteins?|Genes?|Entities?)\s*(?:\([^)]*\))?\s*:\s*\n([^\n]+(?:\n(?![A-Z][a-z]*\s*(?:\([^)]*\))?\s*:)[^\n]+)*)"
+    section_matches = re.finditer(section_pattern, query)
+
+    for match in section_matches:
+        section_content = match.group(2).strip()
+        # Split on commas and newlines
+        items = re.split(r",\s*|\n+", section_content)
+        for item in items:
+            item = item.strip().rstrip("*")
+            if item and len(item) > 1:
+                # Skip lines that look like prose (contain "and", "the", "is", etc. as separate words)
+                if re.search(r"\b(and|the|is|are|was|were|to|of|in|for|with|that|this)\b", item, re.IGNORECASE):
+                    # But allow if it looks like a compound name with "and" (e.g., could exist)
+                    # Skip only if it's clearly a sentence (has verb indicators)
+                    if re.search(r"\b(is|are|was|were|have|has|had)\b", item, re.IGNORECASE):
+                        continue
+                entities.append(item)
+
+    # If labeled sections found entities, we're done with extraction
+    if entities:
+        pass  # Fall through to cleanup below
+    # PRIORITY 2: Try comma-separated patterns (for simpler queries)
+    elif "," in query:
         # Look for phrases like "analyze: X, Y, Z" or "panel of X, Y, Z"
+        # But ONLY match if followed by actual entity list, not prose
         list_patterns = [
-            r"(?:analyze|panel|metabolites?|genes?|proteins?|entities?)[:\s]+([^.?!]+)",
+            # Require colon followed by entity-like content, not prose
+            r"(?:analyze|panel)[:\s]+([A-Za-z0-9][^.?!\n]*(?:,\s*[A-Za-z0-9][^.?!\n]*)+)",
             r"(?:between|among|connecting)\s+([^.?!]+(?:,\s*and\s+|\s+and\s+|,\s*)[^.?!]+)",
             r"(?:what do|do)\s+([^.?!]+(?:,\s*and\s+|\s+and\s+|,\s*)[^.?!]+)\s+(?:have|share)",  # "What do X, Y, Z have"
+            # Inline keyword:list pattern (no newline after colon)
+            r"(?:metabolites?|genes?|proteins?|entities?)\s*:\s+([A-Za-z0-9][^.?!\n]*(?:,\s*[A-Za-z0-9][^.?!\n]*)+)",
         ]
         for pattern in list_patterns:
             match = re.search(pattern, query, re.IGNORECASE)
@@ -199,23 +227,32 @@ def extract_aliases(query: str) -> dict[str, list[str]]:
     - "3-hydroxybutyrate (BHBA)" → {"3-hydroxybutyrate": ["BHBA"]}
     - "entity (alias1, alias2)" → {"entity": ["alias1", "alias2"]}
 
+    Only matches chemical/biological abbreviations, NOT explanatory text.
+
     Returns:
         Dict mapping primary entity names to their list of aliases.
     """
     aliases: dict[str, list[str]] = {}
-    
+
     # Pattern: "primary_name (ALIAS)" or "primary_name (ALIAS)*"
-    # Matches: word/phrase followed by parenthetical content
-    pattern = r"([A-Za-z0-9][\w\-\s]+?)\s*\(([^)]+)\)\s*\*?"
-    
+    # Primary: chemical/biological name (allows hyphens, numbers)
+    # Alias: short code, typically uppercase with optional numbers/hyphens
+    pattern = r"([A-Za-z0-9][A-Za-z0-9\-\s]{1,50}?)\s*\(([^)]+)\)\s*\*?"
+
     for match in re.finditer(pattern, query):
         primary = match.group(1).strip()
         alias_content = match.group(2).strip()
-        
+
         # Skip if primary is empty or too short
-        if not primary or len(primary) < 2:
+        if not primary or len(primary) < 3:
             continue
-            
+
+        # Skip if primary looks like prose (contains common words)
+        prose_words = ["the", "and", "from", "with", "that", "this", "for", "are", "was", "were"]
+        primary_lower = primary.lower()
+        if any(f" {word} " in f" {primary_lower} " for word in prose_words):
+            continue
+
         # Skip common non-alias parentheticals
         skip_patterns = [
             r"^\d+$",  # Just numbers
@@ -224,23 +261,45 @@ def extract_aliases(query: str) -> dict[str, list[str]]:
             r"^q[=<>]",  # Q-values
             r"^e\.?g\.?",  # Example markers
             r"^i\.?e\.?",  # That is markers
+            r"^first\s",  # Explanatory text like "first two survived..."
+            r"^remaining\s",  # Explanatory text
+            r"^see\s",  # References
+            r"^also\s",  # Also known as
+            r"^or\s",  # Alternatives
+            r"\s(test|study|analysis|correction|level|measurement)",  # Explanatory phrases
         ]
-        if any(re.match(p, alias_content) for p in skip_patterns):
+        if any(re.search(p, alias_content, re.IGNORECASE) for p in skip_patterns):
             continue
-        
-        # Handle multiple aliases separated by comma
-        alias_list = [a.strip() for a in alias_content.split(",") if a.strip()]
-        
+
+        # Only accept aliases that look like chemical/biological codes:
+        # - Short (typically 1-10 chars)
+        # - Mostly uppercase letters, may have numbers and hyphens
+        # - Examples: C16-DC, BHBA, C24, T2D, AUC
+        alias_list = []
+        for alias in alias_content.split(","):
+            alias = alias.strip()
+            if not alias:
+                continue
+            # Accept if: short AND (mostly uppercase OR alphanumeric code pattern)
+            if len(alias) <= 15:
+                # Check if it looks like an abbreviation/code
+                # Allow: uppercase letters, numbers, hyphens
+                if re.match(r"^[A-Z0-9][A-Z0-9\-]*$", alias):
+                    alias_list.append(alias)
+                # Also allow mixed case short codes like "AUC" or "OGTT"
+                elif re.match(r"^[A-Za-z0-9][A-Za-z0-9\-]*$", alias) and len(alias) <= 8:
+                    alias_list.append(alias)
+
         if alias_list:
             if primary in aliases:
                 aliases[primary].extend(alias_list)
             else:
                 aliases[primary] = alias_list
-    
+
     # Deduplicate aliases for each primary
     for primary in aliases:
         aliases[primary] = list(dict.fromkeys(aliases[primary]))
-    
+
     return aliases
 
 
