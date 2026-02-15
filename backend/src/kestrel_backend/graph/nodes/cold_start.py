@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import time
+import traceback
 from typing import Any
 
 from ..state import (
@@ -248,16 +249,45 @@ async def analyze_cold_start_entity(
             )
 
             result_text_parts = []
-            async for event in query(
-                prompt=f"Analyze cold-start entity: {raw_name} ({curie}, {edge_count} edges)",
-                options=options
-            ):
-                if hasattr(event, 'content'):
-                    for block in event.content:
-                        if hasattr(block, 'text'):
-                            result_text_parts.append(block.text)
+            try:
+                async for event in query(
+                    prompt=f"Analyze cold-start entity: {raw_name} ({curie}, {edge_count} edges)",
+                    options=options
+                ):
+                    if hasattr(event, 'content'):
+                        for block in event.content:
+                            if hasattr(block, 'text'):
+                                result_text_parts.append(block.text)
+            except Exception as sdk_error:
+                partial_text = "".join(result_text_parts)
+                logger.error(
+                    "Cold-start SDK query failed for '%s' (%s): %s\nPartial response: %s\n%s",
+                    raw_name, curie, repr(str(sdk_error)[:500]),
+                    repr(partial_text[:300]) if partial_text else "empty",
+                    traceback.format_exc()
+                )
+                # Return graceful degradation instead of propagating
+                return (
+                    [],
+                    [],
+                    [Finding(
+                        entity=curie,
+                        claim=f"SDK query failed for {raw_name}: {str(sdk_error)[:80]}",
+                        tier=3,
+                        source="cold_start",
+                        confidence="low",
+                    )],
+                    [f"SDK query failed for {curie}: {str(sdk_error)}"],
+                )
 
             result_text = "".join(result_text_parts)
+
+            # Log successful response for diagnosis
+            logger.info(
+                "Cold-start raw response for '%s' (%s): length=%d, preview=%s",
+                raw_name, curie, len(result_text), repr(result_text[:300])
+            )
+
         analogues, inferences, findings = parse_cold_start_result(
             curie, raw_name, edge_count, result_text
         )
