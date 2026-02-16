@@ -227,8 +227,10 @@ async def analyze_cold_start_entity(
             [],
         )
 
+    logger.info("Cold-start '%s': entering try block", raw_name)
     try:
         async with SDK_SEMAPHORE:
+            logger.info("Cold-start '%s': acquired semaphore", raw_name)
             kestrel_config = McpStdioServerConfig(
                 type="stdio",
                 command=KESTREL_COMMAND,
@@ -250,6 +252,7 @@ async def analyze_cold_start_entity(
                 permission_mode="bypassPermissions",
                 max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for large KG responses
             )
+            logger.info("Cold-start '%s': created ClaudeAgentOptions", raw_name)
 
             result_text_parts = []
             logger.info("Cold-start invoking SDK query for '%s' (%s)...", raw_name, curie)
