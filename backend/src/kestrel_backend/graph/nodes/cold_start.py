@@ -377,7 +377,10 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     errors: list[str] = []
 
     # Process in batches for controlled parallelism
-    for batch in chunk(entities, BATCH_SIZE):
+    batches = chunk(entities, BATCH_SIZE)
+    logger.info("Cold-start processing %d batches of up to %d entities each", len(batches), BATCH_SIZE)
+
+    for batch_idx, batch in enumerate(batches):
         batch_tasks = []
         for entity in batch:
             curie, raw_name, edge_count = get_entity_info(
@@ -385,7 +388,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             )
             batch_tasks.append(analyze_cold_start_entity(curie, raw_name, edge_count))
 
+        logger.info("Cold-start batch %d: awaiting %d tasks", batch_idx, len(batch_tasks))
         batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+        logger.info("Cold-start batch %d: completed with %d results, exceptions=%d",
+                   batch_idx, len(batch_results),
+                   sum(1 for r in batch_results if isinstance(r, Exception)))
 
         for entity, result in zip(batch, batch_results):
             if isinstance(result, Exception):
