@@ -231,6 +231,7 @@ async def analyze_cold_start_entity(
     try:
         async with SDK_SEMAPHORE:
             logger.info("Cold-start '%s': acquired semaphore", raw_name)
+            logger.info("Cold-start '%s': creating McpStdioServerConfig...", raw_name)
             kestrel_config = McpStdioServerConfig(
                 type="stdio",
                 command=KESTREL_COMMAND,
@@ -306,6 +307,7 @@ async def analyze_cold_start_entity(
 
     except Exception as e:
         error_msg = f"Cold-start analysis failed for {curie}: {str(e)}"
+        logger.error("Cold-start '%s' outer except caught: %s", raw_name, repr(e))
         return (
             [],
             [],
