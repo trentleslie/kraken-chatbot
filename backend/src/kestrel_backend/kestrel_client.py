@@ -79,8 +79,11 @@ class KestrelClient:
                 headers=_get_headers(),
             )
 
-    async def _send_request(self, method: str, params: dict | None = None) -> dict:
-        """Send a JSON-RPC request to Kestrel."""
+    async def _send_request(self, method: str, params: dict | None = None, _retry: bool = True) -> dict:
+        """Send a JSON-RPC request to Kestrel.
+
+        Automatically recovers from expired sessions by re-establishing the connection.
+        """
         await self._ensure_client()
 
         request = {
@@ -96,8 +99,23 @@ class KestrelClient:
         if self._session_id:
             headers["mcp-session-id"] = self._session_id
 
-        response = await self._http_client.post(KESTREL_MCP_URL, json=request, headers=headers)
-        response.raise_for_status()
+        try:
+            response = await self._http_client.post(KESTREL_MCP_URL, json=request, headers=headers)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            # Check for stale session error — recover and retry once
+            if e.response.status_code == 400 and _retry:
+                error_text = e.response.text
+                if "session" in error_text.lower() or "No valid session" in error_text:
+                    logger.warning("Kestrel session expired, re-establishing connection...")
+                    # Clear session state
+                    self._session_id = None
+                    self._initialized = False
+                    # Re-initialize connection
+                    await self.connect()
+                    # Retry once with new session
+                    return await self._send_request(method, params, _retry=False)
+            raise
 
         # Capture session ID from response headers
         if "mcp-session-id" in response.headers:
