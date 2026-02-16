@@ -209,8 +209,11 @@ async def analyze_cold_start_entity(
     Returns:
         tuple of (analogues, inferences, findings, errors)
     """
+    logger.info("Cold-start analyzing '%s' (%s): HAS_SDK=%s", raw_name, curie, HAS_SDK)
+
     if not HAS_SDK:
         # SDK not available - return placeholder for testing
+        logger.warning("Cold-start skipping '%s' — SDK not available", raw_name)
         return (
             [],
             [],
