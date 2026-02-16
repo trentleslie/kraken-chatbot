@@ -252,15 +252,19 @@ async def analyze_cold_start_entity(
             )
 
             result_text_parts = []
+            logger.info("Cold-start invoking SDK query for '%s' (%s)...", raw_name, curie)
+            event_count = 0
             try:
                 async for event in query(
                     prompt=f"Analyze cold-start entity: {raw_name} ({curie}, {edge_count} edges)",
                     options=options
                 ):
+                    event_count += 1
                     if hasattr(event, 'content'):
                         for block in event.content:
                             if hasattr(block, 'text'):
                                 result_text_parts.append(block.text)
+                logger.info("Cold-start SDK query for '%s' yielded %d events", raw_name, event_count)
             except Exception as sdk_error:
                 partial_text = "".join(result_text_parts)
                 logger.error(
