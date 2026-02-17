@@ -41,8 +41,17 @@ KESTREL_ARGS = ["mcp-client-kestrel"]
 # Semaphore to limit concurrent SDK calls (increased from 1 to 6 for parallelism)
 SDK_SEMAPHORE = asyncio.Semaphore(6)
 
-# Batch size for parallel analysis
-BATCH_SIZE = 6
+# Batch size for parallel analysis (reduced from 6 to limit resource contention)
+BATCH_SIZE = 3
+
+# Timeout for SDK query per entity (5 minutes)
+SDK_QUERY_TIMEOUT = 300
+
+# TODO: Cold-start currently processes entities serially (~3 min each) due to
+# Claude SDK internal serialization. With 11 sparse entities, total time is ~35 min.
+# Future optimizations:
+# - Investigate SDK parallel execution capabilities
+# - Limit to top-5 sparse entities by edge count to reduce wall-clock time
 
 # System prompt for cold-start analysis
 COLD_START_PROMPT = """You are a biomedical knowledge graph analyst specializing in sparse entities —
@@ -249,10 +258,12 @@ async def analyze_cold_start_entity(
                 max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for large KG responses
             )
 
-            result_text_parts = []
-            logger.info("Cold-start invoking SDK query for '%s' (%s)...", raw_name, curie)
+            result_text_parts: list[str] = []
             event_count = 0
-            try:
+
+            async def collect_events() -> None:
+                """Collect SDK query events into result_text_parts."""
+                nonlocal event_count
                 async for event in query(
                     prompt=f"Analyze cold-start entity: {raw_name} ({curie}, {edge_count} edges)",
                     options=options
@@ -262,7 +273,28 @@ async def analyze_cold_start_entity(
                         for block in event.content:
                             if hasattr(block, 'text'):
                                 result_text_parts.append(block.text)
-                logger.info("Cold-start SDK query for '%s' yielded %d events", raw_name, event_count)
+
+            logger.info("Cold-start invoking SDK query for '%s' (%s)...", raw_name, curie)
+            try:
+                await asyncio.wait_for(collect_events(), timeout=SDK_QUERY_TIMEOUT)
+                logger.info("Cold-start SDK query for '%s' completed with %d events", raw_name, event_count)
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Cold-start SDK query TIMED OUT for '%s' (%s) after %ds",
+                    raw_name, curie, SDK_QUERY_TIMEOUT
+                )
+                return (
+                    [],
+                    [],
+                    [Finding(
+                        entity=curie,
+                        claim=f"SDK query timed out for {raw_name} after {SDK_QUERY_TIMEOUT}s",
+                        tier=3,
+                        source="cold_start",
+                        confidence="low",
+                    )],
+                    [f"SDK query timed out for {curie}"],
+                )
             except Exception as sdk_error:
                 partial_text = "".join(result_text_parts)
                 logger.error(
@@ -416,6 +448,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 all_inferences.extend(inferences)
                 all_findings.extend(findings)
                 errors.extend(errs)
+
+        # Progress logging
+        processed_count = min((batch_idx + 1) * BATCH_SIZE, len(entities))
+        logger.info(
+            "Cold-start progress: %d/%d entities processed (batch %d/%d)",
+            processed_count, len(entities), batch_idx + 1, len(batches)
+        )
 
     duration = time.time() - start
     logger.info(
