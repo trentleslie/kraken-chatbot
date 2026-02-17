@@ -205,6 +205,30 @@ class TemporalClassification(BaseModel):
 
 
 # =============================================================================
+# Phase 5: Literature Support Model
+# =============================================================================
+
+class LiteratureSupport(BaseModel):
+    """Literature reference supporting a hypothesis from Semantic Scholar."""
+
+    model_config = ConfigDict(frozen=True)
+
+    paper_id: str = Field(..., description="Semantic Scholar corpus ID")
+    title: str = Field(..., description="Paper title")
+    authors: str = Field(..., description="Author list (first author et al.)")
+    year: int = Field(..., description="Publication year")
+    doi: str | None = Field(None, description="DOI if available")
+    relevance_score: float = Field(..., ge=0, le=1, description="Relevance to hypothesis (0-1)")
+    # TODO: v2 - Use cross-encoder or LLM for relationship classification
+    # Currently set to "supporting" for all papers to avoid false contradictions
+    relationship: Literal["supporting", "contradicting", "nuancing"] = Field(
+        "supporting", description="How paper relates to hypothesis"
+    )
+    key_passage: str = Field(..., description="Most relevant passage from abstract")
+    citation_count: int = Field(0, ge=0, description="Citation count for credibility weighting")
+
+
+# =============================================================================
 # Phase 5: Hypothesis Model
 # =============================================================================
 
@@ -226,6 +250,9 @@ class Hypothesis(BaseModel):
     validation_gap_note: str = Field(
         "",
         description="Calibration note: ~18% of computational predictions reach clinical investigation"
+    )
+    literature_support: list[LiteratureSupport] = Field(
+        default_factory=list, description="Literature references from Semantic Scholar"
     )
 
 
@@ -315,6 +342,9 @@ class DiscoveryState(TypedDict, total=False):
     synthesis_report: str
     # Updated to use Hypothesis model with operator.add reducer
     hypotheses: Annotated[list[Hypothesis], operator.add]
+
+    # === Phase 5b: Literature Grounding ===
+    literature_errors: Annotated[list[str], operator.add]
 
     # === Metadata ===
     # Uses operator.add reducer to accumulate errors from all nodes
