@@ -137,11 +137,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         tasks = [ground_hypothesis(h) for h in batch]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for result in results:
+        for idx, result in enumerate(results):
             if isinstance(result, Exception):
                 all_errors.append(f"Exception: {result}")
                 # Keep original hypothesis if grounding failed
-                grounded.append(batch[results.index(result)])
+                grounded.append(batch[idx])
             else:
                 updated_hyp, errors = result
                 grounded.append(updated_hyp)
