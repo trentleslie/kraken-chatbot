@@ -209,11 +209,8 @@ async def analyze_cold_start_entity(
     Returns:
         tuple of (analogues, inferences, findings, errors)
     """
-    logger.info("Cold-start analyzing '%s' (%s): HAS_SDK=%s", raw_name, curie, HAS_SDK)
-
     if not HAS_SDK:
         # SDK not available - return placeholder for testing
-        logger.warning("Cold-start skipping '%s' — SDK not available", raw_name)
         return (
             [],
             [],
@@ -227,11 +224,8 @@ async def analyze_cold_start_entity(
             [],
         )
 
-    logger.info("Cold-start '%s': entering try block", raw_name)
     try:
         async with SDK_SEMAPHORE:
-            logger.info("Cold-start '%s': acquired semaphore", raw_name)
-            logger.info("Cold-start '%s': creating McpStdioServerConfig...", raw_name)
             kestrel_config = McpStdioServerConfig(
                 type="stdio",
                 command=KESTREL_COMMAND,
@@ -239,7 +233,8 @@ async def analyze_cold_start_entity(
             )
 
             # Format prompt with edge count context
-            system_prompt = COLD_START_PROMPT.format(edge_count=edge_count)
+            # Use str.replace() instead of .format() to avoid KeyError on JSON braces
+            system_prompt = COLD_START_PROMPT.replace("{edge_count}", str(edge_count))
 
             options = ClaudeAgentOptions(
                 system_prompt=system_prompt,
@@ -253,7 +248,6 @@ async def analyze_cold_start_entity(
                 permission_mode="bypassPermissions",
                 max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for large KG responses
             )
-            logger.info("Cold-start '%s': created ClaudeAgentOptions", raw_name)
 
             result_text_parts = []
             logger.info("Cold-start invoking SDK query for '%s' (%s)...", raw_name, curie)
@@ -307,7 +301,7 @@ async def analyze_cold_start_entity(
 
     except Exception as e:
         error_msg = f"Cold-start analysis failed for {curie}: {str(e)}"
-        logger.error("Cold-start '%s' outer except caught: %s", raw_name, repr(e))
+        logger.error("Cold-start analysis failed for '%s' (%s): %s", raw_name, curie, e)
         return (
             [],
             [],
