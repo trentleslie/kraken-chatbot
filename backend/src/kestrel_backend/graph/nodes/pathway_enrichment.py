@@ -46,27 +46,29 @@ HUB_THRESHOLD = 1000
 SDK_QUERY_TIMEOUT = 480
 
 # System prompt for pathway enrichment analysis
-PATHWAY_ENRICHMENT_PROMPT = """You are a pathway enrichment analyst for biomedical knowledge graphs.
+PATHWAY_ENRICHMENT_PROMPT = """You are a biomedical knowledge graph analyst finding shared biological context.
 
-Given a set of entities (CURIEs with their categories), find shared biological
-context by querying their neighborhoods:
+You have access to these Kestrel MCP tools:
+- one_hop_query: Query neighbors of an entity. Use with curie parameter to get connected nodes.
+- get_nodes: Get details about specific nodes including edge count (degree).
 
-1. For each entity, use one_hop_query to get neighbors (limit to 50 per entity)
-2. Find neighbors that appear in 2+ entity neighborhoods (shared neighbors)
-3. For each shared neighbor found:
-   - Get its degree using get_nodes to check edge count
-   - If degree > 1000, flag as HUB (these are less specific)
-   - Note the predicate types connecting it to the input entities
-   - Note its category
-4. Group shared neighbors by category to identify biological themes
-5. Rank themes by: number of input entities connected, specificity (non-hub first)
+TASK: For the given list of entities, find neighbors that are shared by 2+ input entities.
 
-IMPORTANT: Discount hub nodes (degree >1000) like GO:0005515 (protein binding),
-GO:0005737 (cytoplasm), UBERON:0000061 (anatomical structure), etc. These connect 
-to everything and do not provide specific biological insight. Still report them but 
-flag them clearly as hubs.
+STEP 1: For each input entity CURIE, call one_hop_query to get its neighbors.
+        Example: one_hop_query(curie="CHEBI:28757") returns neighbors of fructose.
 
-Return ONLY a valid JSON object:
+STEP 2: Identify neighbors that appear in 2+ entity neighborhoods (shared neighbors).
+        Track which input entities connect to each shared neighbor.
+
+STEP 3: For promising shared neighbors, call get_nodes to check their degree (edge count).
+        If degree > 1000, mark as hub (less specific, connects to everything).
+
+STEP 4: Group shared neighbors by category to identify biological themes.
+
+CRITICAL: Hub nodes (degree >1000) like GO:0005515 (protein binding), GO:0005737 (cytoplasm)
+connect to everything and provide less insight. Flag them clearly.
+
+Return ONLY a valid JSON object (no other text):
 {
   "shared_neighbors": [
     {
@@ -75,8 +77,8 @@ Return ONLY a valid JSON object:
       "category": "biolink:BiologicalProcess",
       "degree": 245,
       "is_hub": false,
-      "connected_inputs": ["HGNC:11998", "HGNC:7989"],
-      "predicates": ["biolink:participates_in", "biolink:actively_involved_in"]
+      "connected_inputs": ["CHEBI:28757", "CHEBI:4208"],
+      "predicates": ["biolink:participates_in"]
     }
   ],
   "themes": [
@@ -90,7 +92,7 @@ Return ONLY a valid JSON object:
   ]
 }
 
-If no shared neighbors are found, return:
+If no shared neighbors are found after querying, return:
 {"shared_neighbors": [], "themes": []}
 """
 
@@ -226,20 +228,18 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             "errors": ["Claude Agent SDK not available for pathway enrichment"],
         }
 
-    # Build entity list for the prompt
+    # Build entity list for the user prompt
     entity_list = "\n".join([
         f"- {e.curie} ({e.resolved_name or e.raw_name}, {e.category or 'unknown'})"
         for e in valid_entities
     ])
 
-    # Construct the full prompt
-    full_prompt = f"""{PATHWAY_ENRICHMENT_PROMPT}
+    # User prompt with just the entities (system prompt has instructions)
+    user_prompt = f"""Analyze these {len(valid_entities)} entities and find shared neighbors:
 
-Entities to analyze:
 {entity_list}
 
-Find shared neighbors and biological themes for these {len(valid_entities)} entities.
-"""
+Query each entity's neighbors using one_hop_query, then identify shared neighbors and biological themes."""
 
     try:
         # Configure Kestrel MCP server (stdio-based, same as entity_resolution)
@@ -250,9 +250,10 @@ Find shared neighbors and biological themes for these {len(valid_entities)} enti
         )
 
         options = ClaudeAgentOptions(
+            system_prompt=PATHWAY_ENRICHMENT_PROMPT,
             allowed_tools=["mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"],
             mcp_servers={"kestrel": kestrel_config},
-            max_turns=6,  # More turns for multi-entity analysis
+            max_turns=8,  # More turns for multi-entity analysis
             permission_mode="bypassPermissions",
         )
 
@@ -261,7 +262,7 @@ Find shared neighbors and biological themes for these {len(valid_entities)} enti
 
         async def collect_events() -> None:
             """Collect SDK query events into result_text_parts."""
-            async for event in query(prompt=full_prompt, options=options):
+            async for event in query(prompt=user_prompt, options=options):
                 if hasattr(event, 'content'):
                     for block in event.content:
                         if hasattr(block, 'text'):
