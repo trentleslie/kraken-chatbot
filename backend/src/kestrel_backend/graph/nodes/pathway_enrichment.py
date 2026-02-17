@@ -42,6 +42,9 @@ KESTREL_ARGS = ["mcp-client-kestrel"]
 # Hub threshold - nodes with more edges are flagged
 HUB_THRESHOLD = 1000
 
+# Timeout for SDK query (8 minutes for multi-entity analysis)
+SDK_QUERY_TIMEOUT = 480
+
 # System prompt for pathway enrichment analysis
 PATHWAY_ENRICHMENT_PROMPT = """You are a pathway enrichment analyst for biomedical knowledge graphs.
 
@@ -207,6 +210,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             "errors": ["Need at least 2 entities for pathway enrichment"],
         }
 
+    # Log input entities for diagnosis
+    logger.info(
+        "pathway_enrichment analyzing %d valid entities (of %d resolved): %s",
+        len(valid_entities), len(resolved),
+        [e.curie for e in valid_entities[:5]]  # Preview first 5
+    )
+
     # Check SDK availability
     if not HAS_SDK:
         # Return placeholder for testing without SDK
@@ -246,18 +256,45 @@ Find shared neighbors and biological themes for these {len(valid_entities)} enti
             permission_mode="bypassPermissions",
         )
 
-        # Execute the query using async generator pattern
-        result_text_parts = []
-        async for event in query(prompt=full_prompt, options=options):
-            if hasattr(event, 'content'):
-                for block in event.content:
-                    if hasattr(block, 'text'):
-                        result_text_parts.append(block.text)
+        # Execute the query using async generator pattern with timeout
+        result_text_parts: list[str] = []
+
+        async def collect_events() -> None:
+            """Collect SDK query events into result_text_parts."""
+            async for event in query(prompt=full_prompt, options=options):
+                if hasattr(event, 'content'):
+                    for block in event.content:
+                        if hasattr(block, 'text'):
+                            result_text_parts.append(block.text)
+
+        try:
+            await asyncio.wait_for(collect_events(), timeout=SDK_QUERY_TIMEOUT)
+        except asyncio.TimeoutError:
+            duration = time.time() - start
+            logger.error(
+                "pathway_enrichment SDK query TIMED OUT after %ds (%.1fs elapsed)",
+                SDK_QUERY_TIMEOUT, duration
+            )
+            return {
+                "shared_neighbors": [],
+                "biological_themes": [],
+                "errors": [f"SDK query timed out after {SDK_QUERY_TIMEOUT}s"],
+            }
 
         result_text = "".join(result_text_parts)
 
+        # Log raw response for diagnosis
+        logger.info(
+            "pathway_enrichment raw response: length=%d, preview=%s",
+            len(result_text), repr(result_text[:500]) if result_text else "empty"
+        )
+
         # Parse the result
         shared_neighbors, themes, parse_errors = parse_enrichment_result(result_text)
+
+        # Log parse errors if any
+        if parse_errors:
+            logger.warning("pathway_enrichment parse errors: %s", parse_errors)
 
         # Create findings from top themes
         findings: list[Finding] = []
