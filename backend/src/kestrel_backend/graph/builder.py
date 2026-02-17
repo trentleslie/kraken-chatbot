@@ -9,9 +9,10 @@ Phase 2: + Triage -> [Direct KG | Cold-Start] -> Synthesis
 Phase 4a: + Pathway Enrichment (after analysis branches converge)
 Phase 4b: + Integration (bridges + gaps) + Temporal (conditional for longitudinal)
 
-Full 9-node architecture:
+Full 10-node architecture:
     Intake -> Entity Resolution -> Triage -> [Direct KG | Cold-Start]
            -> Pathway Enrichment -> Integration -> [Temporal] -> Synthesis
+           -> Literature Grounding
 """
 
 from typing import Literal
@@ -19,7 +20,7 @@ from langgraph.graph import StateGraph, END
 from .state import DiscoveryState
 from .nodes import (
     intake, entity_resolution, triage, direct_kg, cold_start,
-    pathway_enrichment, integration, temporal, synthesis
+    pathway_enrichment, integration, temporal, synthesis, literature_grounding
 )
 
 
@@ -74,7 +75,10 @@ def build_discovery_graph() -> StateGraph:
     """
     Build the KRAKEN discovery workflow graph.
 
-    Phase 4b: 9-node pipeline with conditional parallel branches and temporal routing
+    Phase 5b: 10-node pipeline with conditional parallel branches, temporal routing,
+    and literature grounding.
+
+    Nodes:
     - Intake: Parse query, extract entities, detect mode
     - Entity Resolution: Resolve names to CURIEs via Kestrel
     - Triage: Count edges, classify entities by KG connectivity
@@ -84,6 +88,7 @@ def build_discovery_graph() -> StateGraph:
     - Integration: Cross-type bridge detection + gap analysis
     - Temporal: Classify findings by temporal relationship (conditional)
     - Synthesis: Generate summary report from all findings
+    - Literature Grounding: Add Semantic Scholar citations to hypotheses
 
     Graph structure:
         intake -> entity_resolution -> triage -+-> direct_kg ------+-> pathway_enrichment
@@ -100,6 +105,8 @@ def build_discovery_graph() -> StateGraph:
                                                |                                       |
                                                +----------------> synthesis <----------+
                                                                       |
+                                                              literature_grounding
+                                                                      |
                                                                      END
 
     When both triage branches are needed, LangGraph executes them in the same superstep
@@ -114,7 +121,7 @@ def build_discovery_graph() -> StateGraph:
     # Create graph with our state schema
     workflow = StateGraph(DiscoveryState)
 
-    # Add all 9 nodes
+    # Add all 10 nodes
     workflow.add_node("intake", intake.run)
     workflow.add_node("entity_resolution", entity_resolution.run)
     workflow.add_node("triage", triage.run)
@@ -124,6 +131,7 @@ def build_discovery_graph() -> StateGraph:
     workflow.add_node("integration", integration.run)
     workflow.add_node("temporal", temporal.run)
     workflow.add_node("synthesis", synthesis.run)
+    workflow.add_node("literature_grounding", literature_grounding.run)
 
     # Linear edges: intake -> entity_resolution -> triage
     workflow.set_entry_point("intake")
@@ -162,8 +170,11 @@ def build_discovery_graph() -> StateGraph:
     # Temporal flows to synthesis
     workflow.add_edge("temporal", "synthesis")
 
-    # Synthesis completes the workflow
-    workflow.add_edge("synthesis", END)
+    # Synthesis flows to literature grounding
+    workflow.add_edge("synthesis", "literature_grounding")
+
+    # Literature grounding completes the workflow
+    workflow.add_edge("literature_grounding", END)
 
     # Compile and return
     return workflow.compile()

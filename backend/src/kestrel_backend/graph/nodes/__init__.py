@@ -8,6 +8,7 @@ Phase 1: intake, entity_resolution, synthesis
 Phase 2: + triage, direct_kg, cold_start
 Phase 4a: + pathway_enrichment
 Phase 4b: + integration, temporal
+Phase 5b: + literature_grounding
 """
 
 from . import intake
@@ -19,6 +20,7 @@ from . import pathway_enrichment
 from . import integration
 from . import temporal
 from . import synthesis
+from . import literature_grounding
 
 __all__ = [
     "intake",
@@ -30,4 +32,5 @@ __all__ = [
     "integration",
     "temporal",
     "synthesis",
+    "literature_grounding",
 ]
