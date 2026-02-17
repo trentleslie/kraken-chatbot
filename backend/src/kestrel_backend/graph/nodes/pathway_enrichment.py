@@ -42,6 +42,11 @@ KESTREL_ARGS = ["mcp-client-kestrel"]
 # Hub threshold - nodes with more edges are flagged
 HUB_THRESHOLD = 1000
 
+# Minimum edge count to include entity in pathway analysis
+# Only moderate (20-199) and well-characterized (200+) entities have enough
+# KG connections to produce meaningful shared neighbor analysis
+MIN_EDGE_COUNT = 20
+
 # Timeout for SDK query (8 minutes for multi-entity analysis)
 SDK_QUERY_TIMEOUT = 480
 
@@ -203,21 +208,41 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             "errors": ["No valid entities for pathway enrichment"],
         }
 
-    # Skip if only 1 entity (need 2+ to find shared neighbors)
-    if len(valid_entities) < 2:
-        logger.warning("Skipped pathway_enrichment: need at least 2 entities (have %d)", len(valid_entities))
+    # Get edge counts from novelty scores to filter sparse entities
+    novelty_scores = state.get("novelty_scores", [])
+    edge_count_map = {ns.curie: ns.edge_count for ns in novelty_scores}
+
+    # Filter to entities with enough KG connections (moderate + well-characterized)
+    # Sparse entities (<20 edges) rarely share neighbors and waste SDK turns
+    selected_entities = [
+        e for e in valid_entities
+        if edge_count_map.get(e.curie, 0) >= MIN_EDGE_COUNT
+    ]
+    filtered_count = len(valid_entities) - len(selected_entities)
+
+    # Log selection
+    logger.info(
+        "pathway_enrichment: selected %d/%d entities (edge_count >= %d): %s",
+        len(selected_entities), len(valid_entities), MIN_EDGE_COUNT,
+        [(e.curie, edge_count_map.get(e.curie, 0)) for e in selected_entities]
+    )
+    if filtered_count > 0:
+        logger.info(
+            "pathway_enrichment: filtered out %d sparse entities (edge_count < %d)",
+            filtered_count, MIN_EDGE_COUNT
+        )
+
+    # Skip if fewer than 2 entities after filtering
+    if len(selected_entities) < 2:
+        logger.warning(
+            "Skipped pathway_enrichment: need at least 2 entities with edge_count >= %d (have %d)",
+            MIN_EDGE_COUNT, len(selected_entities)
+        )
         return {
             "shared_neighbors": [],
             "biological_themes": [],
-            "errors": ["Need at least 2 entities for pathway enrichment"],
+            "errors": [f"Need at least 2 entities with edge_count >= {MIN_EDGE_COUNT} for pathway enrichment"],
         }
-
-    # Log input entities for diagnosis
-    logger.info(
-        "pathway_enrichment analyzing %d valid entities (of %d resolved): %s",
-        len(valid_entities), len(resolved),
-        [e.curie for e in valid_entities[:5]]  # Preview first 5
-    )
 
     # Check SDK availability
     if not HAS_SDK:
@@ -228,18 +253,21 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             "errors": ["Claude Agent SDK not available for pathway enrichment"],
         }
 
-    # Build entity list for the user prompt
+    # Build entity list for the user prompt (include edge counts for context)
     entity_list = "\n".join([
-        f"- {e.curie} ({e.resolved_name or e.raw_name}, {e.category or 'unknown'})"
-        for e in valid_entities
+        f"- {e.curie} ({e.resolved_name or e.raw_name}, {edge_count_map.get(e.curie, 0)} edges)"
+        for e in selected_entities
     ])
 
-    # User prompt with just the entities (system prompt has instructions)
-    user_prompt = f"""Analyze these {len(valid_entities)} entities and find shared neighbors:
+    # User prompt with entity count to help LLM budget tool calls
+    user_prompt = f"""Analyze these {len(selected_entities)} entities and find shared neighbors:
 
 {entity_list}
 
-Query each entity's neighbors using one_hop_query, then identify shared neighbors and biological themes."""
+You have {len(selected_entities)} entities to query. Budget your tool calls:
+- Use one_hop_query for each entity (~{len(selected_entities)} calls)
+- Use get_nodes sparingly for key shared neighbors
+- Return JSON when done"""
 
     try:
         # Configure Kestrel MCP server (stdio-based, same as entity_resolution)
@@ -253,7 +281,7 @@ Query each entity's neighbors using one_hop_query, then identify shared neighbor
             system_prompt=PATHWAY_ENRICHMENT_PROMPT,
             allowed_tools=["mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"],
             mcp_servers={"kestrel": kestrel_config},
-            max_turns=8,  # More turns for multi-entity analysis
+            max_turns=25,  # Enough for ~N one_hop_query + get_nodes + JSON synthesis
             permission_mode="bypassPermissions",
         )
 
