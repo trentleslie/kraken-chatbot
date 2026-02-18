@@ -47,6 +47,57 @@ FILLER_PATTERNS = [
 ]
 
 
+def build_references_table(hypotheses: list[Hypothesis]) -> str:
+    """
+    Build markdown table of literature references for synthesis report.
+
+    Args:
+        hypotheses: Grounded hypotheses with literature_support
+
+    Returns:
+        Markdown string with table of citations
+    """
+    # Filter to hypotheses with literature
+    with_lit = [h for h in hypotheses if h.literature_support]
+    if not with_lit:
+        return ""
+
+    # Count papers and hypotheses
+    total_papers = sum(len(h.literature_support) for h in with_lit)
+
+    # Sort by hypothesis title for grouping
+    with_lit.sort(key=lambda h: h.title)
+
+    # Build table
+    lines = [
+        "\n## Literature References\n",
+        f"Papers discovered via semantic search. {total_papers} papers across {len(with_lit)} hypotheses.\n",
+        "| Hypothesis | Citation | Link |",
+        "|------------|----------|------|",
+    ]
+
+    for hypothesis in with_lit:
+        hyp_title = hypothesis.title[:80] + "..." if len(hypothesis.title) > 80 else hypothesis.title
+        hyp_title = hyp_title.replace("|", "\\|")  # Escape pipes for markdown table
+        for lit in hypothesis.literature_support:
+            # Format citation: "Authors (Year) Title"
+            title_truncated = lit.title[:100] + "..." if len(lit.title) > 100 else lit.title
+            citation = f'{lit.authors} ({lit.year}) "{title_truncated}"'
+            citation = citation.replace("|", "\\|")  # Escape pipes for markdown table
+
+            # Prefer DOI link, fall back to url
+            if lit.doi:
+                link = f"[DOI](https://doi.org/{lit.doi})"
+            elif lit.url:
+                link = f"[Link]({lit.url})"
+            else:
+                link = "-"
+
+            lines.append(f"| {hyp_title} | {citation} | {link} |")
+
+    return "\n".join(lines)
+
+
 def build_search_query(hypothesis: Hypothesis) -> str:
     """
     Extract concise search terms from hypothesis.
@@ -456,7 +507,16 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         duration, len(grounded), papers_found, kg_papers, openalex_papers, exa_papers, s2_papers
     )
 
+    # Build literature references table
+    references_table = build_references_table(grounded)
+
+    # Append to synthesis report if exists
+    synthesis_report = state.get("synthesis_report", "")
+    if references_table:
+        synthesis_report = synthesis_report + "\n" + references_table
+
     return {
         "hypotheses": grounded,
         "literature_errors": all_errors,
+        "synthesis_report": synthesis_report,
     }
