@@ -227,7 +227,7 @@ class LiteratureSupport(BaseModel):
     )
     key_passage: str = Field(default="", description="Most relevant passage from abstract")
     citation_count: int = Field(default=0, ge=0, description="Citation count for credibility weighting")
-    source: Literal["kg", "openalex", "s2", "pubmed"] = Field(
+    source: Literal["kg", "openalex", "s2", "exa", "pubmed"] = Field(
         default="s2", description="Source of this literature reference"
     )
 
@@ -344,8 +344,8 @@ class DiscoveryState(TypedDict, total=False):
 
     # === Phase 5: Output (Updated) ===
     synthesis_report: str
-    # Updated to use Hypothesis model with operator.add reducer
-    hypotheses: Annotated[list[Hypothesis], operator.add]
+    # Note: NOT using operator.add - synthesis creates, literature_grounding updates
+    hypotheses: list[Hypothesis]
 
     # === Phase 5b: Literature Grounding ===
     literature_errors: Annotated[list[str], operator.add]

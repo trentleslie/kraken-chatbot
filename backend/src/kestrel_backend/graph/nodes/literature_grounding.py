@@ -4,13 +4,14 @@ Literature Grounding Node: Add verified citations to synthesis hypotheses.
 Multi-source approach:
 1. KG PMIDs - Collect from existing findings (free, instant)
 2. OpenAlex - Free API, no rate limits, 250M+ works
-3. Semantic Scholar - When API key available (rate-limited without key)
+3. Exa AI - Semantic search, research paper category (~$0.005/query)
+4. Semantic Scholar - Fallback, rate-limited without API key
 
 Position in pipeline: Runs after synthesis, before final output.
 """
 
-import asyncio
 import logging
+import re
 import time
 from typing import Any
 
@@ -20,8 +21,12 @@ from ...openalex import (
     search_works, extract_pmid_from_work, extract_doi_from_work, format_authors_from_work
 )
 from ...semantic_scholar import (
-    search_papers, score_relevance, classify_relationship,
+    search_papers as s2_search_papers, score_relevance, classify_relationship,
     extract_key_passage, format_authors, extract_doi, S2RateLimitError
+)
+from ...exa_client import (
+    search_papers as exa_search_papers, ExaSearchError,
+    extract_doi_from_url, extract_year_from_date
 )
 
 logger = logging.getLogger(__name__)
@@ -29,6 +34,40 @@ logger = logging.getLogger(__name__)
 # Configuration
 PAPERS_PER_HYPOTHESIS = 3  # Max papers to attach per hypothesis
 MAX_HYPOTHESES = 15  # Max hypotheses to ground (prioritize by tier)
+
+# Filler phrases to remove from search queries
+FILLER_PATTERNS = [
+    r"\(inferred via[^)]*\)",      # "(inferred via semantic similarity)"
+    r"\(predicted[^)]*\)",          # "(predicted association)"
+    r"may be associated with",
+    r"is associated with",
+    r"potentially linked to",
+    r"might be involved in",
+    r"could be related to",
+]
+
+
+def build_search_query(hypothesis: Hypothesis) -> str:
+    """
+    Extract concise search terms from hypothesis.
+
+    Strategy:
+    1. Start with title (more concise than claim)
+    2. Strip filler phrases and parenthetical metadata
+    3. Truncate to ~150 chars for API limits
+    """
+    # Prefer title, fall back to claim
+    text = hypothesis.title or hypothesis.claim
+
+    # Remove filler phrases
+    for pattern in FILLER_PATTERNS:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+
+    # Clean up whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Truncate for API (OpenAlex truncates at 200 anyway)
+    return text[:150]
 
 
 def collect_pmids_from_state(state: DiscoveryState) -> dict[str, list[str]]:
@@ -112,6 +151,28 @@ def create_literature_from_openalex(work: dict, relevance: float = 0.8) -> Liter
     )
 
 
+def create_literature_from_exa(result: dict) -> LiteratureSupport:
+    """Create LiteratureSupport from Exa AI result."""
+    doi = extract_doi_from_url(result.get("url", ""))
+    year = extract_year_from_date(result.get("publishedDate"))
+    highlights = result.get("highlights", [])
+    key_passage = highlights[0] if highlights else ""
+
+    return LiteratureSupport(
+        paper_id=result.get("id", ""),
+        title=result.get("title") or "Unknown",
+        authors=result.get("author") or "",
+        year=year,
+        doi=doi,
+        url=result.get("url"),
+        relevance_score=0.85,  # Exa semantic match
+        relationship="supporting",
+        key_passage=key_passage[:300] if key_passage else "",
+        citation_count=0,
+        source="exa",
+    )
+
+
 def create_literature_from_s2(paper: dict, hypothesis_claim: str) -> LiteratureSupport:
     """Create LiteratureSupport from Semantic Scholar paper."""
     doi = extract_doi(paper)
@@ -157,9 +218,9 @@ async def ground_hypothesis_openalex(
         Tuple of (updated hypothesis with literature, list of errors)
     """
     errors: list[str] = []
-    query = hypothesis.claim
+    query = build_search_query(hypothesis)
     if not query:
-        return hypothesis, ["Empty hypothesis claim"]
+        return hypothesis, ["Empty search query"]
 
     # Search OpenAlex
     works = await search_works(query, limit=PAPERS_PER_HYPOTHESIS * 2)
@@ -187,6 +248,50 @@ async def ground_hypothesis_openalex(
     return hypothesis, errors
 
 
+async def ground_hypothesis_exa(
+    hypothesis: Hypothesis
+) -> tuple[Hypothesis, list[str]]:
+    """
+    Find literature support using Exa AI semantic search.
+
+    Args:
+        hypothesis: The hypothesis to ground
+
+    Returns:
+        Tuple of (updated hypothesis with literature, list of errors)
+    """
+    errors: list[str] = []
+    query = build_search_query(hypothesis)
+    if not query:
+        return hypothesis, ["Empty search query"]
+
+    try:
+        results = await exa_search_papers(query, limit=PAPERS_PER_HYPOTHESIS * 2)
+    except ExaSearchError as e:
+        logger.warning("Exa error for hypothesis: %s — %s", hypothesis.title[:50], e)
+        return hypothesis, [f"Exa error: {e}"]
+
+    if not results:
+        logger.debug("No Exa papers found for: %s", hypothesis.title[:50])
+        return hypothesis, []
+
+    # Build LiteratureSupport objects
+    literature: list[LiteratureSupport] = []
+    for result in results[:PAPERS_PER_HYPOTHESIS]:
+        try:
+            lit_support = create_literature_from_exa(result)
+            literature.append(lit_support)
+        except Exception as e:
+            errors.append(f"Error processing Exa result: {e}")
+
+    # Update hypothesis with literature
+    if literature:
+        updated = hypothesis.model_copy(update={"literature_support": literature})
+        return updated, errors
+
+    return hypothesis, errors
+
+
 async def ground_hypothesis_s2(
     hypothesis: Hypothesis
 ) -> tuple[Hypothesis, list[str]]:
@@ -200,13 +305,13 @@ async def ground_hypothesis_s2(
         Tuple of (updated hypothesis with literature, list of errors)
     """
     errors: list[str] = []
-    query = hypothesis.claim
+    query = build_search_query(hypothesis)
     if not query:
-        return hypothesis, ["Empty hypothesis claim"]
+        return hypothesis, ["Empty search query"]
 
     # Search Semantic Scholar with rate limit handling
     try:
-        papers = await search_papers(query, limit=PAPERS_PER_HYPOTHESIS * 2)
+        papers = await s2_search_papers(query, limit=PAPERS_PER_HYPOTHESIS * 2)
     except S2RateLimitError:
         logger.warning("S2 rate limited, skipping for hypothesis: %s", hypothesis.title[:50])
         return hypothesis, ["S2 rate limited - skipped"]
@@ -273,8 +378,9 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     Strategy:
     1. Check KG PMIDs first (free, instant)
-    2. Use OpenAlex for hypotheses without KG PMIDs (free, no rate limits)
-    3. S2 as fallback when OpenAlex returns no results
+    2. Use OpenAlex for hypotheses without KG PMIDs (free, keyword-based)
+    3. Exa AI as semantic fallback (~$0.005/query)
+    4. S2 as final fallback (rate-limited)
 
     Args:
         state: Current discovery state with hypotheses
@@ -318,11 +424,16 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             grounded.append(updated)
             continue
 
-        # Fall back to OpenAlex
+        # Fall back to OpenAlex (free, keyword-based)
         updated, errors = await ground_hypothesis_openalex(hypothesis)
         all_errors.extend(errors)
 
-        # If OpenAlex found nothing, try S2
+        # If OpenAlex found nothing, try Exa (semantic)
+        if not updated.literature_support:
+            updated, exa_errors = await ground_hypothesis_exa(hypothesis)
+            all_errors.extend(exa_errors)
+
+        # If still nothing, try S2 (rate limited)
         if not updated.literature_support:
             updated, s2_errors = await ground_hypothesis_s2(hypothesis)
             all_errors.extend(s2_errors)
@@ -332,15 +443,17 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     # Add ungrounded hypotheses
     grounded.extend(remaining)
 
-    # Count papers found
+    # Count papers found by source
     papers_found = sum(len(h.literature_support) for h in grounded)
     kg_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "kg")
     openalex_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "openalex")
+    exa_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "exa")
+    s2_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "s2")
 
     duration = time.time() - start
     logger.info(
-        "Completed literature_grounding in %.1fs — %d hypotheses, %d papers (kg=%d, openalex=%d)",
-        duration, len(grounded), papers_found, kg_papers, openalex_papers
+        "Completed literature_grounding in %.1fs — %d hypotheses, %d papers (kg=%d, openalex=%d, exa=%d, s2=%d)",
+        duration, len(grounded), papers_found, kg_papers, openalex_papers, exa_papers, s2_papers
     )
 
     return {

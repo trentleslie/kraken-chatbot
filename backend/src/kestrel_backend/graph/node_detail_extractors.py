@@ -322,6 +322,7 @@ def _extract_literature_grounding(state: dict) -> tuple[str, dict]:
     # Count literature by source
     kg_count = 0
     openalex_count = 0
+    exa_count = 0
     s2_count = 0
     total_papers = 0
     grounded_count = 0
@@ -335,6 +336,8 @@ def _extract_literature_grounding(state: dict) -> tuple[str, dict]:
                     kg_count += 1
                 elif lit.source == "openalex":
                     openalex_count += 1
+                elif lit.source == "exa":
+                    exa_count += 1
                 elif lit.source == "s2":
                     s2_count += 1
 
@@ -346,6 +349,8 @@ def _extract_literature_grounding(state: dict) -> tuple[str, dict]:
         parts.append(f"{kg_count} from KG")
     if openalex_count:
         parts.append(f"{openalex_count} from OpenAlex")
+    if exa_count:
+        parts.append(f"{exa_count} from Exa")
     if s2_count:
         parts.append(f"{s2_count} from S2")
 
@@ -369,6 +374,7 @@ def _extract_literature_grounding(state: dict) -> tuple[str, dict]:
         "total_hypotheses": len(hypotheses),
         "kg_count": kg_count,
         "openalex_count": openalex_count,
+        "exa_count": exa_count,
         "s2_count": s2_count,
         "errors_count": len(errors),
         "top_papers": top_papers[:5],
