@@ -61,7 +61,7 @@ async def search_papers(
             return results
         except httpx.HTTPStatusError as e:
             logger.error("Exa HTTP error: %s", e)
-            raise ExaSearchError(f"Exa API error: {e.response.status_code}")
+            raise ExaSearchError(f"Exa API error {e.response.status_code}: {e.response.text[:200]}")
         except Exception as e:
             logger.error("Exa search failed: %s", e)
             return []

@@ -155,7 +155,7 @@ def create_literature_from_exa(result: dict) -> LiteratureSupport:
     """Create LiteratureSupport from Exa AI result."""
     doi = extract_doi_from_url(result.get("url", ""))
     year = extract_year_from_date(result.get("publishedDate"))
-    highlights = result.get("highlights", [])
+    highlights = result.get("highlights") or []
     key_passage = highlights[0] if highlights else ""
 
     return LiteratureSupport(
@@ -165,7 +165,7 @@ def create_literature_from_exa(result: dict) -> LiteratureSupport:
         year=year,
         doi=doi,
         url=result.get("url"),
-        relevance_score=0.85,  # Exa semantic match
+        relevance_score=min(result.get("score", 0.85), 1.0),  # Use Exa's actual score
         relationship="supporting",
         key_passage=key_passage[:300] if key_passage else "",
         citation_count=0,
