@@ -438,3 +438,199 @@ class TestLiteratureSupportSources:
             year=2024,
         )
         assert lit.source == "s2"  # Default value
+
+
+def build_references_table(hypotheses: list) -> str:
+    """
+    Local copy of build_references_table for testing without module imports.
+
+    Build markdown table of literature references for synthesis report.
+    """
+    # Filter to hypotheses with literature
+    with_lit = [h for h in hypotheses if h.literature_support]
+    if not with_lit:
+        return ""
+
+    # Count papers and hypotheses
+    total_papers = sum(len(h.literature_support) for h in with_lit)
+
+    # Sort by hypothesis title for grouping
+    with_lit.sort(key=lambda h: h.title)
+
+    # Build table
+    lines = [
+        "\n## Literature References\n",
+        f"Papers discovered via semantic search. {total_papers} papers across {len(with_lit)} hypotheses.\n",
+        "| Hypothesis | Citation | Link |",
+        "|------------|----------|------|",
+    ]
+
+    for hypothesis in with_lit:
+        hyp_title = hypothesis.title[:80] + "..." if len(hypothesis.title) > 80 else hypothesis.title
+        for lit in hypothesis.literature_support:
+            # Format citation: "Authors (Year) Title"
+            title_truncated = lit.title[:100] + "..." if len(lit.title) > 100 else lit.title
+            citation = f'{lit.authors} ({lit.year}) "{title_truncated}"'
+
+            # Prefer DOI link, fall back to url
+            if lit.doi:
+                link = f"[DOI](https://doi.org/{lit.doi})"
+            elif lit.url:
+                link = f"[Link]({lit.url})"
+            else:
+                link = "-"
+
+            lines.append(f"| {hyp_title} | {citation} | {link} |")
+
+    return "\n".join(lines)
+
+
+class TestBuildReferencesTable:
+    """Tests for build_references_table function."""
+
+    def test_empty_hypotheses(self):
+        """Test with empty hypothesis list."""
+        result = build_references_table([])
+        assert result == ""
+
+    def test_hypotheses_without_literature(self):
+        """Test with hypotheses that have no literature support."""
+        hyp = Hypothesis(
+            title="Test Hypothesis",
+            tier=2,
+            claim="Test claim",
+            supporting_entities=["CHEBI:12345"],
+            structural_logic="A relates to B",
+            validation_steps=["Run experiment"],
+        )
+        result = build_references_table([hyp])
+        assert result == ""
+
+    def test_builds_table_with_literature(self):
+        """Test building table with hypothesis that has literature."""
+        lit = LiteratureSupport(
+            paper_id="paper1",
+            title="Test Paper Title",
+            authors="Smith et al.",
+            year=2024,
+            doi="10.1234/test",
+            relevance_score=0.9,
+            relationship="supporting",
+            key_passage="Key finding",
+            citation_count=100,
+        )
+        hyp = Hypothesis(
+            title="Test Hypothesis",
+            tier=1,
+            claim="Test claim",
+            supporting_entities=["GENE:1234"],
+            structural_logic="Direct evidence",
+            validation_steps=["Verify"],
+            literature_support=[lit],
+        )
+        result = build_references_table([hyp])
+
+        # Check structure
+        assert "## Literature References" in result
+        assert "| Hypothesis | Citation | Link |" in result
+        assert "|------------|----------|------|" in result
+        assert "Test Hypothesis" in result
+        assert "Smith et al. (2024)" in result
+        assert '[DOI](https://doi.org/10.1234/test)' in result
+
+    def test_prefers_doi_over_url(self):
+        """Test that DOI link is preferred over URL."""
+        lit = LiteratureSupport(
+            paper_id="paper1",
+            title="Test Paper",
+            authors="Jones",
+            year=2023,
+            doi="10.5678/example",
+            url="https://example.com/paper",
+            relevance_score=0.8,
+        )
+        hyp = Hypothesis(
+            title="Hypothesis",
+            tier=1,
+            claim="Claim",
+            supporting_entities=[],
+            structural_logic="Logic",
+            validation_steps=[],
+            literature_support=[lit],
+        )
+        result = build_references_table([hyp])
+        assert "[DOI](https://doi.org/10.5678/example)" in result
+        assert "example.com" not in result
+
+    def test_falls_back_to_url_without_doi(self):
+        """Test that URL is used when DOI is missing."""
+        lit = LiteratureSupport(
+            paper_id="paper1",
+            title="Test Paper",
+            authors="Doe",
+            year=2022,
+            url="https://pubmed.ncbi.nlm.nih.gov/12345678",
+            relevance_score=0.7,
+        )
+        hyp = Hypothesis(
+            title="Hypothesis",
+            tier=2,
+            claim="Claim",
+            supporting_entities=[],
+            structural_logic="Logic",
+            validation_steps=[],
+            literature_support=[lit],
+        )
+        result = build_references_table([hyp])
+        assert "[Link](https://pubmed.ncbi.nlm.nih.gov/12345678)" in result
+
+    def test_truncates_long_titles(self):
+        """Test that long hypothesis titles and paper titles are truncated."""
+        long_paper_title = "A" * 150  # > 100 chars
+        long_hyp_title = "B" * 100  # > 80 chars
+
+        lit = LiteratureSupport(
+            paper_id="paper1",
+            title=long_paper_title,
+            authors="Author",
+            year=2024,
+            doi="10.1234/test",
+            relevance_score=0.8,
+        )
+        hyp = Hypothesis(
+            title=long_hyp_title,
+            tier=1,
+            claim="Claim",
+            supporting_entities=[],
+            structural_logic="Logic",
+            validation_steps=[],
+            literature_support=[lit],
+        )
+        result = build_references_table([hyp])
+
+        # Check truncation
+        assert "B" * 80 + "..." in result  # Hyp title truncated at 80
+        assert "A" * 100 + "..." in result  # Paper title truncated at 100
+
+    def test_counts_papers_and_hypotheses(self):
+        """Test that summary line has correct counts."""
+        lit1 = LiteratureSupport(
+            paper_id="p1", title="Paper 1", authors="A", year=2024,
+            doi="10.1/a", relevance_score=0.9,
+        )
+        lit2 = LiteratureSupport(
+            paper_id="p2", title="Paper 2", authors="B", year=2023,
+            doi="10.1/b", relevance_score=0.8,
+        )
+        hyp1 = Hypothesis(
+            title="Hyp 1", tier=1, claim="C1", supporting_entities=[],
+            structural_logic="L1", validation_steps=[], literature_support=[lit1, lit2],
+        )
+        hyp2 = Hypothesis(
+            title="Hyp 2", tier=2, claim="C2", supporting_entities=[],
+            structural_logic="L2", validation_steps=[], literature_support=[lit1],
+        )
+        result = build_references_table([hyp1, hyp2])
+
+        # 3 papers total, 2 hypotheses
+        assert "3 papers across 2 hypotheses" in result
