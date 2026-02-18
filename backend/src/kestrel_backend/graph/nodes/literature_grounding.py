@@ -204,8 +204,12 @@ async def ground_hypothesis_s2(
     if not query:
         return hypothesis, ["Empty hypothesis claim"]
 
-    # Search Semantic Scholar
-    papers = await search_papers(query, limit=PAPERS_PER_HYPOTHESIS * 2)
+    # Search Semantic Scholar with rate limit handling
+    try:
+        papers = await search_papers(query, limit=PAPERS_PER_HYPOTHESIS * 2)
+    except S2RateLimitError:
+        logger.warning("S2 rate limited, skipping for hypothesis: %s", hypothesis.title[:50])
+        return hypothesis, ["S2 rate limited - skipped"]
 
     if not papers:
         logger.debug("No S2 papers found for: %s", hypothesis.title[:50])
