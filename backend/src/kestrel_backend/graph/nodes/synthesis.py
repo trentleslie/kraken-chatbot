@@ -231,7 +231,12 @@ def format_disease_associations(diseases: list[DiseaseAssociation]) -> str:
                 for d in by_evidence[ev_type]:
                     pmid_str = ""
                     if d.pmids:
-                        pmid_str = f" [PMIDs: {', '.join(d.pmids[:3])}]"
+                        # Format PMIDs as clickable PubMed links
+                        pmid_links = []
+                        for pmid in d.pmids[:3]:
+                            pmid_num = pmid.replace("PMID:", "").strip()
+                            pmid_links.append(f"[PMID:{pmid_num}](https://pubmed.ncbi.nlm.nih.gov/{pmid_num})")
+                        pmid_str = f" [{', '.join(pmid_links)}]"
                     lines.append(f"- {d.disease_name} (`{d.disease_curie}`){pmid_str}")
                     lines.append(f"  - Predicate: {d.predicate}")
                     lines.append(f"  - Source: {d.source}")
@@ -399,7 +404,12 @@ def format_findings_summary(
                 confidence_marker = {"high": "[HIGH]", "moderate": "[MOD]", "low": "[LOW]"}.get(f.confidence, "")
                 lines.append(f"- {confidence_marker} **{f.entity}**: {f.claim} {source_tag}")
                 if f.pmids:
-                    lines.append(f"  - PMIDs: {', '.join(f.pmids[:5])}")
+                    # Format PMIDs as clickable PubMed links
+                    pmid_links = []
+                    for pmid in f.pmids[:5]:
+                        pmid_num = pmid.replace("PMID:", "").strip()
+                        pmid_links.append(f"[PMID:{pmid_num}](https://pubmed.ncbi.nlm.nih.gov/{pmid_num})")
+                    lines.append(f"  - PMIDs: {', '.join(pmid_links)}")
                 if f.logic_chain:
                     lines.append(f"  - _Logic: {f.logic_chain}_")
             lines.append("")
