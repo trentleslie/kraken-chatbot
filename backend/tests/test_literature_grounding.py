@@ -2,6 +2,7 @@
 
 import math
 import sys
+import types
 import pytest
 
 # Import state directly to avoid triggering langgraph import from graph/__init__.py
@@ -15,6 +16,58 @@ sys.modules["state"] = state_module
 spec.loader.exec_module(state_module)
 LiteratureSupport = state_module.LiteratureSupport
 Hypothesis = state_module.Hypothesis
+
+# Set up package hierarchy for literature_grounding relative imports
+kestrel_backend = types.ModuleType("kestrel_backend")
+kestrel_backend_graph = types.ModuleType("kestrel_backend.graph")
+kestrel_backend_graph_nodes = types.ModuleType("kestrel_backend.graph.nodes")
+
+sys.modules["kestrel_backend"] = kestrel_backend
+sys.modules["kestrel_backend.graph"] = kestrel_backend_graph
+sys.modules["kestrel_backend.graph.nodes"] = kestrel_backend_graph_nodes
+sys.modules["kestrel_backend.graph.state"] = state_module
+
+# Mock the other imports that literature_grounding needs (not used by build_references_table)
+mock_literature_utils = types.ModuleType("kestrel_backend.literature_utils")
+mock_literature_utils.pmid_to_url = lambda x: x
+mock_literature_utils.doi_to_url = lambda x: x
+sys.modules["kestrel_backend.literature_utils"] = mock_literature_utils
+
+mock_openalex = types.ModuleType("kestrel_backend.openalex")
+mock_openalex.search_works = None
+mock_openalex.extract_pmid_from_work = None
+mock_openalex.extract_doi_from_work = None
+mock_openalex.format_authors_from_work = None
+sys.modules["kestrel_backend.openalex"] = mock_openalex
+
+mock_semantic_scholar = types.ModuleType("kestrel_backend.semantic_scholar")
+mock_semantic_scholar.search_papers = None
+mock_semantic_scholar.score_relevance = None
+mock_semantic_scholar.classify_relationship = None
+mock_semantic_scholar.extract_key_passage = None
+mock_semantic_scholar.format_authors = None
+mock_semantic_scholar.extract_doi = None
+mock_semantic_scholar.S2RateLimitError = Exception
+sys.modules["kestrel_backend.semantic_scholar"] = mock_semantic_scholar
+
+mock_exa_client = types.ModuleType("kestrel_backend.exa_client")
+mock_exa_client.search_papers = None
+mock_exa_client.ExaSearchError = Exception
+mock_exa_client.extract_doi_from_url = None
+mock_exa_client.extract_year_from_date = None
+sys.modules["kestrel_backend.exa_client"] = mock_exa_client
+
+# Now import build_references_table from the real module
+lit_grounding_spec = importlib.util.spec_from_file_location(
+    "kestrel_backend.graph.nodes.literature_grounding",
+    "src/kestrel_backend/graph/nodes/literature_grounding.py",
+    submodule_search_locations=[]
+)
+lit_grounding_module = importlib.util.module_from_spec(lit_grounding_spec)
+lit_grounding_module.__package__ = "kestrel_backend.graph.nodes"
+sys.modules["kestrel_backend.graph.nodes.literature_grounding"] = lit_grounding_module
+lit_grounding_spec.loader.exec_module(lit_grounding_module)
+build_references_table = lit_grounding_module.build_references_table
 
 from src.kestrel_backend.semantic_scholar import (
     score_relevance,
@@ -438,51 +491,6 @@ class TestLiteratureSupportSources:
             year=2024,
         )
         assert lit.source == "s2"  # Default value
-
-
-def build_references_table(hypotheses: list) -> str:
-    """
-    Local copy of build_references_table for testing without module imports.
-
-    Build markdown table of literature references for synthesis report.
-    """
-    # Filter to hypotheses with literature
-    with_lit = [h for h in hypotheses if h.literature_support]
-    if not with_lit:
-        return ""
-
-    # Count papers and hypotheses
-    total_papers = sum(len(h.literature_support) for h in with_lit)
-
-    # Sort by hypothesis title for grouping
-    with_lit.sort(key=lambda h: h.title)
-
-    # Build table
-    lines = [
-        "\n## Literature References\n",
-        f"Papers discovered via semantic search. {total_papers} papers across {len(with_lit)} hypotheses.\n",
-        "| Hypothesis | Citation | Link |",
-        "|------------|----------|------|",
-    ]
-
-    for hypothesis in with_lit:
-        hyp_title = hypothesis.title[:80] + "..." if len(hypothesis.title) > 80 else hypothesis.title
-        for lit in hypothesis.literature_support:
-            # Format citation: "Authors (Year) Title"
-            title_truncated = lit.title[:100] + "..." if len(lit.title) > 100 else lit.title
-            citation = f'{lit.authors} ({lit.year}) "{title_truncated}"'
-
-            # Prefer DOI link, fall back to url
-            if lit.doi:
-                link = f"[DOI](https://doi.org/{lit.doi})"
-            elif lit.url:
-                link = f"[Link]({lit.url})"
-            else:
-                link = "-"
-
-            lines.append(f"| {hyp_title} | {citation} | {link} |")
-
-    return "\n".join(lines)
 
 
 class TestBuildReferencesTable:

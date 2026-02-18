@@ -78,10 +78,12 @@ def build_references_table(hypotheses: list[Hypothesis]) -> str:
 
     for hypothesis in with_lit:
         hyp_title = hypothesis.title[:80] + "..." if len(hypothesis.title) > 80 else hypothesis.title
+        hyp_title = hyp_title.replace("|", "\\|")  # Escape pipes for markdown table
         for lit in hypothesis.literature_support:
             # Format citation: "Authors (Year) Title"
             title_truncated = lit.title[:100] + "..." if len(lit.title) > 100 else lit.title
             citation = f'{lit.authors} ({lit.year}) "{title_truncated}"'
+            citation = citation.replace("|", "\\|")  # Escape pipes for markdown table
 
             # Prefer DOI link, fall back to url
             if lit.doi:
