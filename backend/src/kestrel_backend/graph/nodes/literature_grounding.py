@@ -14,7 +14,7 @@ import logging
 import time
 from typing import Any
 
-from ..state import DiscoveryState, Hypothesis, LiteratureSupport, Finding, DiseaseAssociation
+from ..state import DiscoveryState, Hypothesis, LiteratureSupport
 from ...literature_utils import pmid_to_url, doi_to_url
 from ...openalex import (
     search_works, extract_pmid_from_work, extract_doi_from_work, format_authors_from_work
@@ -237,6 +237,32 @@ async def ground_hypothesis_s2(
     return hypothesis, errors
 
 
+def ground_hypothesis_kg(
+    hypothesis: Hypothesis,
+    kg_pmids: dict[str, list[str]]
+) -> tuple[Hypothesis, bool]:
+    """
+    Try to ground hypothesis using KG PMIDs from supporting entities.
+
+    Returns:
+        Tuple of (hypothesis with literature, True if any PMIDs found)
+    """
+    literature: list[LiteratureSupport] = []
+
+    for entity in hypothesis.supporting_entities:
+        if entity in kg_pmids:
+            for pmid in kg_pmids[entity][:PAPERS_PER_HYPOTHESIS]:
+                if len(literature) >= PAPERS_PER_HYPOTHESIS:
+                    break
+                literature.append(create_literature_from_pmid(pmid))
+
+    if literature:
+        updated = hypothesis.model_copy(update={"literature_support": literature})
+        return updated, True
+
+    return hypothesis, False
+
+
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
     Ground synthesis hypotheses with literature citations.
@@ -244,7 +270,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     Strategy:
     1. Check KG PMIDs first (free, instant)
     2. Use OpenAlex for hypotheses without KG PMIDs (free, no rate limits)
-    3. S2 as optional fallback (rate-limited without API key)
+    3. S2 as fallback when OpenAlex returns no results
 
     Args:
         state: Current discovery state with hypotheses
@@ -277,22 +303,27 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         [h.tier for h in to_ground[:10]]
     )
 
-    # Step 2: Process hypotheses
+    # Step 2: Process each hypothesis through fallback chain
     all_errors: list[str] = []
     grounded: list[Hypothesis] = []
 
-    # Use OpenAlex for all hypotheses (fast, free, no rate limits)
-    tasks = [ground_hypothesis_openalex(h) for h in to_ground]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for hypothesis in to_ground:
+        # Try KG PMIDs first (free, instant)
+        updated, has_kg = ground_hypothesis_kg(hypothesis, kg_pmids)
+        if has_kg:
+            grounded.append(updated)
+            continue
 
-    for idx, result in enumerate(results):
-        if isinstance(result, Exception):
-            all_errors.append(f"Exception: {result}")
-            grounded.append(to_ground[idx])
-        else:
-            updated_hyp, errors = result
-            grounded.append(updated_hyp)
-            all_errors.extend(errors)
+        # Fall back to OpenAlex
+        updated, errors = await ground_hypothesis_openalex(hypothesis)
+        all_errors.extend(errors)
+
+        # If OpenAlex found nothing, try S2
+        if not updated.literature_support:
+            updated, s2_errors = await ground_hypothesis_s2(hypothesis)
+            all_errors.extend(s2_errors)
+
+        grounded.append(updated)
 
     # Add ungrounded hypotheses
     grounded.extend(remaining)

@@ -59,7 +59,7 @@ def extract_pmid_from_string(text: str) -> Optional[str]:
     Returns:
         Numeric PMID or None
     """
-    match = re.search(r'PMID:?\s*(\d{7,8})', text)
+    match = re.search(r'PMID:?\s*(\d{1,8})', text)
     if match:
         return match.group(1)
     return None

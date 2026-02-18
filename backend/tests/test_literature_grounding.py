@@ -314,6 +314,13 @@ class TestLiteratureUtils:
         assert extract_pmid_from_string("See PMID:12345678 for details") == "12345678"
         assert extract_pmid_from_string("No PMID here") is None
 
+    def test_extract_pmid_from_string_short(self):
+        """Test PMID extraction for older short PMIDs."""
+        from src.kestrel_backend.literature_utils import extract_pmid_from_string
+        assert extract_pmid_from_string("PMID:1") == "1"
+        assert extract_pmid_from_string("See PMID:123 for details") == "123"
+        assert extract_pmid_from_string("PMID:999999") == "999999"
+
 
 class TestOpenAlexClient:
     """Tests for openalex.py helper functions."""
