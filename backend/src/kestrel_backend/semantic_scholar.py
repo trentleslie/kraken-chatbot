@@ -19,13 +19,15 @@ S2_API_BASE = "https://api.semanticscholar.org/graph/v1"
 S2_SEARCH_ENDPOINT = f"{S2_API_BASE}/paper/search"
 
 # Rate limiting configuration
-# Free tier: 100 requests per 5 minutes
+# Free tier: 100 requests per 5 minutes = 1 request per 3 seconds
 # With API key: 1 request per second sustained
-S2_SEMAPHORE = asyncio.Semaphore(5)  # Max concurrent requests
-
-# Check for API key (enables higher rate limits)
 S2_API_KEY = os.environ.get("S2_API_KEY")
-S2_DELAY = 0.3 if S2_API_KEY else 0.5  # Faster with API key
+
+# Serial requests to respect rate limits (concurrent requests cause 429s)
+S2_SEMAPHORE = asyncio.Semaphore(1)
+
+# Delay between requests: 1s with API key, 3.5s without (safe margin for free tier)
+S2_DELAY = 1.0 if S2_API_KEY else 3.5
 
 
 async def search_papers(

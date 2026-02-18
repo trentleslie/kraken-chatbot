@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 PAPERS_PER_HYPOTHESIS = 3  # Max papers to attach per hypothesis
-MAX_HYPOTHESES = 20  # Max hypotheses to ground (prioritize by tier)
+MAX_HYPOTHESES = 10  # Max hypotheses to ground (prioritize by tier)
+# Note: With S2 free tier (3.5s delay), 10 hypotheses ≈ 35s total
 
 
 async def ground_hypothesis(
