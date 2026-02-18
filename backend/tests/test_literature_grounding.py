@@ -1173,14 +1173,14 @@ class TestGetPaperKey:
         key = _get_paper_key(lit)
         assert key == "doi:10.1/test"
 
-    def test_falls_back_to_title_without_doi(self):
-        """Test that title is used when DOI is missing."""
+    def test_falls_back_to_title_year_without_doi(self):
+        """Test that title+year is used when DOI is missing."""
         lit = LiteratureSupport(
             paper_id="p1", title="Paper Title", authors="A", year=2024,
             relevance_score=0.9,
         )
         key = _get_paper_key(lit)
-        assert key == "title:paper title"
+        assert key == "title:paper title:2024"
 
     def test_doi_case_insensitive(self):
         """Test that DOI keys are case-insensitive."""
@@ -1202,4 +1202,4 @@ class TestGetPaperKey:
             relevance_score=0.9,
         )
         key = _get_paper_key(lit)
-        assert key == f"title:{'a' * 100}"
+        assert key == f"title:{'a' * 100}:2024"

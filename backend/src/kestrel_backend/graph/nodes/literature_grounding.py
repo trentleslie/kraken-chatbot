@@ -108,8 +108,8 @@ def _get_paper_key(lit: LiteratureSupport) -> str:
     """
     Generate key for paper deduplication in references table.
 
-    Uses DOI if available, otherwise falls back to normalized title.
-    Different from get_unique_key() which includes year for merge-time dedup.
+    Uses DOI if available, otherwise falls back to normalized title+year.
+    Different from get_unique_key() which also checks PMID for merge-time dedup.
 
     Args:
         lit: Literature support object
@@ -119,7 +119,7 @@ def _get_paper_key(lit: LiteratureSupport) -> str:
     """
     if lit.doi:
         return f"doi:{lit.doi.lower()}"
-    return f"title:{lit.title.lower()[:100]}"
+    return f"title:{lit.title.lower()[:100]}:{lit.year}"
 
 
 def build_references_table(hypotheses: list[Hypothesis]) -> str:
@@ -500,7 +500,7 @@ async def ground_hypothesis_openalex_raw(
     literature: list[LiteratureSupport] = []
     for i, work in enumerate(works):
         try:
-            relevance = 0.9 - (i * 0.03)  # Slight decay for lower-ranked
+            relevance = max(0.0, 0.9 - (i * 0.03))  # Slight decay for lower-ranked
             lit_support = create_literature_from_openalex(work, relevance)
             literature.append(lit_support)
         except Exception as e:
