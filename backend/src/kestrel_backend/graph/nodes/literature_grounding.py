@@ -1,15 +1,16 @@
 """
 Literature Grounding Node: Add verified citations to synthesis hypotheses.
 
-Multi-source approach:
+Parallel multi-source approach:
 1. KG PMIDs - Collect from existing findings (free, instant)
-2. OpenAlex - Free API, no rate limits, 250M+ works
-3. Exa AI - Semantic search, research paper category (~$0.005/query)
-4. Semantic Scholar - Fallback, rate-limited without API key
+2. Parallel search: OpenAlex + Exa + PubMed simultaneously
+3. Merge/deduplicate by DOI → PMID → title+year
+4. Semantic Scholar - Fallback only if parallel search finds nothing
 
 Position in pipeline: Runs after synthesis, before final output.
 """
 
+import asyncio
 import logging
 import re
 import time
@@ -28,12 +29,29 @@ from ...exa_client import (
     search_papers as exa_search_papers, ExaSearchError,
     extract_doi_from_url, extract_year_from_date
 )
+from ...pubmed_client import (
+    search_papers as pubmed_search_papers, PubMedSearchError
+)
 
 logger = logging.getLogger(__name__)
 
 # Configuration
 PAPERS_PER_HYPOTHESIS = 3  # Max papers to attach per hypothesis
 MAX_HYPOTHESES = 15  # Max hypotheses to ground (prioritize by tier)
+PARALLEL_FETCH_LIMIT = 6  # Fetch 2x papers per source for deduplication
+
+# Source priority for deduplication (lower = higher priority)
+SOURCE_PRIORITY = {"kg": 1, "pubmed": 2, "openalex": 3, "exa": 4, "s2": 5}
+
+# Low-quality Exa result patterns to skip
+EXA_SKIP_AUTHORS = {"Web Team", "EBI", "EMBL-EBI"}
+EXA_SKIP_URL_PATTERNS = ["ebi.ac.uk/chebi", "uniprot.org"]
+EXA_SKIP_TITLES = {
+    "Gene Ontology Resource",
+    "The Gene Ontology Resource",
+    "STRING database",
+    "STRING: functional protein association networks",
+}
 
 # Filler phrases to remove from search queries
 FILLER_PATTERNS = [
@@ -47,9 +65,72 @@ FILLER_PATTERNS = [
 ]
 
 
+def is_valid_exa_result(result: dict) -> bool:
+    """
+    Filter out database pages and low-quality Exa results.
+
+    Rejects:
+    - Results with year=0 (usually database pages without publication dates)
+    - Results from known generic authors (Web Team, EBI, EMBL-EBI)
+    - Database page URLs (ChEBI, UniProt)
+    - Known generic titles (Gene Ontology, STRING)
+
+    Args:
+        result: Raw Exa search result dict
+
+    Returns:
+        True if result is a valid paper, False if it should be skipped
+    """
+    # Skip if year is 0 (database pages often have no publication date)
+    year = extract_year_from_date(result.get("publishedDate"))
+    if year == 0:
+        return False
+
+    # Skip if author contains known generic authors
+    author = result.get("author") or ""
+    if any(skip in author for skip in EXA_SKIP_AUTHORS):
+        return False
+
+    # Skip database pages by URL pattern
+    url = result.get("url") or ""
+    if any(pattern in url for pattern in EXA_SKIP_URL_PATTERNS):
+        return False
+
+    # Skip known generic titles
+    title = result.get("title") or ""
+    if title in EXA_SKIP_TITLES:
+        return False
+
+    return True
+
+
+def _get_paper_key(lit: LiteratureSupport) -> str:
+    """
+    Generate key for paper deduplication in references table.
+
+    Uses DOI if available, otherwise falls back to normalized title+year.
+    Different from get_unique_key() which also checks PMID for merge-time dedup.
+
+    Args:
+        lit: Literature support object
+
+    Returns:
+        Unique key string for deduplication
+    """
+    if lit.doi:
+        return f"doi:{lit.doi.lower()}"
+    return f"title:{lit.title.lower()[:100]}:{lit.year}"
+
+
 def build_references_table(hypotheses: list[Hypothesis]) -> str:
     """
     Build markdown table of literature references for synthesis report.
+
+    Deduplicates:
+    - Hypotheses by title (prevents iteration over duplicates)
+    - Papers by DOI/title across all hypotheses (combines hypothesis titles)
+
+    Includes a Relevance column showing the key_passage for quick scanning.
 
     Args:
         hypotheses: Grounded hypotheses with literature_support
@@ -57,43 +138,63 @@ def build_references_table(hypotheses: list[Hypothesis]) -> str:
     Returns:
         Markdown string with table of citations
     """
+    # Deduplicate hypotheses by title
+    seen_titles: set[str] = set()
+    unique_hypotheses: list[Hypothesis] = []
+    for h in hypotheses:
+        if h.title not in seen_titles:
+            seen_titles.add(h.title)
+            unique_hypotheses.append(h)
+
     # Filter to hypotheses with literature
-    with_lit = [h for h in hypotheses if h.literature_support]
+    with_lit = [h for h in unique_hypotheses if h.literature_support]
     if not with_lit:
         return ""
 
-    # Count papers and hypotheses
-    total_papers = sum(len(h.literature_support) for h in with_lit)
-
-    # Sort by hypothesis title for grouping
-    with_lit.sort(key=lambda h: h.title)
-
-    # Build table
-    lines = [
-        "\n## Literature References\n",
-        f"Papers discovered via semantic search. {total_papers} papers across {len(with_lit)} hypotheses.\n",
-        "| Hypothesis | Citation | Link |",
-        "|------------|----------|------|",
-    ]
-
+    # Group papers by key, track which hypotheses cite each
+    paper_to_hypotheses: dict[str, tuple[LiteratureSupport, list[str]]] = {}
     for hypothesis in with_lit:
         hyp_title = hypothesis.title[:80] + "..." if len(hypothesis.title) > 80 else hypothesis.title
-        hyp_title = hyp_title.replace("|", "\\|")  # Escape pipes for markdown table
         for lit in hypothesis.literature_support:
-            # Format citation: "Authors (Year) Title"
-            title_truncated = lit.title[:100] + "..." if len(lit.title) > 100 else lit.title
-            citation = f'{lit.authors} ({lit.year}) "{title_truncated}"'
-            citation = citation.replace("|", "\\|")  # Escape pipes for markdown table
+            key = _get_paper_key(lit)
+            if key not in paper_to_hypotheses:
+                paper_to_hypotheses[key] = (lit, [])
+            paper_to_hypotheses[key][1].append(hyp_title)
 
-            # Prefer DOI link, fall back to url
-            if lit.doi:
-                link = f"[DOI](https://doi.org/{lit.doi})"
-            elif lit.url:
-                link = f"[Link]({lit.url})"
-            else:
-                link = "-"
+    # Build table header
+    lines = [
+        "\n## Literature References\n",
+        f"Papers discovered via semantic search. {len(paper_to_hypotheses)} unique papers across {len(with_lit)} hypotheses.\n",
+        "| Hypothesis | Citation | Link | Relevance |",
+        "|------------|----------|------|-----------|",
+    ]
 
-            lines.append(f"| {hyp_title} | {citation} | {link} |")
+    # Build rows - one per unique paper
+    for key, (lit, hyp_titles) in sorted(paper_to_hypotheses.items()):
+        # Combine and escape hypothesis titles (dedupe within paper)
+        combined_titles = "; ".join(sorted(set(hyp_titles)))
+        combined_titles = combined_titles.replace("|", "\\|")
+
+        # Format citation: "Authors (Year) Title"
+        title_truncated = lit.title[:100] + "..." if len(lit.title) > 100 else lit.title
+        citation = f'{lit.authors} ({lit.year}) "{title_truncated}"'
+        citation = citation.replace("|", "\\|")
+
+        # Prefer DOI link, fall back to url
+        if lit.doi:
+            link = f"[DOI](https://doi.org/{lit.doi})"
+        elif lit.url:
+            link = f"[Link]({lit.url})"
+        else:
+            link = "—"
+
+        # Format relevance (key_passage)
+        relevance = lit.key_passage[:120] + "..." if len(lit.key_passage) > 120 else lit.key_passage
+        if not relevance:
+            relevance = "—"
+        relevance = relevance.replace("|", "\\|").replace("\n", " ")
+
+        lines.append(f"| {combined_titles} | {citation} | {link} | {relevance} |")
 
     return "\n".join(lines)
 
@@ -254,6 +355,295 @@ def create_literature_from_s2(paper: dict, hypothesis_claim: str) -> LiteratureS
         citation_count=paper.get("citationCount") or 0,
         source="s2",
     )
+
+
+def create_literature_from_pubmed(paper: dict, relevance: float = 0.85) -> LiteratureSupport:
+    """Create LiteratureSupport from PubMed ESummary result."""
+    pmid = paper.get("pmid", "")
+    doi = paper.get("doi")
+
+    # Build URL - prefer PubMed URL
+    url = pmid_to_url(pmid) if pmid else None
+    if not url and doi:
+        url = doi_to_url(doi)
+
+    return LiteratureSupport(
+        paper_id=f"PMID:{pmid}" if pmid else "",
+        title=paper.get("title") or "Unknown",
+        authors=paper.get("authors") or "Unknown",
+        year=paper.get("year") or 0,
+        doi=doi,
+        url=url,
+        relevance_score=relevance,
+        relationship="supporting",
+        key_passage="",
+        citation_count=paper.get("citation_count") or 0,
+        source="pubmed",
+    )
+
+
+def get_unique_key(lit: LiteratureSupport) -> str:
+    """
+    Generate unique key for deduplication.
+
+    Priority: DOI > PMID > title+year
+    """
+    if lit.doi:
+        return f"doi:{lit.doi.lower()}"
+    if lit.paper_id.startswith("PMID:"):
+        pmid = lit.paper_id.replace("PMID:", "")
+        return f"pmid:{pmid}"
+    # Normalize title: lowercase, first 100 chars
+    title_norm = lit.title.lower()[:100].strip()
+    return f"title:{title_norm}:{lit.year}"
+
+
+def merge_literature(
+    all_results: list[LiteratureSupport],
+    limit: int = PAPERS_PER_HYPOTHESIS
+) -> list[LiteratureSupport]:
+    """
+    Deduplicate literature by unique key, prefer higher-priority sources.
+
+    When duplicates found:
+    - Keep the paper from the higher-priority source
+    - Merge complementary fields (citation_count, key_passage, doi) from lower-priority
+
+    Args:
+        all_results: Combined literature from all sources
+        limit: Maximum results to return
+
+    Returns:
+        Deduplicated list sorted by relevance_score, limited to `limit` items
+    """
+    if not all_results:
+        return []
+
+    # Group by unique key
+    by_key: dict[str, list[LiteratureSupport]] = {}
+    for lit in all_results:
+        key = get_unique_key(lit)
+        if key not in by_key:
+            by_key[key] = []
+        by_key[key].append(lit)
+
+    # For each group, pick best source and merge complementary fields
+    merged: list[LiteratureSupport] = []
+    for key, papers in by_key.items():
+        # Sort by source priority (lowest = best)
+        papers.sort(key=lambda p: SOURCE_PRIORITY.get(p.source, 99))
+        best = papers[0]
+
+        # Merge complementary fields from lower-priority sources
+        merged_citation_count = best.citation_count
+        merged_key_passage = best.key_passage
+        merged_doi = best.doi
+
+        for other in papers[1:]:
+            if other.citation_count > merged_citation_count:
+                merged_citation_count = other.citation_count
+            if not merged_key_passage and other.key_passage:
+                merged_key_passage = other.key_passage
+            if not merged_doi and other.doi:
+                merged_doi = other.doi
+
+        # Create merged result if any fields changed
+        if (merged_citation_count != best.citation_count or
+            merged_key_passage != best.key_passage or
+            merged_doi != best.doi):
+            best = LiteratureSupport(
+                paper_id=best.paper_id,
+                title=best.title,
+                authors=best.authors,
+                year=best.year,
+                doi=merged_doi,
+                url=best.url,
+                relevance_score=best.relevance_score,
+                relationship=best.relationship,
+                key_passage=merged_key_passage,
+                citation_count=merged_citation_count,
+                source=best.source,
+            )
+
+        merged.append(best)
+
+    # Sort by relevance score descending, return top `limit`
+    merged.sort(key=lambda p: p.relevance_score, reverse=True)
+    return merged[:limit]
+
+
+async def ground_hypothesis_openalex_raw(
+    hypothesis: Hypothesis,
+    limit: int = PARALLEL_FETCH_LIMIT
+) -> tuple[list[LiteratureSupport], list[str]]:
+    """
+    Search OpenAlex and return raw literature results (no hypothesis update).
+
+    Args:
+        hypothesis: The hypothesis to ground
+        limit: Maximum results to fetch
+
+    Returns:
+        Tuple of (list of literature, list of errors)
+    """
+    errors: list[str] = []
+    query = build_search_query(hypothesis)
+    if not query:
+        return [], ["Empty search query"]
+
+    works = await search_works(query, limit=limit)
+
+    if not works:
+        logger.debug("No OpenAlex papers found for: %s", hypothesis.title[:50])
+        return [], []
+
+    literature: list[LiteratureSupport] = []
+    for i, work in enumerate(works):
+        try:
+            relevance = max(0.0, 0.9 - (i * 0.03))  # Slight decay for lower-ranked
+            lit_support = create_literature_from_openalex(work, relevance)
+            literature.append(lit_support)
+        except Exception as e:
+            errors.append(f"Error processing OpenAlex work: {e}")
+
+    return literature, errors
+
+
+async def ground_hypothesis_exa_raw(
+    hypothesis: Hypothesis,
+    limit: int = PARALLEL_FETCH_LIMIT
+) -> tuple[list[LiteratureSupport], list[str]]:
+    """
+    Search Exa and return raw literature results (no hypothesis update).
+
+    Args:
+        hypothesis: The hypothesis to ground
+        limit: Maximum results to fetch
+
+    Returns:
+        Tuple of (list of literature, list of errors)
+    """
+    errors: list[str] = []
+    query = build_search_query(hypothesis)
+    if not query:
+        return [], ["Empty search query"]
+
+    try:
+        results = await exa_search_papers(query, limit=limit)
+    except ExaSearchError as e:
+        logger.warning("Exa error for hypothesis: %s — %s", hypothesis.title[:50], e)
+        return [], [f"Exa error: {e}"]
+
+    if not results:
+        logger.debug("No Exa papers found for: %s", hypothesis.title[:50])
+        return [], []
+
+    # Filter out low-quality results before processing
+    valid_results = [r for r in results if is_valid_exa_result(r)]
+    if len(valid_results) < len(results):
+        logger.debug(
+            "Exa quality filter: %d/%d results kept for '%s'",
+            len(valid_results), len(results), hypothesis.title[:40]
+        )
+
+    literature: list[LiteratureSupport] = []
+    for result in valid_results:
+        try:
+            lit_support = create_literature_from_exa(result)
+            literature.append(lit_support)
+        except Exception as e:
+            errors.append(f"Error processing Exa result: {e}")
+
+    return literature, errors
+
+
+async def ground_hypothesis_pubmed_raw(
+    hypothesis: Hypothesis,
+    limit: int = PARALLEL_FETCH_LIMIT
+) -> tuple[list[LiteratureSupport], list[str]]:
+    """
+    Search PubMed and return raw literature results (no hypothesis update).
+
+    Args:
+        hypothesis: The hypothesis to ground
+        limit: Maximum results to fetch
+
+    Returns:
+        Tuple of (list of literature, list of errors)
+    """
+    errors: list[str] = []
+    query = build_search_query(hypothesis)
+    if not query:
+        return [], ["Empty search query"]
+
+    try:
+        papers = await pubmed_search_papers(query, limit=limit)
+    except PubMedSearchError as e:
+        logger.warning("PubMed error for hypothesis: %s — %s", hypothesis.title[:50], e)
+        return [], [f"PubMed error: {e}"]
+
+    if not papers:
+        logger.debug("No PubMed papers found for: %s", hypothesis.title[:50])
+        return [], []
+
+    literature: list[LiteratureSupport] = []
+    for i, paper in enumerate(papers):
+        try:
+            relevance = 0.88 - (i * 0.03)  # Slight decay for lower-ranked
+            lit_support = create_literature_from_pubmed(paper, relevance)
+            literature.append(lit_support)
+        except Exception as e:
+            errors.append(f"Error processing PubMed paper: {e}")
+
+    return literature, errors
+
+
+async def parallel_search_hypothesis(
+    hypothesis: Hypothesis
+) -> tuple[list[LiteratureSupport], list[str]]:
+    """
+    Run OpenAlex + Exa + PubMed searches in parallel, merge results.
+
+    Args:
+        hypothesis: The hypothesis to ground
+
+    Returns:
+        Tuple of (merged/deduped literature, list of errors)
+    """
+    # Run all three searches in parallel
+    results = await asyncio.gather(
+        ground_hypothesis_openalex_raw(hypothesis),
+        ground_hypothesis_exa_raw(hypothesis),
+        ground_hypothesis_pubmed_raw(hypothesis),
+        return_exceptions=True,
+    )
+
+    all_literature: list[LiteratureSupport] = []
+    all_errors: list[str] = []
+
+    source_names = ["OpenAlex", "Exa", "PubMed"]
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            all_errors.append(f"{source_names[i]} exception: {result}")
+            continue
+        literature, errors = result
+        all_literature.extend(literature)
+        all_errors.extend(errors)
+
+    # Merge and deduplicate
+    merged = merge_literature(all_literature)
+
+    logger.debug(
+        "Parallel search for '%s': %d total → %d merged (openalex=%d, exa=%d, pubmed=%d)",
+        hypothesis.title[:40],
+        len(all_literature),
+        len(merged),
+        sum(1 for l in all_literature if l.source == "openalex"),
+        sum(1 for l in all_literature if l.source == "exa"),
+        sum(1 for l in all_literature if l.source == "pubmed"),
+    )
+
+    return merged, all_errors
 
 
 async def ground_hypothesis_openalex(
@@ -429,9 +819,9 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     Strategy:
     1. Check KG PMIDs first (free, instant)
-    2. Use OpenAlex for hypotheses without KG PMIDs (free, keyword-based)
-    3. Exa AI as semantic fallback (~$0.005/query)
-    4. S2 as final fallback (rate-limited)
+    2. Parallel hybrid search: OpenAlex + Exa + PubMed simultaneously
+    3. Merge/deduplicate by DOI → PMID → title+year
+    4. S2 as fallback only if parallel search finds nothing (rate-limited)
 
     Args:
         state: Current discovery state with hypotheses
@@ -439,7 +829,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     Returns:
         Updated state with literature_support populated on hypotheses
     """
-    logger.info("Starting literature_grounding (multi-source)")
+    logger.info("Starting literature_grounding (parallel hybrid search)")
     start = time.time()
 
     hypotheses = state.get("hypotheses", [])
@@ -464,7 +854,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         [h.tier for h in to_ground[:10]]
     )
 
-    # Step 2: Process each hypothesis through fallback chain
+    # Step 2: Process each hypothesis
     all_errors: list[str] = []
     grounded: list[Hypothesis] = []
 
@@ -475,17 +865,14 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             grounded.append(updated)
             continue
 
-        # Fall back to OpenAlex (free, keyword-based)
-        updated, errors = await ground_hypothesis_openalex(hypothesis)
+        # Parallel search: OpenAlex + Exa + PubMed
+        literature, errors = await parallel_search_hypothesis(hypothesis)
         all_errors.extend(errors)
 
-        # If OpenAlex found nothing, try Exa (semantic)
-        if not updated.literature_support:
-            updated, exa_errors = await ground_hypothesis_exa(hypothesis)
-            all_errors.extend(exa_errors)
-
-        # If still nothing, try S2 (rate limited)
-        if not updated.literature_support:
+        if literature:
+            updated = hypothesis.model_copy(update={"literature_support": literature})
+        else:
+            # S2 fallback only if parallel search found nothing
             updated, s2_errors = await ground_hypothesis_s2(hypothesis)
             all_errors.extend(s2_errors)
 
@@ -497,14 +884,17 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     # Count papers found by source
     papers_found = sum(len(h.literature_support) for h in grounded)
     kg_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "kg")
+    pubmed_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "pubmed")
     openalex_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "openalex")
     exa_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "exa")
     s2_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "s2")
 
     duration = time.time() - start
     logger.info(
-        "Completed literature_grounding in %.1fs — %d hypotheses, %d papers (kg=%d, openalex=%d, exa=%d, s2=%d)",
-        duration, len(grounded), papers_found, kg_papers, openalex_papers, exa_papers, s2_papers
+        "Completed literature_grounding in %.1fs — %d hypotheses, %d papers "
+        "(kg=%d, pubmed=%d, openalex=%d, exa=%d, s2=%d)",
+        duration, len(grounded), papers_found,
+        kg_papers, pubmed_papers, openalex_papers, exa_papers, s2_papers
     )
 
     # Build literature references table
