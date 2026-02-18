@@ -314,6 +314,67 @@ def _extract_synthesis(state: dict) -> tuple[str, dict]:
     }
 
 
+def _extract_literature_grounding(state: dict) -> tuple[str, dict]:
+    """Extract literature grounding details for frontend display."""
+    hypotheses = state.get("hypotheses", [])
+    errors = state.get("literature_errors", [])
+
+    # Count literature by source
+    kg_count = 0
+    openalex_count = 0
+    s2_count = 0
+    total_papers = 0
+    grounded_count = 0
+
+    for h in hypotheses:
+        if h.literature_support:
+            grounded_count += 1
+            for lit in h.literature_support:
+                total_papers += 1
+                if lit.source == "kg":
+                    kg_count += 1
+                elif lit.source == "openalex":
+                    openalex_count += 1
+                elif lit.source == "s2":
+                    s2_count += 1
+
+    # Build summary
+    parts = []
+    if total_papers:
+        parts.append(f"{total_papers} papers")
+    if kg_count:
+        parts.append(f"{kg_count} from KG")
+    if openalex_count:
+        parts.append(f"{openalex_count} from OpenAlex")
+    if s2_count:
+        parts.append(f"{s2_count} from S2")
+
+    summary = ", ".join(parts) if parts else "No literature found"
+    if grounded_count:
+        summary += f" across {grounded_count}/{len(hypotheses)} hypotheses"
+
+    # Top papers for display
+    top_papers = []
+    for h in hypotheses[:5]:
+        for lit in h.literature_support[:1]:
+            top_papers.append({
+                "title": lit.title[:80] + "..." if len(lit.title) > 80 else lit.title,
+                "source": lit.source,
+                "url": lit.url,
+            })
+
+    return summary, {
+        "total_papers": total_papers,
+        "grounded_hypotheses": grounded_count,
+        "total_hypotheses": len(hypotheses),
+        "kg_count": kg_count,
+        "openalex_count": openalex_count,
+        "s2_count": s2_count,
+        "errors_count": len(errors),
+        "top_papers": top_papers[:5],
+    }
+
+
 def _extract_default(state: dict) -> tuple[str, dict]:
     return "Node completed", {}
 
@@ -328,4 +389,5 @@ _EXTRACTORS = {
     "integration": _extract_integration,
     "temporal": _extract_temporal,
     "synthesis": _extract_synthesis,
+    "literature_grounding": _extract_literature_grounding,
 }

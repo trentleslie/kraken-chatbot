@@ -72,7 +72,7 @@ class PipelineProgressMessage(BaseModel):
     node: str                    # Current node name (e.g., "entity_resolution")
     message: str                 # User-friendly status message
     nodes_completed: int         # Number of nodes finished
-    total_nodes: int = 9         # Total nodes in pipeline
+    total_nodes: int = 10        # Total nodes in pipeline
 
 
 class PipelineNodeDetailMessage(BaseModel):
@@ -134,4 +134,5 @@ NODE_STATUS_MESSAGES = {
     "integration": "Detecting cross-type bridges...",
     "temporal": "Applying temporal reasoning...",
     "synthesis": "Generating discovery report...",
+    "literature_grounding": "Grounding hypotheses with literature citations...",
 }
