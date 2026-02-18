@@ -283,17 +283,12 @@ async def analyze_cold_start_entity(
                     "Cold-start SDK query TIMED OUT for '%s' (%s) after %ds",
                     raw_name, curie, SDK_QUERY_TIMEOUT
                 )
+                # Don't create findings for timeouts - they pollute synthesis/literature grounding
                 return (
                     [],
                     [],
-                    [Finding(
-                        entity=curie,
-                        claim=f"SDK query timed out for {raw_name} after {SDK_QUERY_TIMEOUT}s",
-                        tier=3,
-                        source="cold_start",
-                        confidence="low",
-                    )],
-                    [f"SDK query timed out for {curie}"],
+                    [],  # No findings for errors
+                    [f"SDK query timed out for {curie} after {SDK_QUERY_TIMEOUT}s"],
                 )
             except Exception as sdk_error:
                 partial_text = "".join(result_text_parts)
@@ -303,17 +298,11 @@ async def analyze_cold_start_entity(
                     repr(partial_text[:300]) if partial_text else "empty",
                     traceback.format_exc()
                 )
-                # Return graceful degradation instead of propagating
+                # Don't create findings for errors - they pollute synthesis/literature grounding
                 return (
                     [],
                     [],
-                    [Finding(
-                        entity=curie,
-                        claim=f"SDK query failed for {raw_name}: {str(sdk_error)[:80]}",
-                        tier=3,
-                        source="cold_start",
-                        confidence="low",
-                    )],
+                    [],  # No findings for errors
                     [f"SDK query failed for {curie}: {str(sdk_error)}"],
                 )
 
