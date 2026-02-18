@@ -16,7 +16,7 @@ from typing import Any
 from ..state import DiscoveryState, Hypothesis, LiteratureSupport
 from ...semantic_scholar import (
     search_papers, score_relevance, classify_relationship,
-    extract_key_passage, format_authors, extract_doi
+    extract_key_passage, format_authors, extract_doi, S2RateLimitError
 )
 
 logger = logging.getLogger(__name__)
@@ -130,17 +130,29 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     # Process hypotheses with controlled concurrency
     all_errors: list[str] = []
     grounded: list[Hypothesis] = []
+    rate_limited = False
 
     # Process in small batches to respect S2 rate limits
     batch_size = 3
     for i in range(0, len(to_ground), batch_size):
+        if rate_limited:
+            # Skip remaining batches if rate limited
+            grounded.extend(to_ground[i:])
+            break
+
         batch = to_ground[i:i + batch_size]
         tasks = [ground_hypothesis(h) for h in batch]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for idx, result in enumerate(results):
             if isinstance(result, Exception):
-                all_errors.append(f"Exception: {result}")
+                if isinstance(result, S2RateLimitError):
+                    rate_limited = True
+                    all_errors.append("S2 rate limit hit — skipping remaining hypotheses")
+                    logger.warning("S2 rate limit hit at hypothesis %d/%d — skipping rest",
+                                   i + idx + 1, len(to_ground))
+                else:
+                    all_errors.append(f"Exception: {result}")
                 # Keep original hypothesis if grounding failed
                 grounded.append(batch[idx])
             else:

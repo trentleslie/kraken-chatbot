@@ -15,6 +15,12 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+
+class S2RateLimitError(Exception):
+    """Raised when Semantic Scholar returns 429 (rate limited)."""
+    pass
+
+
 S2_API_BASE = "https://api.semanticscholar.org/graph/v1"
 S2_SEARCH_ENDPOINT = f"{S2_API_BASE}/paper/search"
 
@@ -78,6 +84,9 @@ async def search_papers(
                 data = response.json()
                 return data.get("data", [])
             except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    logger.warning("S2 API rate limited (429)")
+                    raise S2RateLimitError("Semantic Scholar rate limit exceeded")
                 logger.error("S2 API HTTP error: %s %s", e.response.status_code, e)
                 return []
             except httpx.RequestError as e:
