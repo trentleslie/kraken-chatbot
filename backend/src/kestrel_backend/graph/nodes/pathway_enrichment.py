@@ -283,6 +283,7 @@ You have {len(selected_entities)} entities to query. Budget your tool calls:
             mcp_servers={"kestrel": kestrel_config},
             max_turns=25,  # Enough for ~N one_hop_query + get_nodes + JSON synthesis
             permission_mode="bypassPermissions",
+            max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for large KG responses
         )
 
         # Execute the query using async generator pattern with timeout
