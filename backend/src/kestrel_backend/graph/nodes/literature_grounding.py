@@ -199,17 +199,27 @@ def build_references_table(hypotheses: list[Hypothesis]) -> str:
     return "\n".join(lines)
 
 
-def build_search_query(hypothesis: Hypothesis) -> str:
+def build_search_query(hypothesis: Hypothesis, disease_context: str = "") -> str:
     """
     Extract concise search terms from hypothesis.
 
     Strategy:
     1. Start with title (more concise than claim)
-    2. Strip filler phrases and parenthetical metadata
-    3. Truncate to ~150 chars for API limits
+    2. Fall back to claim for generic titles (Bridge:, Inferred role of)
+    3. Strip filler phrases and parenthetical metadata
+    4. Append disease context to anchor results
+    5. Truncate to 200 chars for API limits
+
+    Args:
+        hypothesis: The hypothesis to build query for
+        disease_context: Optional disease focus to append (e.g., "type 2 diabetes")
     """
     # Prefer title, fall back to claim
     text = hypothesis.title or hypothesis.claim
+
+    # Generic titles have no searchable content — use claim instead
+    if text.startswith(("Bridge:", "Inferred role of")):
+        text = hypothesis.claim
 
     # Remove filler phrases
     for pattern in FILLER_PATTERNS:
@@ -218,8 +228,12 @@ def build_search_query(hypothesis: Hypothesis) -> str:
     # Clean up whitespace
     text = re.sub(r"\s+", " ", text).strip()
 
-    # Truncate for API (OpenAlex truncates at 200 anyway)
-    return text[:150]
+    # Append disease context to anchor search results
+    if disease_context:
+        text = f"{text} {disease_context}"
+
+    # Truncate for API limits
+    return text[:200]
 
 
 def collect_pmids_from_state(state: DiscoveryState) -> dict[str, list[str]]:
@@ -474,7 +488,8 @@ def merge_literature(
 
 async def ground_hypothesis_openalex_raw(
     hypothesis: Hypothesis,
-    limit: int = PARALLEL_FETCH_LIMIT
+    limit: int = PARALLEL_FETCH_LIMIT,
+    disease_context: str = "",
 ) -> tuple[list[LiteratureSupport], list[str]]:
     """
     Search OpenAlex and return raw literature results (no hypothesis update).
@@ -482,12 +497,13 @@ async def ground_hypothesis_openalex_raw(
     Args:
         hypothesis: The hypothesis to ground
         limit: Maximum results to fetch
+        disease_context: Disease focus to append to query (e.g., "type 2 diabetes")
 
     Returns:
         Tuple of (list of literature, list of errors)
     """
     errors: list[str] = []
-    query = build_search_query(hypothesis)
+    query = build_search_query(hypothesis, disease_context)
     if not query:
         return [], ["Empty search query"]
 
@@ -511,7 +527,8 @@ async def ground_hypothesis_openalex_raw(
 
 async def ground_hypothesis_exa_raw(
     hypothesis: Hypothesis,
-    limit: int = PARALLEL_FETCH_LIMIT
+    limit: int = PARALLEL_FETCH_LIMIT,
+    disease_context: str = "",
 ) -> tuple[list[LiteratureSupport], list[str]]:
     """
     Search Exa and return raw literature results (no hypothesis update).
@@ -519,12 +536,13 @@ async def ground_hypothesis_exa_raw(
     Args:
         hypothesis: The hypothesis to ground
         limit: Maximum results to fetch
+        disease_context: Disease focus to append to query (e.g., "type 2 diabetes")
 
     Returns:
         Tuple of (list of literature, list of errors)
     """
     errors: list[str] = []
-    query = build_search_query(hypothesis)
+    query = build_search_query(hypothesis, disease_context)
     if not query:
         return [], ["Empty search query"]
 
@@ -559,7 +577,8 @@ async def ground_hypothesis_exa_raw(
 
 async def ground_hypothesis_pubmed_raw(
     hypothesis: Hypothesis,
-    limit: int = PARALLEL_FETCH_LIMIT
+    limit: int = PARALLEL_FETCH_LIMIT,
+    disease_context: str = "",
 ) -> tuple[list[LiteratureSupport], list[str]]:
     """
     Search PubMed and return raw literature results (no hypothesis update).
@@ -567,12 +586,13 @@ async def ground_hypothesis_pubmed_raw(
     Args:
         hypothesis: The hypothesis to ground
         limit: Maximum results to fetch
+        disease_context: Disease focus to append to query (e.g., "type 2 diabetes")
 
     Returns:
         Tuple of (list of literature, list of errors)
     """
     errors: list[str] = []
-    query = build_search_query(hypothesis)
+    query = build_search_query(hypothesis, disease_context)
     if not query:
         return [], ["Empty search query"]
 
@@ -599,22 +619,24 @@ async def ground_hypothesis_pubmed_raw(
 
 
 async def parallel_search_hypothesis(
-    hypothesis: Hypothesis
+    hypothesis: Hypothesis,
+    disease_context: str = "",
 ) -> tuple[list[LiteratureSupport], list[str]]:
     """
     Run OpenAlex + Exa + PubMed searches in parallel, merge results.
 
     Args:
         hypothesis: The hypothesis to ground
+        disease_context: Disease focus to append to queries (e.g., "type 2 diabetes")
 
     Returns:
         Tuple of (merged/deduped literature, list of errors)
     """
     # Run all three searches in parallel
     results = await asyncio.gather(
-        ground_hypothesis_openalex_raw(hypothesis),
-        ground_hypothesis_exa_raw(hypothesis),
-        ground_hypothesis_pubmed_raw(hypothesis),
+        ground_hypothesis_openalex_raw(hypothesis, disease_context=disease_context),
+        ground_hypothesis_exa_raw(hypothesis, disease_context=disease_context),
+        ground_hypothesis_pubmed_raw(hypothesis, disease_context=disease_context),
         return_exceptions=True,
     )
 
@@ -843,6 +865,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     # Step 1: Collect KG PMIDs from findings
     kg_pmids = collect_pmids_from_state(state)
 
+    # Extract disease focus to anchor search queries
+    disease_focus = state.get("disease_focus", "")
+    if disease_focus:
+        logger.info("Using disease context for queries: %s", disease_focus)
+
     # Prioritize hypotheses by tier
     sorted_hypotheses = sorted(hypotheses, key=lambda h: h.tier)
     to_ground = sorted_hypotheses[:MAX_HYPOTHESES]
@@ -866,7 +893,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             continue
 
         # Parallel search: OpenAlex + Exa + PubMed
-        literature, errors = await parallel_search_hypothesis(hypothesis)
+        literature, errors = await parallel_search_hypothesis(hypothesis, disease_context=disease_focus)
         all_errors.extend(errors)
 
         if literature:
