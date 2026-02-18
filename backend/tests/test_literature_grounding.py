@@ -267,3 +267,174 @@ class TestHypothesisLiteratureField:
         assert updated.literature_support[0].paper_id == "new_paper"
         # Original unchanged
         assert len(hyp.literature_support) == 0
+
+
+class TestLiteratureUtils:
+    """Tests for literature_utils.py helper functions."""
+
+    def test_pmid_to_url_with_prefix(self):
+        """Test PMID to URL conversion with PMID: prefix."""
+        from src.kestrel_backend.literature_utils import pmid_to_url
+        url = pmid_to_url("PMID:12345678")
+        assert url == "https://pubmed.ncbi.nlm.nih.gov/12345678"
+
+    def test_pmid_to_url_numeric_only(self):
+        """Test PMID to URL conversion with numeric only."""
+        from src.kestrel_backend.literature_utils import pmid_to_url
+        url = pmid_to_url("12345678")
+        assert url == "https://pubmed.ncbi.nlm.nih.gov/12345678"
+
+    def test_doi_to_url(self):
+        """Test DOI to URL conversion."""
+        from src.kestrel_backend.literature_utils import doi_to_url
+        url = doi_to_url("10.1234/example")
+        assert url == "https://doi.org/10.1234/example"
+
+    def test_doi_to_url_already_url(self):
+        """Test DOI that's already a URL passes through."""
+        from src.kestrel_backend.literature_utils import doi_to_url
+        url = doi_to_url("https://doi.org/10.1234/example")
+        assert url == "https://doi.org/10.1234/example"
+
+    def test_extract_pmid_number(self):
+        """Test PMID numeric extraction."""
+        from src.kestrel_backend.literature_utils import extract_pmid_number
+        assert extract_pmid_number("PMID:12345678") == "12345678"
+        assert extract_pmid_number("12345678") == "12345678"
+
+    def test_format_pmid_link(self):
+        """Test PMID markdown link formatting."""
+        from src.kestrel_backend.literature_utils import format_pmid_link
+        link = format_pmid_link("PMID:12345678")
+        assert link == "[PMID:12345678](https://pubmed.ncbi.nlm.nih.gov/12345678)"
+
+    def test_extract_pmid_from_string(self):
+        """Test PMID extraction from arbitrary text."""
+        from src.kestrel_backend.literature_utils import extract_pmid_from_string
+        assert extract_pmid_from_string("See PMID:12345678 for details") == "12345678"
+        assert extract_pmid_from_string("No PMID here") is None
+
+    def test_extract_pmid_from_string_short(self):
+        """Test PMID extraction for older short PMIDs."""
+        from src.kestrel_backend.literature_utils import extract_pmid_from_string
+        assert extract_pmid_from_string("PMID:1") == "1"
+        assert extract_pmid_from_string("See PMID:123 for details") == "123"
+        assert extract_pmid_from_string("PMID:999999") == "999999"
+
+
+class TestOpenAlexClient:
+    """Tests for openalex.py helper functions."""
+
+    def test_extract_pmid_from_work_with_pmid(self):
+        """Test PMID extraction from OpenAlex work with PMID."""
+        from src.kestrel_backend.openalex import extract_pmid_from_work
+        work = {"ids": {"pmid": "https://pubmed.ncbi.nlm.nih.gov/12345678"}}
+        assert extract_pmid_from_work(work) == "12345678"
+
+    def test_extract_pmid_from_work_no_pmid(self):
+        """Test PMID extraction from work without PMID."""
+        from src.kestrel_backend.openalex import extract_pmid_from_work
+        work = {"ids": {"doi": "https://doi.org/10.1234/test"}}
+        assert extract_pmid_from_work(work) is None
+
+    def test_extract_pmid_from_work_no_ids(self):
+        """Test PMID extraction from work without ids."""
+        from src.kestrel_backend.openalex import extract_pmid_from_work
+        work = {}
+        assert extract_pmid_from_work(work) is None
+
+    def test_extract_doi_from_work(self):
+        """Test DOI extraction from OpenAlex work."""
+        from src.kestrel_backend.openalex import extract_doi_from_work
+        work = {"doi": "https://doi.org/10.1234/test"}
+        assert extract_doi_from_work(work) == "10.1234/test"
+
+    def test_extract_doi_from_work_no_doi(self):
+        """Test DOI extraction when missing."""
+        from src.kestrel_backend.openalex import extract_doi_from_work
+        work = {}
+        assert extract_doi_from_work(work) is None
+
+    def test_format_authors_from_work_single(self):
+        """Test author formatting with single author."""
+        from src.kestrel_backend.openalex import format_authors_from_work
+        work = {
+            "authorships": [
+                {"author": {"display_name": "John Smith"}}
+            ]
+        }
+        assert format_authors_from_work(work) == "John Smith"
+
+    def test_format_authors_from_work_multiple(self):
+        """Test author formatting with multiple authors."""
+        from src.kestrel_backend.openalex import format_authors_from_work
+        work = {
+            "authorships": [
+                {"author": {"display_name": "John Smith"}},
+                {"author": {"display_name": "Jane Doe"}},
+            ]
+        }
+        assert format_authors_from_work(work) == "John Smith et al."
+
+    def test_format_authors_from_work_empty(self):
+        """Test author formatting with no authors."""
+        from src.kestrel_backend.openalex import format_authors_from_work
+        work = {"authorships": []}
+        assert format_authors_from_work(work) == "Unknown"
+
+
+class TestLiteratureSupportSources:
+    """Tests for multi-source LiteratureSupport creation."""
+
+    def test_literature_support_kg_source(self):
+        """Test LiteratureSupport with KG source."""
+        lit = LiteratureSupport(
+            paper_id="PMID:12345678",
+            title="PubMed:12345678",
+            authors="",
+            year=0,
+            url="https://pubmed.ncbi.nlm.nih.gov/12345678",
+            relevance_score=1.0,
+            source="kg",
+        )
+        assert lit.source == "kg"
+        assert lit.url == "https://pubmed.ncbi.nlm.nih.gov/12345678"
+
+    def test_literature_support_openalex_source(self):
+        """Test LiteratureSupport with OpenAlex source."""
+        lit = LiteratureSupport(
+            paper_id="W123456789",
+            title="OpenAlex Paper",
+            authors="Smith et al.",
+            year=2024,
+            url="https://doi.org/10.1234/test",
+            relevance_score=0.85,
+            source="openalex",
+        )
+        assert lit.source == "openalex"
+        assert "doi.org" in lit.url
+
+    def test_literature_support_s2_source(self):
+        """Test LiteratureSupport with S2 source."""
+        lit = LiteratureSupport(
+            paper_id="abc123def456",
+            title="S2 Paper",
+            authors="Doe et al.",
+            year=2023,
+            doi="10.1234/s2test",
+            url="https://pubmed.ncbi.nlm.nih.gov/87654321",
+            relevance_score=0.75,
+            source="s2",
+        )
+        assert lit.source == "s2"
+        assert lit.doi == "10.1234/s2test"
+
+    def test_literature_support_default_source(self):
+        """Test LiteratureSupport defaults to s2 source."""
+        lit = LiteratureSupport(
+            paper_id="test",
+            title="Test",
+            authors="Author",
+            year=2024,
+        )
+        assert lit.source == "s2"  # Default value

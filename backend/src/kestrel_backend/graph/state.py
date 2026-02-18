@@ -209,23 +209,27 @@ class TemporalClassification(BaseModel):
 # =============================================================================
 
 class LiteratureSupport(BaseModel):
-    """Literature reference supporting a hypothesis from Semantic Scholar."""
+    """Literature reference supporting a hypothesis from multiple sources."""
 
     model_config = ConfigDict(frozen=True)
 
-    paper_id: str = Field(..., description="Semantic Scholar corpus ID")
+    paper_id: str = Field(..., description="Paper ID (PMID, S2 ID, or OpenAlex ID)")
     title: str = Field(..., description="Paper title")
     authors: str = Field(..., description="Author list (first author et al.)")
     year: int = Field(..., description="Publication year")
     doi: str | None = Field(None, description="DOI if available")
-    relevance_score: float = Field(..., ge=0, le=1, description="Relevance to hypothesis (0-1)")
+    url: str | None = Field(None, description="Clickable URL (PubMed, DOI, etc.)")
+    relevance_score: float = Field(default=1.0, ge=0, le=1, description="Relevance to hypothesis (0-1)")
     # TODO: v2 - Use cross-encoder or LLM for relationship classification
     # Currently set to "supporting" for all papers to avoid false contradictions
     relationship: Literal["supporting", "contradicting", "nuancing"] = Field(
         "supporting", description="How paper relates to hypothesis"
     )
-    key_passage: str = Field(..., description="Most relevant passage from abstract")
-    citation_count: int = Field(0, ge=0, description="Citation count for credibility weighting")
+    key_passage: str = Field(default="", description="Most relevant passage from abstract")
+    citation_count: int = Field(default=0, ge=0, description="Citation count for credibility weighting")
+    source: Literal["kg", "openalex", "s2", "pubmed"] = Field(
+        default="s2", description="Source of this literature reference"
+    )
 
 
 # =============================================================================

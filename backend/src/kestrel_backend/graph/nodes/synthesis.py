@@ -23,6 +23,7 @@ from ..state import (
     SharedNeighbor, BiologicalTheme, Bridge, GapEntity, TemporalClassification,
     Hypothesis
 )
+from ...literature_utils import format_pmid_link
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +232,8 @@ def format_disease_associations(diseases: list[DiseaseAssociation]) -> str:
                 for d in by_evidence[ev_type]:
                     pmid_str = ""
                     if d.pmids:
-                        pmid_str = f" [PMIDs: {', '.join(d.pmids[:3])}]"
+                        pmid_links = [format_pmid_link(pmid) for pmid in d.pmids[:3]]
+                        pmid_str = f" [{', '.join(pmid_links)}]"
                     lines.append(f"- {d.disease_name} (`{d.disease_curie}`){pmid_str}")
                     lines.append(f"  - Predicate: {d.predicate}")
                     lines.append(f"  - Source: {d.source}")
@@ -399,7 +401,8 @@ def format_findings_summary(
                 confidence_marker = {"high": "[HIGH]", "moderate": "[MOD]", "low": "[LOW]"}.get(f.confidence, "")
                 lines.append(f"- {confidence_marker} **{f.entity}**: {f.claim} {source_tag}")
                 if f.pmids:
-                    lines.append(f"  - PMIDs: {', '.join(f.pmids[:5])}")
+                    pmid_links = [format_pmid_link(pmid) for pmid in f.pmids[:5]]
+                    lines.append(f"  - PMIDs: {', '.join(pmid_links)}")
                 if f.logic_chain:
                     lines.append(f"  - _Logic: {f.logic_chain}_")
             lines.append("")
