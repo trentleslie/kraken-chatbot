@@ -57,6 +57,11 @@ mock_exa_client.extract_doi_from_url = None
 mock_exa_client.extract_year_from_date = None
 sys.modules["kestrel_backend.exa_client"] = mock_exa_client
 
+mock_pubmed_client = types.ModuleType("kestrel_backend.pubmed_client")
+mock_pubmed_client.search_papers = None
+mock_pubmed_client.PubMedSearchError = Exception
+sys.modules["kestrel_backend.pubmed_client"] = mock_pubmed_client
+
 # Now import build_references_table from the real module
 lit_grounding_spec = importlib.util.spec_from_file_location(
     "kestrel_backend.graph.nodes.literature_grounding",
@@ -491,6 +496,316 @@ class TestLiteratureSupportSources:
             year=2024,
         )
         assert lit.source == "s2"  # Default value
+
+
+class TestPubMedClient:
+    """Tests for pubmed_client.py helper functions."""
+
+    def test_extract_doi_from_summary_with_doi(self):
+        """Test DOI extraction when DOI is present."""
+        from src.kestrel_backend.pubmed_client import extract_doi_from_summary
+        paper = {
+            "articleids": [
+                {"idtype": "pubmed", "value": "12345678"},
+                {"idtype": "doi", "value": "10.1234/test.article"},
+            ]
+        }
+        assert extract_doi_from_summary(paper) == "10.1234/test.article"
+
+    def test_extract_doi_from_summary_no_doi(self):
+        """Test DOI extraction when DOI is missing."""
+        from src.kestrel_backend.pubmed_client import extract_doi_from_summary
+        paper = {
+            "articleids": [
+                {"idtype": "pubmed", "value": "12345678"},
+            ]
+        }
+        assert extract_doi_from_summary(paper) is None
+
+    def test_extract_doi_from_summary_empty(self):
+        """Test DOI extraction with empty articleids."""
+        from src.kestrel_backend.pubmed_client import extract_doi_from_summary
+        paper = {"articleids": []}
+        assert extract_doi_from_summary(paper) is None
+
+    def test_extract_year_from_pubdate_full(self):
+        """Test year extraction from full date."""
+        from src.kestrel_backend.pubmed_client import extract_year_from_pubdate
+        assert extract_year_from_pubdate("2024 Jan 15") == 2024
+
+    def test_extract_year_from_pubdate_month_only(self):
+        """Test year extraction from month-only date."""
+        from src.kestrel_backend.pubmed_client import extract_year_from_pubdate
+        assert extract_year_from_pubdate("2023 Mar") == 2023
+
+    def test_extract_year_from_pubdate_year_only(self):
+        """Test year extraction from year-only date."""
+        from src.kestrel_backend.pubmed_client import extract_year_from_pubdate
+        assert extract_year_from_pubdate("2022") == 2022
+
+    def test_extract_year_from_pubdate_season(self):
+        """Test year extraction from seasonal date."""
+        from src.kestrel_backend.pubmed_client import extract_year_from_pubdate
+        assert extract_year_from_pubdate("2024 Spring") == 2024
+
+    def test_extract_year_from_pubdate_empty(self):
+        """Test year extraction from empty date."""
+        from src.kestrel_backend.pubmed_client import extract_year_from_pubdate
+        assert extract_year_from_pubdate("") == 0
+        assert extract_year_from_pubdate(None) == 0
+
+    def test_format_authors_from_summary_single(self):
+        """Test author formatting with single author."""
+        from src.kestrel_backend.pubmed_client import format_authors_from_summary
+        paper = {"authors": [{"name": "Smith J"}]}
+        assert format_authors_from_summary(paper) == "Smith J"
+
+    def test_format_authors_from_summary_multiple(self):
+        """Test author formatting with multiple authors."""
+        from src.kestrel_backend.pubmed_client import format_authors_from_summary
+        paper = {"authors": [{"name": "Smith J"}, {"name": "Doe A"}]}
+        assert format_authors_from_summary(paper) == "Smith J et al."
+
+    def test_format_authors_from_summary_empty(self):
+        """Test author formatting with no authors."""
+        from src.kestrel_backend.pubmed_client import format_authors_from_summary
+        paper = {"authors": []}
+        assert format_authors_from_summary(paper) == "Unknown"
+
+
+class TestMergeLiterature:
+    """Tests for merge_literature deduplication logic."""
+
+    def test_merge_empty_list(self):
+        """Test merge with empty input."""
+        result = lit_grounding_module.merge_literature([])
+        assert result == []
+
+    def test_merge_single_item(self):
+        """Test merge with single item passes through."""
+        lit = LiteratureSupport(
+            paper_id="p1", title="Paper 1", authors="A", year=2024,
+            doi="10.1/a", relevance_score=0.9, source="openalex",
+        )
+        result = lit_grounding_module.merge_literature([lit])
+        assert len(result) == 1
+        assert result[0].paper_id == "p1"
+
+    def test_merge_deduplicates_by_doi(self):
+        """Test that papers with same DOI are deduplicated."""
+        lit1 = LiteratureSupport(
+            paper_id="p1", title="Paper 1", authors="A", year=2024,
+            doi="10.1/same", relevance_score=0.9, source="openalex",
+        )
+        lit2 = LiteratureSupport(
+            paper_id="p2", title="Paper 1 Copy", authors="A", year=2024,
+            doi="10.1/same", relevance_score=0.85, source="exa",
+        )
+        result = lit_grounding_module.merge_literature([lit1, lit2])
+        assert len(result) == 1
+        # OpenAlex has higher priority than Exa
+        assert result[0].source == "openalex"
+
+    def test_merge_deduplicates_by_pmid(self):
+        """Test that papers with same PMID are deduplicated."""
+        lit1 = LiteratureSupport(
+            paper_id="PMID:12345678", title="Paper 1", authors="A", year=2024,
+            relevance_score=0.9, source="pubmed",
+        )
+        lit2 = LiteratureSupport(
+            paper_id="PMID:12345678", title="Paper 1 Alt", authors="A", year=2024,
+            relevance_score=0.85, source="openalex",
+        )
+        result = lit_grounding_module.merge_literature([lit1, lit2])
+        assert len(result) == 1
+        # PubMed has higher priority than OpenAlex
+        assert result[0].source == "pubmed"
+
+    def test_merge_deduplicates_by_title_year(self):
+        """Test that papers with same title+year are deduplicated."""
+        lit1 = LiteratureSupport(
+            paper_id="id1", title="Unique Paper Title", authors="A", year=2024,
+            relevance_score=0.9, source="exa",
+        )
+        lit2 = LiteratureSupport(
+            paper_id="id2", title="Unique Paper Title", authors="B", year=2024,
+            relevance_score=0.85, source="openalex",
+        )
+        result = lit_grounding_module.merge_literature([lit1, lit2])
+        assert len(result) == 1
+        # OpenAlex has higher priority than Exa
+        assert result[0].source == "openalex"
+
+    def test_merge_keeps_distinct_papers(self):
+        """Test that papers with different keys are kept separate."""
+        lit1 = LiteratureSupport(
+            paper_id="p1", title="Paper 1", authors="A", year=2024,
+            doi="10.1/a", relevance_score=0.9, source="openalex",
+        )
+        lit2 = LiteratureSupport(
+            paper_id="p2", title="Paper 2", authors="B", year=2023,
+            doi="10.1/b", relevance_score=0.85, source="exa",
+        )
+        result = lit_grounding_module.merge_literature([lit1, lit2])
+        assert len(result) == 2
+
+    def test_merge_respects_limit(self):
+        """Test that merge respects the limit parameter."""
+        papers = [
+            LiteratureSupport(
+                paper_id=f"p{i}", title=f"Paper {i}", authors="A", year=2024,
+                doi=f"10.1/{i}", relevance_score=0.9 - i*0.1, source="openalex",
+            )
+            for i in range(5)
+        ]
+        result = lit_grounding_module.merge_literature(papers, limit=3)
+        assert len(result) == 3
+
+    def test_merge_sorts_by_relevance(self):
+        """Test that merged results are sorted by relevance score."""
+        lit1 = LiteratureSupport(
+            paper_id="p1", title="Paper 1", authors="A", year=2024,
+            doi="10.1/a", relevance_score=0.7, source="openalex",
+        )
+        lit2 = LiteratureSupport(
+            paper_id="p2", title="Paper 2", authors="B", year=2023,
+            doi="10.1/b", relevance_score=0.9, source="exa",
+        )
+        result = lit_grounding_module.merge_literature([lit1, lit2])
+        assert result[0].relevance_score == 0.9
+        assert result[1].relevance_score == 0.7
+
+    def test_merge_combines_citation_count(self):
+        """Test that citation count is merged from lower-priority source."""
+        lit1 = LiteratureSupport(
+            paper_id="p1", title="Paper 1", authors="A", year=2024,
+            doi="10.1/same", relevance_score=0.9, source="pubmed",
+            citation_count=0,  # PubMed doesn't have citation counts
+        )
+        lit2 = LiteratureSupport(
+            paper_id="p2", title="Paper 1", authors="A", year=2024,
+            doi="10.1/same", relevance_score=0.85, source="openalex",
+            citation_count=150,  # OpenAlex has citation counts
+        )
+        result = lit_grounding_module.merge_literature([lit1, lit2])
+        assert len(result) == 1
+        assert result[0].source == "pubmed"  # Higher priority kept
+        assert result[0].citation_count == 150  # Citation count merged
+
+    def test_merge_combines_key_passage(self):
+        """Test that key_passage is merged from Exa when other source lacks it."""
+        lit1 = LiteratureSupport(
+            paper_id="p1", title="Paper 1", authors="A", year=2024,
+            doi="10.1/same", relevance_score=0.9, source="openalex",
+            key_passage="",
+        )
+        lit2 = LiteratureSupport(
+            paper_id="p2", title="Paper 1", authors="A", year=2024,
+            doi="10.1/same", relevance_score=0.85, source="exa",
+            key_passage="Important finding about diabetes.",
+        )
+        result = lit_grounding_module.merge_literature([lit1, lit2])
+        assert len(result) == 1
+        assert result[0].source == "openalex"  # Higher priority kept
+        assert result[0].key_passage == "Important finding about diabetes."
+
+    def test_merge_combines_doi(self):
+        """Test that DOI is merged when primary source lacks it.
+
+        Note: Papers only merge if they share the same unique key (DOI > PMID > title+year).
+        When one paper has a DOI and another doesn't, they have different keys and don't merge.
+        This test verifies DOI merging when both papers match via the same DOI key.
+        """
+        # Both papers have the same DOI, so they'll merge by DOI key
+        lit1 = LiteratureSupport(
+            paper_id="PMID:12345678", title="Paper 1", authors="A", year=2024,
+            doi="10.1/test", relevance_score=0.9, source="pubmed",
+            key_passage="",  # PubMed doesn't have highlights
+        )
+        lit2 = LiteratureSupport(
+            paper_id="openalex123", title="Paper 1", authors="A", year=2024,
+            doi="10.1/test", relevance_score=0.85, source="openalex",
+            key_passage="",
+            citation_count=200,  # OpenAlex has citation counts
+        )
+        result = lit_grounding_module.merge_literature([lit1, lit2])
+        assert len(result) == 1
+        assert result[0].source == "pubmed"  # Higher priority kept
+        assert result[0].doi == "10.1/test"  # DOI preserved
+        assert result[0].citation_count == 200  # Citation count merged from OpenAlex
+
+
+class TestGetUniqueKey:
+    """Tests for get_unique_key deduplication key generation."""
+
+    def test_unique_key_doi_preferred(self):
+        """Test that DOI is preferred for unique key."""
+        lit = LiteratureSupport(
+            paper_id="PMID:12345678", title="Paper Title", authors="A", year=2024,
+            doi="10.1/test", relevance_score=0.9,
+        )
+        key = lit_grounding_module.get_unique_key(lit)
+        assert key == "doi:10.1/test"
+
+    def test_unique_key_pmid_fallback(self):
+        """Test that PMID is used when DOI is missing."""
+        lit = LiteratureSupport(
+            paper_id="PMID:12345678", title="Paper Title", authors="A", year=2024,
+            relevance_score=0.9,
+        )
+        key = lit_grounding_module.get_unique_key(lit)
+        assert key == "pmid:12345678"
+
+    def test_unique_key_title_year_fallback(self):
+        """Test that title+year is used when DOI and PMID are missing."""
+        lit = LiteratureSupport(
+            paper_id="other_id", title="Paper Title", authors="A", year=2024,
+            relevance_score=0.9,
+        )
+        key = lit_grounding_module.get_unique_key(lit)
+        assert key == "title:paper title:2024"
+
+    def test_unique_key_doi_case_insensitive(self):
+        """Test that DOI keys are case-insensitive."""
+        lit1 = LiteratureSupport(
+            paper_id="p1", title="Paper", authors="A", year=2024,
+            doi="10.1/TEST", relevance_score=0.9,
+        )
+        lit2 = LiteratureSupport(
+            paper_id="p2", title="Paper", authors="A", year=2024,
+            doi="10.1/test", relevance_score=0.9,
+        )
+        assert lit_grounding_module.get_unique_key(lit1) == lit_grounding_module.get_unique_key(lit2)
+
+    def test_unique_key_title_truncated(self):
+        """Test that long titles are truncated in key."""
+        long_title = "A" * 200
+        lit = LiteratureSupport(
+            paper_id="p1", title=long_title, authors="A", year=2024,
+            relevance_score=0.9,
+        )
+        key = lit_grounding_module.get_unique_key(lit)
+        # Should only use first 100 chars of title
+        assert key == f"title:{'a' * 100}:2024"
+
+
+class TestLiteratureSupportPubmedSource:
+    """Tests for PubMed source in LiteratureSupport."""
+
+    def test_literature_support_pubmed_source(self):
+        """Test LiteratureSupport with PubMed source."""
+        lit = LiteratureSupport(
+            paper_id="PMID:12345678",
+            title="PubMed Paper Title",
+            authors="Smith J et al.",
+            year=2024,
+            doi="10.1234/test",
+            url="https://pubmed.ncbi.nlm.nih.gov/12345678",
+            relevance_score=0.85,
+            source="pubmed",
+        )
+        assert lit.source == "pubmed"
+        assert lit.paper_id == "PMID:12345678"
 
 
 class TestBuildReferencesTable:
