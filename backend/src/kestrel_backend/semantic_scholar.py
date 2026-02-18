@@ -62,6 +62,8 @@ async def search_papers(
     # Truncate query to 200 chars (S2 handles relevance ranking internally)
     truncated_query = query[:200] if len(query) > 200 else query
 
+    logger.info("S2 search: %s", truncated_query[:80])
+
     async with S2_SEMAPHORE:
         await asyncio.sleep(S2_DELAY)  # Rate limiting
 
@@ -82,7 +84,9 @@ async def search_papers(
                 )
                 response.raise_for_status()
                 data = response.json()
-                return data.get("data", [])
+                papers = data.get("data", [])
+                logger.info("S2 result: %d papers found", len(papers))
+                return papers
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:
                     logger.warning("S2 API rate limited (429)")
