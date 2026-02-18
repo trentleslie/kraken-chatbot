@@ -54,7 +54,16 @@ mock_exa_client = types.ModuleType("kestrel_backend.exa_client")
 mock_exa_client.search_papers = None
 mock_exa_client.ExaSearchError = Exception
 mock_exa_client.extract_doi_from_url = None
-mock_exa_client.extract_year_from_date = None
+# Real implementation needed for is_valid_exa_result tests
+def mock_extract_year_from_date(date_str):
+    """Extract year from date string like '2024-01-15'."""
+    if not date_str:
+        return 0
+    try:
+        return int(date_str[:4])
+    except (ValueError, TypeError):
+        return 0
+mock_exa_client.extract_year_from_date = mock_extract_year_from_date
 sys.modules["kestrel_backend.exa_client"] = mock_exa_client
 
 mock_pubmed_client = types.ModuleType("kestrel_backend.pubmed_client")
@@ -73,6 +82,8 @@ lit_grounding_module.__package__ = "kestrel_backend.graph.nodes"
 sys.modules["kestrel_backend.graph.nodes.literature_grounding"] = lit_grounding_module
 lit_grounding_spec.loader.exec_module(lit_grounding_module)
 build_references_table = lit_grounding_module.build_references_table
+is_valid_exa_result = lit_grounding_module.is_valid_exa_result
+_get_paper_key = lit_grounding_module._get_paper_key
 
 from src.kestrel_backend.semantic_scholar import (
     score_relevance,
@@ -936,7 +947,7 @@ class TestBuildReferencesTable:
         assert "A" * 100 + "..." in result  # Paper title truncated at 100
 
     def test_counts_papers_and_hypotheses(self):
-        """Test that summary line has correct counts."""
+        """Test that summary line has correct counts after deduplication."""
         lit1 = LiteratureSupport(
             paper_id="p1", title="Paper 1", authors="A", year=2024,
             doi="10.1/a", relevance_score=0.9,
@@ -955,5 +966,240 @@ class TestBuildReferencesTable:
         )
         result = build_references_table([hyp1, hyp2])
 
-        # 3 papers total, 2 hypotheses
-        assert "3 papers across 2 hypotheses" in result
+        # After deduplication: 2 unique papers (lit1 appears in both), 2 hypotheses
+        assert "2 unique papers across 2 hypotheses" in result
+
+    def test_dedupes_hypotheses_by_title(self):
+        """Test that duplicate hypotheses by title are deduplicated."""
+        lit = LiteratureSupport(
+            paper_id="p1", title="Paper 1", authors="A", year=2024,
+            doi="10.1/a", relevance_score=0.9,
+        )
+        # Two hypotheses with same title (should be deduped)
+        hyp1 = Hypothesis(
+            title="Same Title", tier=1, claim="C1", supporting_entities=[],
+            structural_logic="L1", validation_steps=[], literature_support=[lit],
+        )
+        hyp2 = Hypothesis(
+            title="Same Title", tier=2, claim="C2", supporting_entities=[],
+            structural_logic="L2", validation_steps=[], literature_support=[lit],
+        )
+        result = build_references_table([hyp1, hyp2])
+
+        # Should only have 1 hypothesis in output
+        assert "1 unique papers across 1 hypotheses" in result
+        # Should only appear once in the table
+        assert result.count("Same Title") == 1
+
+    def test_dedupes_papers_by_doi(self):
+        """Test that papers with same DOI are deduplicated across hypotheses."""
+        # Same paper (same DOI) cited by two hypotheses
+        lit1 = LiteratureSupport(
+            paper_id="p1", title="Paper Title", authors="A", year=2024,
+            doi="10.1/same", relevance_score=0.9,
+        )
+        lit2 = LiteratureSupport(
+            paper_id="p2", title="Paper Title Copy", authors="A", year=2024,
+            doi="10.1/same", relevance_score=0.85,
+        )
+        hyp1 = Hypothesis(
+            title="Hyp 1", tier=1, claim="C1", supporting_entities=[],
+            structural_logic="L1", validation_steps=[], literature_support=[lit1],
+        )
+        hyp2 = Hypothesis(
+            title="Hyp 2", tier=2, claim="C2", supporting_entities=[],
+            structural_logic="L2", validation_steps=[], literature_support=[lit2],
+        )
+        result = build_references_table([hyp1, hyp2])
+
+        # Should show 1 unique paper across 2 hypotheses
+        assert "1 unique papers across 2 hypotheses" in result
+        # Both hypothesis titles should be combined in one row
+        assert "Hyp 1" in result
+        assert "Hyp 2" in result
+
+    def test_combines_hypothesis_titles_for_same_paper(self):
+        """Test that hypothesis titles are combined when citing the same paper."""
+        lit = LiteratureSupport(
+            paper_id="p1", title="Shared Paper", authors="A", year=2024,
+            doi="10.1/shared", relevance_score=0.9,
+        )
+        hyp1 = Hypothesis(
+            title="Alpha Hypothesis", tier=1, claim="C1", supporting_entities=[],
+            structural_logic="L1", validation_steps=[], literature_support=[lit],
+        )
+        hyp2 = Hypothesis(
+            title="Beta Hypothesis", tier=2, claim="C2", supporting_entities=[],
+            structural_logic="L2", validation_steps=[], literature_support=[lit],
+        )
+        result = build_references_table([hyp1, hyp2])
+
+        # Both titles should appear in the same row, separated by semicolon
+        # Sorted alphabetically
+        assert "Alpha Hypothesis; Beta Hypothesis" in result
+
+    def test_includes_relevance_column(self):
+        """Test that relevance column is included with key_passage."""
+        lit = LiteratureSupport(
+            paper_id="p1", title="Paper 1", authors="A", year=2024,
+            doi="10.1/a", relevance_score=0.9,
+            key_passage="Important finding about diabetes risk.",
+        )
+        hyp = Hypothesis(
+            title="Hyp 1", tier=1, claim="C1", supporting_entities=[],
+            structural_logic="L1", validation_steps=[], literature_support=[lit],
+        )
+        result = build_references_table([hyp])
+
+        # Check for Relevance header
+        assert "| Relevance |" in result
+        assert "|-----------|" in result
+        # Check for key_passage content
+        assert "Important finding about diabetes risk." in result
+
+    def test_truncates_long_key_passage(self):
+        """Test that long key_passage is truncated to 120 chars."""
+        long_passage = "A" * 200
+        lit = LiteratureSupport(
+            paper_id="p1", title="Paper 1", authors="A", year=2024,
+            doi="10.1/a", relevance_score=0.9,
+            key_passage=long_passage,
+        )
+        hyp = Hypothesis(
+            title="Hyp 1", tier=1, claim="C1", supporting_entities=[],
+            structural_logic="L1", validation_steps=[], literature_support=[lit],
+        )
+        result = build_references_table([hyp])
+
+        # Should have truncated passage with ellipsis
+        assert "A" * 120 + "..." in result
+        # Should not have full 200 chars
+        assert "A" * 150 not in result
+
+    def test_shows_dash_for_empty_key_passage(self):
+        """Test that empty key_passage shows em-dash."""
+        lit = LiteratureSupport(
+            paper_id="p1", title="Paper 1", authors="A", year=2024,
+            doi="10.1/a", relevance_score=0.9,
+            key_passage="",
+        )
+        hyp = Hypothesis(
+            title="Hyp 1", tier=1, claim="C1", supporting_entities=[],
+            structural_logic="L1", validation_steps=[], literature_support=[lit],
+        )
+        result = build_references_table([hyp])
+
+        # Should show em-dash for empty relevance
+        # Check the row has the em-dash in the relevance column position
+        lines = result.split("\n")
+        data_row = [l for l in lines if "Paper 1" in l][0]
+        # Last column should be em-dash
+        assert data_row.endswith("| — |")
+
+
+class TestIsValidExaResult:
+    """Tests for is_valid_exa_result quality filter."""
+
+    def test_skips_year_zero(self):
+        """Test that results with year 0 are rejected."""
+        result = {"publishedDate": None, "author": "Smith", "url": "https://example.com", "title": "Paper"}
+        assert is_valid_exa_result(result) is False
+
+    def test_skips_web_team_author(self):
+        """Test that results from Web Team are rejected."""
+        result = {"publishedDate": "2024-01-01", "author": "Web Team", "url": "https://example.com", "title": "Paper"}
+        assert is_valid_exa_result(result) is False
+
+    def test_skips_ebi_author(self):
+        """Test that results from EBI are rejected."""
+        result = {"publishedDate": "2024-01-01", "author": "EBI", "url": "https://example.com", "title": "Paper"}
+        assert is_valid_exa_result(result) is False
+
+    def test_skips_embl_ebi_author(self):
+        """Test that results from EMBL-EBI are rejected."""
+        result = {"publishedDate": "2024-01-01", "author": "EMBL-EBI", "url": "https://example.com", "title": "Paper"}
+        assert is_valid_exa_result(result) is False
+
+    def test_skips_chebi_urls(self):
+        """Test that ChEBI database pages are rejected."""
+        result = {"publishedDate": "2024-01-01", "author": "Smith", "url": "https://www.ebi.ac.uk/chebi/searchId.do?chebiId=12345", "title": "Paper"}
+        assert is_valid_exa_result(result) is False
+
+    def test_skips_uniprot_urls(self):
+        """Test that UniProt database pages are rejected."""
+        result = {"publishedDate": "2024-01-01", "author": "Smith", "url": "https://www.uniprot.org/uniprotkb/P12345", "title": "Paper"}
+        assert is_valid_exa_result(result) is False
+
+    def test_skips_gene_ontology_title(self):
+        """Test that Gene Ontology Resource pages are rejected."""
+        result = {"publishedDate": "2024-01-01", "author": "Smith", "url": "https://example.com", "title": "Gene Ontology Resource"}
+        assert is_valid_exa_result(result) is False
+
+    def test_skips_string_database_title(self):
+        """Test that STRING database pages are rejected."""
+        result = {"publishedDate": "2024-01-01", "author": "Smith", "url": "https://example.com", "title": "STRING: functional protein association networks"}
+        assert is_valid_exa_result(result) is False
+
+    def test_accepts_valid_paper(self):
+        """Test that valid papers are accepted."""
+        result = {
+            "publishedDate": "2024-01-15",
+            "author": "Smith J et al.",
+            "url": "https://pubmed.ncbi.nlm.nih.gov/12345678",
+            "title": "Fructose metabolism in diabetes",
+        }
+        assert is_valid_exa_result(result) is True
+
+    def test_accepts_paper_with_missing_author(self):
+        """Test that papers with missing author are still accepted if other criteria pass."""
+        result = {"publishedDate": "2024-01-01", "author": "", "url": "https://example.com", "title": "Valid Paper"}
+        assert is_valid_exa_result(result) is True
+
+    def test_accepts_paper_with_none_author(self):
+        """Test that papers with None author are still accepted if other criteria pass."""
+        result = {"publishedDate": "2024-01-01", "author": None, "url": "https://example.com", "title": "Valid Paper"}
+        assert is_valid_exa_result(result) is True
+
+
+class TestGetPaperKey:
+    """Tests for _get_paper_key deduplication key generation."""
+
+    def test_uses_doi_when_present(self):
+        """Test that DOI is used for key when available."""
+        lit = LiteratureSupport(
+            paper_id="p1", title="Paper Title", authors="A", year=2024,
+            doi="10.1/test", relevance_score=0.9,
+        )
+        key = _get_paper_key(lit)
+        assert key == "doi:10.1/test"
+
+    def test_falls_back_to_title_without_doi(self):
+        """Test that title is used when DOI is missing."""
+        lit = LiteratureSupport(
+            paper_id="p1", title="Paper Title", authors="A", year=2024,
+            relevance_score=0.9,
+        )
+        key = _get_paper_key(lit)
+        assert key == "title:paper title"
+
+    def test_doi_case_insensitive(self):
+        """Test that DOI keys are case-insensitive."""
+        lit1 = LiteratureSupport(
+            paper_id="p1", title="Paper", authors="A", year=2024,
+            doi="10.1/TEST", relevance_score=0.9,
+        )
+        lit2 = LiteratureSupport(
+            paper_id="p2", title="Paper", authors="A", year=2024,
+            doi="10.1/test", relevance_score=0.9,
+        )
+        assert _get_paper_key(lit1) == _get_paper_key(lit2)
+
+    def test_title_truncated_to_100_chars(self):
+        """Test that long titles are truncated in key."""
+        long_title = "A" * 200
+        lit = LiteratureSupport(
+            paper_id="p1", title=long_title, authors="A", year=2024,
+            relevance_score=0.9,
+        )
+        key = _get_paper_key(lit)
+        assert key == f"title:{'a' * 100}"

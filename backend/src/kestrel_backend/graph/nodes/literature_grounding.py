@@ -43,6 +43,16 @@ PARALLEL_FETCH_LIMIT = 6  # Fetch 2x papers per source for deduplication
 # Source priority for deduplication (lower = higher priority)
 SOURCE_PRIORITY = {"kg": 1, "pubmed": 2, "openalex": 3, "exa": 4, "s2": 5}
 
+# Low-quality Exa result patterns to skip
+EXA_SKIP_AUTHORS = {"Web Team", "EBI", "EMBL-EBI"}
+EXA_SKIP_URL_PATTERNS = ["ebi.ac.uk/chebi", "uniprot.org"]
+EXA_SKIP_TITLES = {
+    "Gene Ontology Resource",
+    "The Gene Ontology Resource",
+    "STRING database",
+    "STRING: functional protein association networks",
+}
+
 # Filler phrases to remove from search queries
 FILLER_PATTERNS = [
     r"\(inferred via[^)]*\)",      # "(inferred via semantic similarity)"
@@ -55,9 +65,72 @@ FILLER_PATTERNS = [
 ]
 
 
+def is_valid_exa_result(result: dict) -> bool:
+    """
+    Filter out database pages and low-quality Exa results.
+
+    Rejects:
+    - Results with year=0 (usually database pages without publication dates)
+    - Results from known generic authors (Web Team, EBI, EMBL-EBI)
+    - Database page URLs (ChEBI, UniProt)
+    - Known generic titles (Gene Ontology, STRING)
+
+    Args:
+        result: Raw Exa search result dict
+
+    Returns:
+        True if result is a valid paper, False if it should be skipped
+    """
+    # Skip if year is 0 (database pages often have no publication date)
+    year = extract_year_from_date(result.get("publishedDate"))
+    if year == 0:
+        return False
+
+    # Skip if author contains known generic authors
+    author = result.get("author") or ""
+    if any(skip in author for skip in EXA_SKIP_AUTHORS):
+        return False
+
+    # Skip database pages by URL pattern
+    url = result.get("url") or ""
+    if any(pattern in url for pattern in EXA_SKIP_URL_PATTERNS):
+        return False
+
+    # Skip known generic titles
+    title = result.get("title") or ""
+    if title in EXA_SKIP_TITLES:
+        return False
+
+    return True
+
+
+def _get_paper_key(lit: LiteratureSupport) -> str:
+    """
+    Generate key for paper deduplication in references table.
+
+    Uses DOI if available, otherwise falls back to normalized title.
+    Different from get_unique_key() which includes year for merge-time dedup.
+
+    Args:
+        lit: Literature support object
+
+    Returns:
+        Unique key string for deduplication
+    """
+    if lit.doi:
+        return f"doi:{lit.doi.lower()}"
+    return f"title:{lit.title.lower()[:100]}"
+
+
 def build_references_table(hypotheses: list[Hypothesis]) -> str:
     """
     Build markdown table of literature references for synthesis report.
+
+    Deduplicates:
+    - Hypotheses by title (prevents iteration over duplicates)
+    - Papers by DOI/title across all hypotheses (combines hypothesis titles)
+
+    Includes a Relevance column showing the key_passage for quick scanning.
 
     Args:
         hypotheses: Grounded hypotheses with literature_support
@@ -65,43 +138,63 @@ def build_references_table(hypotheses: list[Hypothesis]) -> str:
     Returns:
         Markdown string with table of citations
     """
+    # Deduplicate hypotheses by title
+    seen_titles: set[str] = set()
+    unique_hypotheses: list[Hypothesis] = []
+    for h in hypotheses:
+        if h.title not in seen_titles:
+            seen_titles.add(h.title)
+            unique_hypotheses.append(h)
+
     # Filter to hypotheses with literature
-    with_lit = [h for h in hypotheses if h.literature_support]
+    with_lit = [h for h in unique_hypotheses if h.literature_support]
     if not with_lit:
         return ""
 
-    # Count papers and hypotheses
-    total_papers = sum(len(h.literature_support) for h in with_lit)
-
-    # Sort by hypothesis title for grouping
-    with_lit.sort(key=lambda h: h.title)
-
-    # Build table
-    lines = [
-        "\n## Literature References\n",
-        f"Papers discovered via semantic search. {total_papers} papers across {len(with_lit)} hypotheses.\n",
-        "| Hypothesis | Citation | Link |",
-        "|------------|----------|------|",
-    ]
-
+    # Group papers by key, track which hypotheses cite each
+    paper_to_hypotheses: dict[str, tuple[LiteratureSupport, list[str]]] = {}
     for hypothesis in with_lit:
         hyp_title = hypothesis.title[:80] + "..." if len(hypothesis.title) > 80 else hypothesis.title
-        hyp_title = hyp_title.replace("|", "\\|")  # Escape pipes for markdown table
         for lit in hypothesis.literature_support:
-            # Format citation: "Authors (Year) Title"
-            title_truncated = lit.title[:100] + "..." if len(lit.title) > 100 else lit.title
-            citation = f'{lit.authors} ({lit.year}) "{title_truncated}"'
-            citation = citation.replace("|", "\\|")  # Escape pipes for markdown table
+            key = _get_paper_key(lit)
+            if key not in paper_to_hypotheses:
+                paper_to_hypotheses[key] = (lit, [])
+            paper_to_hypotheses[key][1].append(hyp_title)
 
-            # Prefer DOI link, fall back to url
-            if lit.doi:
-                link = f"[DOI](https://doi.org/{lit.doi})"
-            elif lit.url:
-                link = f"[Link]({lit.url})"
-            else:
-                link = "-"
+    # Build table header
+    lines = [
+        "\n## Literature References\n",
+        f"Papers discovered via semantic search. {len(paper_to_hypotheses)} unique papers across {len(with_lit)} hypotheses.\n",
+        "| Hypothesis | Citation | Link | Relevance |",
+        "|------------|----------|------|-----------|",
+    ]
 
-            lines.append(f"| {hyp_title} | {citation} | {link} |")
+    # Build rows - one per unique paper
+    for key, (lit, hyp_titles) in sorted(paper_to_hypotheses.items()):
+        # Combine and escape hypothesis titles (dedupe within paper)
+        combined_titles = "; ".join(sorted(set(hyp_titles)))
+        combined_titles = combined_titles.replace("|", "\\|")
+
+        # Format citation: "Authors (Year) Title"
+        title_truncated = lit.title[:100] + "..." if len(lit.title) > 100 else lit.title
+        citation = f'{lit.authors} ({lit.year}) "{title_truncated}"'
+        citation = citation.replace("|", "\\|")
+
+        # Prefer DOI link, fall back to url
+        if lit.doi:
+            link = f"[DOI](https://doi.org/{lit.doi})"
+        elif lit.url:
+            link = f"[Link]({lit.url})"
+        else:
+            link = "—"
+
+        # Format relevance (key_passage)
+        relevance = lit.key_passage[:120] + "..." if len(lit.key_passage) > 120 else lit.key_passage
+        if not relevance:
+            relevance = "—"
+        relevance = relevance.replace("|", "\\|").replace("\n", " ")
+
+        lines.append(f"| {combined_titles} | {citation} | {link} | {relevance} |")
 
     return "\n".join(lines)
 
@@ -445,8 +538,16 @@ async def ground_hypothesis_exa_raw(
         logger.debug("No Exa papers found for: %s", hypothesis.title[:50])
         return [], []
 
+    # Filter out low-quality results before processing
+    valid_results = [r for r in results if is_valid_exa_result(r)]
+    if len(valid_results) < len(results):
+        logger.debug(
+            "Exa quality filter: %d/%d results kept for '%s'",
+            len(valid_results), len(results), hypothesis.title[:40]
+        )
+
     literature: list[LiteratureSupport] = []
-    for result in results:
+    for result in valid_results:
         try:
             lit_support = create_literature_from_exa(result)
             literature.append(lit_support)
