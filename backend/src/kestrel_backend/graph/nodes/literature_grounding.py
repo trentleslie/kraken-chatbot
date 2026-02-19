@@ -3,9 +3,11 @@ Literature Grounding Node: Add verified citations to synthesis hypotheses.
 
 Parallel multi-source approach:
 1. KG PMIDs - Collect from existing findings (free, instant)
-2. Parallel search: OpenAlex + Exa + PubMed simultaneously
+2. Parallel search: OpenAlex + Exa + PubMed + Semantic Scholar simultaneously
 3. Merge/deduplicate by DOI → PMID → title+year
-4. Semantic Scholar - Fallback only if parallel search finds nothing
+
+Note: S2 uses an internal semaphore (limit=1) and 10s delay between requests,
+so it naturally throttles itself even when called in parallel with other sources.
 
 Position in pipeline: Runs after synthesis, before final output.
 """
@@ -504,6 +506,51 @@ def merge_literature(
     return merged[:limit]
 
 
+async def ground_hypothesis_s2_raw(
+    hypothesis: Hypothesis,
+    limit: int = PARALLEL_FETCH_LIMIT,
+    disease_context: str = "",
+) -> tuple[list[LiteratureSupport], list[str]]:
+    """
+    Search Semantic Scholar and return raw literature results (no hypothesis update).
+
+    Note: S2 uses an internal semaphore (limit=1) and 10s delay between requests,
+    so it naturally throttles itself even when called in parallel with other sources.
+
+    Args:
+        hypothesis: The hypothesis to ground
+        limit: Maximum results to fetch
+        disease_context: Disease focus to append to query (e.g., "type 2 diabetes")
+
+    Returns:
+        Tuple of (list of literature, list of errors)
+    """
+    errors: list[str] = []
+    query = build_search_query(hypothesis, disease_context)
+    if not query:
+        return [], ["Empty search query"]
+
+    try:
+        papers = await s2_search_papers(query, limit=limit)
+    except S2RateLimitError:
+        logger.warning("S2 rate limited for hypothesis: %s", hypothesis.title[:50])
+        return [], ["S2 rate limited - skipped"]
+
+    if not papers:
+        logger.debug("No S2 papers found for: %s", hypothesis.title[:50])
+        return [], []
+
+    literature: list[LiteratureSupport] = []
+    for paper in papers:
+        try:
+            lit_support = create_literature_from_s2(paper, hypothesis.claim)
+            literature.append(lit_support)
+        except Exception as e:
+            errors.append(f"Error processing S2 paper: {e}")
+
+    return literature, errors
+
+
 async def ground_hypothesis_openalex_raw(
     hypothesis: Hypothesis,
     limit: int = PARALLEL_FETCH_LIMIT,
@@ -641,7 +688,10 @@ async def parallel_search_hypothesis(
     disease_context: str = "",
 ) -> tuple[list[LiteratureSupport], list[str]]:
     """
-    Run OpenAlex + Exa + PubMed searches in parallel, merge results.
+    Run OpenAlex + Exa + PubMed + S2 searches in parallel, merge results.
+
+    Note: S2 uses an internal semaphore (limit=1) and 10s delay, so it
+    naturally throttles itself even when called concurrently with other sources.
 
     Args:
         hypothesis: The hypothesis to ground
@@ -650,18 +700,20 @@ async def parallel_search_hypothesis(
     Returns:
         Tuple of (merged/deduped literature, list of errors)
     """
-    # Run all three searches in parallel
+    # Run all four searches in parallel
+    # S2 has internal rate limiting (semaphore + 10s delay) so it's safe to include
     results = await asyncio.gather(
         ground_hypothesis_openalex_raw(hypothesis, disease_context=disease_context),
         ground_hypothesis_exa_raw(hypothesis, disease_context=disease_context),
         ground_hypothesis_pubmed_raw(hypothesis, disease_context=disease_context),
+        ground_hypothesis_s2_raw(hypothesis, disease_context=disease_context),
         return_exceptions=True,
     )
 
     all_literature: list[LiteratureSupport] = []
     all_errors: list[str] = []
 
-    source_names = ["OpenAlex", "Exa", "PubMed"]
+    source_names = ["OpenAlex", "Exa", "PubMed", "S2"]
     for i, result in enumerate(results):
         if isinstance(result, Exception):
             all_errors.append(f"{source_names[i]} exception: {result}")
@@ -674,13 +726,14 @@ async def parallel_search_hypothesis(
     merged = merge_literature(all_literature)
 
     logger.debug(
-        "Parallel search for '%s': %d total → %d merged (openalex=%d, exa=%d, pubmed=%d)",
+        "Parallel search for '%s': %d total → %d merged (openalex=%d, exa=%d, pubmed=%d, s2=%d)",
         hypothesis.title[:40],
         len(all_literature),
         len(merged),
         sum(1 for l in all_literature if l.source == "openalex"),
         sum(1 for l in all_literature if l.source == "exa"),
         sum(1 for l in all_literature if l.source == "pubmed"),
+        sum(1 for l in all_literature if l.source == "s2"),
     )
 
     return merged, all_errors
@@ -859,9 +912,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     Strategy:
     1. Check KG PMIDs first (free, instant)
-    2. Parallel hybrid search: OpenAlex + Exa + PubMed simultaneously
+    2. Parallel hybrid search: OpenAlex + Exa + PubMed + S2 simultaneously
     3. Merge/deduplicate by DOI → PMID → title+year
-    4. S2 as fallback only if parallel search finds nothing (rate-limited)
+
+    Note: S2 uses an internal semaphore and 10s delay, so it naturally
+    throttles itself even when called in parallel with other sources.
 
     Args:
         state: Current discovery state with hypotheses
@@ -912,16 +967,14 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             grounded.append(updated)
             continue
 
-        # Parallel search: OpenAlex + Exa + PubMed
+        # Parallel search: OpenAlex + Exa + PubMed + S2
         literature, errors = await parallel_search_hypothesis(hypothesis, disease_context=disease_focus)
         all_errors.extend(errors)
 
         if literature:
             updated = hypothesis.model_copy(update={"literature_support": literature})
         else:
-            # S2 fallback only if parallel search found nothing
-            updated, s2_errors = await ground_hypothesis_s2(hypothesis)
-            all_errors.extend(s2_errors)
+            updated = hypothesis
 
         grounded.append(updated)
 

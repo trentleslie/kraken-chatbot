@@ -335,8 +335,9 @@ Enriches hypotheses with verified peer-reviewed citations via multi-source paral
 
 **Search Strategy (in order):**
 1. **KG PMIDs** (free, instant) — Collected from `direct_findings` and `disease_associations`
-2. **Parallel hybrid search** — OpenAlex + Exa + PubMed simultaneously
-3. **Semantic Scholar fallback** — Only if parallel search returns nothing (rate-limited)
+2. **Parallel hybrid search** — OpenAlex + Exa + PubMed + Semantic Scholar simultaneously
+
+*Note: S2 uses an internal semaphore (limit=1) and 10s delay between requests, so it naturally throttles itself even when called in parallel with other sources.*
 
 **LiteratureSupport model:**
 ```python
