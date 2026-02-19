@@ -866,7 +866,9 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     kg_pmids = collect_pmids_from_state(state)
 
     # Extract disease focus to anchor search queries
-    disease_focus = state.get("disease_focus", "")
+    # disease_focus is nested inside study_context dict from intake node
+    study_context = state.get("study_context", {})
+    disease_focus = study_context.get("disease_focus", "") if isinstance(study_context, dict) else ""
     if disease_focus:
         logger.info("Using disease context for queries: %s", disease_focus)
 
