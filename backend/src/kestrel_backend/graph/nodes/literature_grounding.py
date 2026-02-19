@@ -205,6 +205,7 @@ def build_references_table(hypotheses: list[Hypothesis]) -> str:
         relevance = re.sub(r'\[.*?\]\(.*?\)', '', relevance)  # Strip markdown links
         relevance = re.sub(r'<[^>]+>', '', relevance)  # Strip HTML tags
         relevance = re.sub(r'[#*>`~]', '', relevance)  # Strip markdown formatting chars
+        relevance = re.sub(r'[âÂ€™""—–]+', '', relevance)  # Strip UTF-8 mojibake artifacts
         relevance = re.sub(r'\s+', ' ', relevance).strip()  # Collapse whitespace
         if not relevance:
             relevance = "—"

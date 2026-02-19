@@ -78,6 +78,8 @@ ALLOWED_TOOLS = frozenset([
     # Task tracking
     "TodoWrite",
     "Task",  # Spawn subagents for complex tasks
+    # Tool discovery
+    "ToolSearch",  # Enable discovery of deferred/dynamic tools
 ])
 
 
