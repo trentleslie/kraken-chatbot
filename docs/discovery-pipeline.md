@@ -2,13 +2,14 @@
 
 ## Overview
 
-The Discovery Pipeline is a **9-node LangGraph workflow** that performs deep biomedical analysis on user-provided entities. It runs alongside the existing "Classic" single-agent mode and is designed for research-grade discovery queries.
+The Discovery Pipeline is a **10-node LangGraph workflow** that performs deep biomedical analysis on user-provided entities. It runs alongside the existing "Classic" single-agent mode and is designed for research-grade discovery queries.
 
 **Key characteristics:**
 - Multi-agent orchestration via LangGraph
 - Parallel analysis branches for different entity types
 - Conditional routing based on study context
 - Hypothesis generation with validation gap calibration
+- Literature grounding with multi-source parallel citation search
 
 ---
 
@@ -41,6 +42,7 @@ flowchart TD
 
     subgraph Output["📤 Output"]
         I[/"📝 SYNTHESIS<br/>Report + hypotheses"/]
+        J[/"📚 LITERATURE GROUNDING<br/>Multi-source citation search"/]
     end
 
     A --> B --> C
@@ -57,7 +59,8 @@ flowchart TD
     G -->|"is_longitudinal=false"| I
     H --> I
 
-    I --> J((END))
+    I --> J
+    J --> K((END))
 
     style A fill:#e1f5fe,color:#1a237e
     style B fill:#e1f5fe,color:#1a237e
@@ -68,6 +71,7 @@ flowchart TD
     style G fill:#f3e5f5,color:#4a148c
     style H fill:#fff8e1,color:#f57f17
     style I fill:#e0f2f1,color:#004d40
+    style J fill:#fff9c4,color:#f57f17
 ```
 
 ### Routing Logic
@@ -80,6 +84,7 @@ flowchart TD
 | No entities resolved | → Skip to Pathway Enrichment |
 | `is_longitudinal=true` | → Temporal → Synthesis |
 | `is_longitudinal=false` | → Synthesis directly |
+| After synthesis | → Literature Grounding (always) |
 
 ---
 
@@ -314,6 +319,53 @@ Generates the final report and extracts structured hypotheses.
 
 ---
 
+### 9. Literature Grounding
+**File:** `graph/nodes/literature_grounding.py`
+
+Enriches hypotheses with verified peer-reviewed citations via multi-source parallel search.
+
+**Position:** Final node (runs after Synthesis, before END)
+
+| Input | Output |
+|-------|--------|
+| `hypotheses` | `hypotheses` (with literature_support populated) |
+| `direct_findings` | `literature_errors` |
+| `disease_associations` | `synthesis_report` (references table appended) |
+| `study_context` | |
+
+**Search Strategy (in order):**
+1. **KG PMIDs** (free, instant) — Collected from `direct_findings` and `disease_associations`
+2. **Parallel hybrid search** — OpenAlex + Exa + PubMed simultaneously
+3. **Semantic Scholar fallback** — Only if parallel search returns nothing (rate-limited)
+
+**LiteratureSupport model:**
+```python
+{
+    "paper_id": "PMID:12345678",
+    "title": "Metabolic effects of...",
+    "authors": "Smith J et al.",
+    "year": 2023,
+    "doi": "10.1234/example",
+    "url": "https://pubmed.ncbi.nlm.nih.gov/12345678",
+    "relevance_score": 0.85,
+    "relationship": "supporting",  # supporting|contradicting|nuancing
+    "key_passage": "Our findings demonstrate...",
+    "citation_count": 42,
+    "source": "pubmed"  # kg|pubmed|openalex|exa|s2
+}
+```
+
+**Configuration:**
+- `PAPERS_PER_HYPOTHESIS = 3` — Max papers to attach per hypothesis
+- `MAX_HYPOTHESES = 15` — Max hypotheses to ground (prioritized by tier)
+- `SOURCE_PRIORITY`: kg > pubmed > openalex > exa > s2 (for deduplication)
+
+**Deduplication:** Papers are deduplicated by DOI → PMID → title+year. When duplicates are found, the higher-priority source is kept and complementary fields (citation_count, key_passage, doi) are merged from lower-priority sources.
+
+**Output:** Appends a "Literature References" markdown table to `synthesis_report` with citations grouped by hypothesis.
+
+---
+
 ## State Schema
 
 The pipeline uses a TypedDict state with Pydantic models for validation.
@@ -360,7 +412,12 @@ class DiscoveryState(TypedDict, total=False):
 
     # Output
     synthesis_report: str
-    hypotheses: Annotated[list[Hypothesis], operator.add]
+    hypotheses: list[Hypothesis]  # Note: NOT using operator.add - synthesis creates, literature_grounding updates
+
+    # Literature Grounding
+    literature_errors: Annotated[list[str], operator.add]
+
+    # Metadata
     errors: Annotated[list[str], operator.add]
 ```
 
@@ -380,7 +437,11 @@ mcp_config = McpStdioServerConfig(
 ```
 
 ### Concurrency Control
-`SDK_SEMAPHORE = asyncio.Semaphore(1)` prevents anyio cancel scope conflicts when using `asyncio.gather` for parallel entity processing.
+SDK_SEMAPHORE values vary by node type:
+- **Entity Resolution & Triage**: `Semaphore(1)` — Sequential SDK calls for strict resolution ordering
+- **Direct KG & Cold-Start**: `Semaphore(6)` — Higher parallelism for analysis workloads
+
+The semaphore prevents anyio cancel scope conflicts when using `asyncio.gather` for parallel entity processing.
 
 ### Buffer Size
 `max_buffer_size=10MB` handles large knowledge graph responses that exceed the default 1MB limit.
@@ -391,31 +452,36 @@ mcp_config = McpStdioServerConfig(
 
 | Query Type | Entities | Execution Time | Output |
 |------------|----------|----------------|--------|
-| Simple discovery | 3 entities | ~10 minutes | 150+ findings, 3 hypotheses |
-| Longitudinal study | 5 entities | ~12 minutes | + temporal classifications |
-| Cold-start heavy | 3 unknown | ~8 minutes | Analogue-based inferences |
+| Simple discovery | 3 entities | ~12 minutes | 150+ findings, 3 hypotheses + citations |
+| Longitudinal study | 5 entities | ~14 minutes | + temporal classifications |
+| Cold-start heavy | 3 unknown | ~10 minutes | Analogue-based inferences |
+
+*Note: Literature grounding adds ~1-2 minutes for citation search across all sources.*
 
 ---
 
 ## File Structure
 
 ```
-backend/src/kestrel_backend/graph/
-├── __init__.py
-├── builder.py          # Graph construction and routing
-├── runner.py           # Execution and streaming
-├── state.py            # State schema and Pydantic models
-└── nodes/
-    ├── __init__.py
-    ├── intake.py
-    ├── entity_resolution.py
-    ├── triage.py
-    ├── direct_kg.py
-    ├── cold_start.py
-    ├── pathway_enrichment.py
-    ├── integration.py
-    ├── temporal.py
-    └── synthesis.py
+backend/src/kestrel_backend/
+├── pubmed_client.py              # NCBI E-utilities integration for PubMed search
+├── graph/
+│   ├── __init__.py
+│   ├── builder.py                # Graph construction and routing
+│   ├── runner.py                 # Execution and streaming
+│   ├── state.py                  # State schema and Pydantic models
+│   └── nodes/
+│       ├── __init__.py
+│       ├── intake.py
+│       ├── entity_resolution.py
+│       ├── triage.py
+│       ├── direct_kg.py
+│       ├── cold_start.py
+│       ├── pathway_enrichment.py
+│       ├── integration.py
+│       ├── temporal.py
+│       ├── synthesis.py
+│       └── literature_grounding.py  # Multi-source citation search
 ```
 
 ---
