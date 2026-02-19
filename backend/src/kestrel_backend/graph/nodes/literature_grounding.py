@@ -45,7 +45,16 @@ SOURCE_PRIORITY = {"kg": 1, "pubmed": 2, "openalex": 3, "exa": 4, "s2": 5}
 
 # Low-quality Exa result patterns to skip
 EXA_SKIP_AUTHORS = {"Web Team", "EBI", "EMBL-EBI"}
-EXA_SKIP_URL_PATTERNS = ["ebi.ac.uk/chebi", "uniprot.org"]
+EXA_SKIP_URL_PATTERNS = [
+    "ebi.ac.uk/chebi",
+    "uniprot.org",
+    "omim.org",
+    "ncbi.nlm.nih.gov/books",
+    "ncbi.nlm.nih.gov/gene",
+    "genome.jp/kegg",
+    "qiagen.com",
+    "genetests.org",
+]
 EXA_SKIP_TITLES = {
     "Gene Ontology Resource",
     "The Gene Ontology Resource",
@@ -188,11 +197,19 @@ def build_references_table(hypotheses: list[Hypothesis]) -> str:
         else:
             link = "—"
 
-        # Format relevance (key_passage)
-        relevance = lit.key_passage[:120] + "..." if len(lit.key_passage) > 120 else lit.key_passage
+        # Sanitize relevance - strip everything that could break markdown table
+        raw_passage = lit.key_passage or ""
+        was_truncated = len(raw_passage) > 120
+        relevance = raw_passage[:120]
+        relevance = relevance.replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+        relevance = re.sub(r'\[.*?\]\(.*?\)', '', relevance)  # Strip markdown links
+        relevance = re.sub(r'<[^>]+>', '', relevance)  # Strip HTML tags
+        relevance = re.sub(r'[#*>`~]', '', relevance)  # Strip markdown formatting chars
+        relevance = re.sub(r'\s+', ' ', relevance).strip()  # Collapse whitespace
         if not relevance:
             relevance = "—"
-        relevance = relevance.replace("|", "\\|").replace("\n", " ")
+        elif was_truncated:
+            relevance += "..."
 
         lines.append(f"| {combined_titles} | {citation} | {link} | {relevance} |")
 
