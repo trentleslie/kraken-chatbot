@@ -219,7 +219,7 @@ def build_references_table(hypotheses: list[Hypothesis]) -> str:
     return "\n".join(lines)
 
 
-def build_search_query(hypothesis: Hypothesis, disease_context: str = "") -> str:
+def build_search_query(hypothesis: Hypothesis, disease_context: str = "", entity_names: dict[str, str] | None = None) -> str:
     """
     Extract concise search terms from hypothesis.
 
@@ -227,12 +227,15 @@ def build_search_query(hypothesis: Hypothesis, disease_context: str = "") -> str
     1. Start with title (more concise than claim)
     2. Fall back to claim for generic titles (Bridge:, Inferred role of)
     3. Strip filler phrases and parenthetical metadata
-    4. Append disease context to anchor results
-    5. Truncate to 200 chars for API limits
+    4. Extract and include entity names from CURIEs
+    5. Append disease context to anchor results
+    6. Add longitudinal keywords if relevant
+    7. Truncate to 250 chars for API limits (increased from 200)
 
     Args:
         hypothesis: The hypothesis to build query for
         disease_context: Optional disease focus to append (e.g., "type 2 diabetes")
+        entity_names: Optional CURIE -> name mapping from state.resolved_entities
     """
     # Prefer title, fall back to claim
     text = hypothesis.title or hypothesis.claim
@@ -248,12 +251,57 @@ def build_search_query(hypothesis: Hypothesis, disease_context: str = "") -> str
     # Clean up whitespace
     text = re.sub(r"\s+", " ", text).strip()
 
+    # Extract entity names from CURIEs if mapping provided
+    if entity_names and hypothesis.supporting_entities:
+        # Get names for up to 3 supporting entities (avoid over-stuffing query)
+        names = []
+        for curie in hypothesis.supporting_entities[:3]:
+            if curie in entity_names:
+                names.append(entity_names[curie])
+        if names:
+            text = f"{text} {' '.join(names)}"
+
     # Append disease context to anchor search results
     if disease_context:
         text = f"{text} {disease_context}"
 
-    # Truncate for API limits
-    return text[:200]
+    # Add longitudinal keywords for progression hypotheses
+    if "progression" in text.lower() or "longitudinal" in text.lower():
+        text = f"{text} progression"
+
+    # Clean up duplicate whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Truncate for API limits (increased from 200 to 250)
+    return text[:250]
+
+
+def extract_claim_keywords(claim: str) -> list[str]:
+    """
+    Extract key scientific terms from claim for keyword-based search.
+
+    Filters out common words and focuses on domain-specific terminology.
+
+    Args:
+        claim: Hypothesis claim text
+
+    Returns:
+        List of keywords (max 5)
+    """
+    # Common words to filter out
+    stopwords = {
+        "the", "a", "an", "in", "of", "and", "or", "for", "to", "with",
+        "may", "be", "is", "are", "was", "were", "has", "have", "had",
+        "could", "would", "should", "associated", "related", "linked", "involved"
+    }
+
+    # Tokenize and filter
+    words = re.findall(r'\b[a-zA-Z]+\b', claim.lower())
+    keywords = [w for w in words if w not in stopwords and len(w) > 3]
+
+    # Return top 5 most unique (prefer longer words)
+    keywords.sort(key=len, reverse=True)
+    return keywords[:5]
 
 
 def collect_pmids_from_state(state: DiscoveryState) -> dict[str, list[str]]:
@@ -510,43 +558,108 @@ async def ground_hypothesis_s2_raw(
     hypothesis: Hypothesis,
     limit: int = PARALLEL_FETCH_LIMIT,
     disease_context: str = "",
+    entity_names: dict[str, str] | None = None,
 ) -> tuple[list[LiteratureSupport], list[str]]:
     """
-    Search Semantic Scholar and return raw literature results (no hypothesis update).
+    Multi-strategy Semantic Scholar search with query diversification.
+
+    Implements three search strategies:
+    1. Standard query from hypothesis title/claim + disease context
+    2. Entity-focused query (metabolite/gene names + disease)
+    3. Claim keyword extraction (domain-specific terms)
+
+    Results are merged and deduplicated by paper ID.
 
     Note: S2 uses an internal semaphore (limit=1) and 10s delay between requests,
     so it naturally throttles itself even when called in parallel with other sources.
+    Multi-strategy search triples API calls per hypothesis - monitor rate limits.
 
     Args:
         hypothesis: The hypothesis to ground
-        limit: Maximum results to fetch
+        limit: Maximum results to fetch per strategy
         disease_context: Disease focus to append to query (e.g., "type 2 diabetes")
+        entity_names: Optional CURIE -> name mapping from state.resolved_entities
 
     Returns:
         Tuple of (list of literature, list of errors)
     """
     errors: list[str] = []
-    query = build_search_query(hypothesis, disease_context)
-    if not query:
-        return [], ["Empty search query"]
+    all_papers: dict[str, dict] = {}  # paper_id -> paper dict for deduplication
 
-    try:
-        papers = await s2_search_papers(query, limit=limit)
-    except S2RateLimitError:
-        logger.warning("S2 rate limited for hypothesis: %s", hypothesis.title[:50])
-        return [], ["S2 rate limited - skipped"]
+    # Biomedical focus for fieldsOfStudy filter
+    fields_of_study = ["Biology", "Medicine"]
 
-    if not papers:
-        logger.debug("No S2 papers found for: %s", hypothesis.title[:50])
-        return [], []
+    # Strategy 1: Standard query from hypothesis
+    query1 = build_search_query(hypothesis, disease_context, entity_names)
+    if query1:
+        try:
+            papers1 = await s2_search_papers(query1, limit=limit, fields_of_study=fields_of_study)
+            for paper in papers1:
+                paper_id = paper.get("paperId", "")
+                if paper_id and paper_id not in all_papers:
+                    all_papers[paper_id] = paper
+        except S2RateLimitError:
+            logger.warning("S2 rate limited (strategy 1) for hypothesis: %s", hypothesis.title[:50])
+            errors.append("S2 rate limited - strategy 1 skipped")
 
+    # Strategy 2: Entity-focused query (if entity names available)
+    if entity_names and hypothesis.supporting_entities:
+        # Build query from entity names + disease
+        entity_terms = []
+        for curie in hypothesis.supporting_entities[:3]:  # Top 3 entities
+            if curie in entity_names:
+                entity_terms.append(entity_names[curie])
+        if entity_terms:
+            query2 = " ".join(entity_terms)
+            if disease_context:
+                query2 = f"{query2} {disease_context}"
+            query2 = query2[:250]
+
+            try:
+                papers2 = await s2_search_papers(query2, limit=limit, fields_of_study=fields_of_study)
+                for paper in papers2:
+                    paper_id = paper.get("paperId", "")
+                    if paper_id and paper_id not in all_papers:
+                        all_papers[paper_id] = paper
+            except S2RateLimitError:
+                logger.warning("S2 rate limited (strategy 2) for hypothesis: %s", hypothesis.title[:50])
+                errors.append("S2 rate limited - strategy 2 skipped")
+
+    # Strategy 3: Claim keyword extraction
+    keywords = extract_claim_keywords(hypothesis.claim)
+    if keywords:
+        query3 = " ".join(keywords)
+        if disease_context:
+            query3 = f"{query3} {disease_context}"
+        query3 = query3[:250]
+
+        try:
+            papers3 = await s2_search_papers(query3, limit=limit, fields_of_study=fields_of_study)
+            for paper in papers3:
+                paper_id = paper.get("paperId", "")
+                if paper_id and paper_id not in all_papers:
+                    all_papers[paper_id] = paper
+        except S2RateLimitError:
+            logger.warning("S2 rate limited (strategy 3) for hypothesis: %s", hypothesis.title[:50])
+            errors.append("S2 rate limited - strategy 3 skipped")
+
+    if not all_papers:
+        logger.debug("No S2 papers found (all strategies) for: %s", hypothesis.title[:50])
+        return [], errors
+
+    # Convert deduplicated papers to LiteratureSupport
     literature: list[LiteratureSupport] = []
-    for paper in papers:
+    for paper in all_papers.values():
         try:
             lit_support = create_literature_from_s2(paper, hypothesis.claim)
             literature.append(lit_support)
         except Exception as e:
             errors.append(f"Error processing S2 paper: {e}")
+
+    logger.debug(
+        "S2 multi-strategy search for '%s': %d unique papers from %d total results",
+        hypothesis.title[:40], len(literature), len(all_papers)
+    )
 
     return literature, errors
 
@@ -686,6 +799,7 @@ async def ground_hypothesis_pubmed_raw(
 async def parallel_search_hypothesis(
     hypothesis: Hypothesis,
     disease_context: str = "",
+    entity_names: dict[str, str] | None = None,
 ) -> tuple[list[LiteratureSupport], list[str], dict[str, int]]:
     """
     Run OpenAlex + Exa + PubMed + S2 searches in parallel, merge results.
@@ -696,6 +810,7 @@ async def parallel_search_hypothesis(
     Args:
         hypothesis: The hypothesis to ground
         disease_context: Disease focus to append to queries (e.g., "type 2 diabetes")
+        entity_names: Optional CURIE -> name mapping from state.resolved_entities
 
     Returns:
         Tuple of (merged/deduped literature, list of errors, raw counts by source)
@@ -706,7 +821,7 @@ async def parallel_search_hypothesis(
         ground_hypothesis_openalex_raw(hypothesis, disease_context=disease_context),
         ground_hypothesis_exa_raw(hypothesis, disease_context=disease_context),
         ground_hypothesis_pubmed_raw(hypothesis, disease_context=disease_context),
-        ground_hypothesis_s2_raw(hypothesis, disease_context=disease_context),
+        ground_hypothesis_s2_raw(hypothesis, disease_context=disease_context, entity_names=entity_names),
         return_exceptions=True,
     )
 
@@ -953,6 +1068,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     if disease_focus:
         logger.info("Using disease context for queries: %s", disease_focus)
 
+    # Build CURIE -> name mapping from resolved_entities for query enhancement
+    entity_names: dict[str, str] = {}
+    for resolution in state.get("resolved_entities", []):
+        if resolution.curie and resolution.resolved_name:
+            entity_names[resolution.curie] = resolution.resolved_name
+    logger.info("Entity name mapping: %d CURIEs available for query enhancement", len(entity_names))
+
     # Prioritize hypotheses by tier
     sorted_hypotheses = sorted(hypotheses, key=lambda h: h.tier)
     to_ground = sorted_hypotheses[:MAX_HYPOTHESES]
@@ -980,7 +1102,9 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             continue
 
         # Parallel search: OpenAlex + Exa + PubMed + S2
-        literature, errors, raw_counts = await parallel_search_hypothesis(hypothesis, disease_context=disease_focus)
+        literature, errors, raw_counts = await parallel_search_hypothesis(
+            hypothesis, disease_context=disease_focus, entity_names=entity_names
+        )
         all_errors.extend(errors)
 
         # Accumulate raw counts for diagnostic logging

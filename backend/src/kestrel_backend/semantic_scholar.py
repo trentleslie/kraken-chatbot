@@ -40,7 +40,8 @@ S2_DELAY = 1.1 if S2_API_KEY else 10.0
 async def search_papers(
     query: str,
     limit: int = 5,
-    fields: list[str] | None = None
+    fields: list[str] | None = None,
+    fields_of_study: list[str] | None = None
 ) -> list[dict[str, Any]]:
     """
     Search Semantic Scholar for papers matching query.
@@ -49,6 +50,7 @@ async def search_papers(
         query: Search query (hypothesis claim or keywords)
         limit: Maximum papers to return
         fields: Paper fields to retrieve
+        fields_of_study: Optional filter by fields like ["Biology", "Medicine"]
 
     Returns:
         List of paper dictionaries with requested fields
@@ -73,13 +75,19 @@ async def search_papers(
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
+                params = {
+                    "query": truncated_query,
+                    "limit": limit,
+                    "fields": ",".join(fields),
+                }
+
+                # Add fieldsOfStudy filter if provided (biomedical focus)
+                if fields_of_study:
+                    params["fieldsOfStudy"] = ",".join(fields_of_study)
+
                 response = await client.get(
                     S2_SEARCH_ENDPOINT,
-                    params={
-                        "query": truncated_query,
-                        "limit": limit,
-                        "fields": ",".join(fields),
-                    },
+                    params=params,
                     headers=headers,
                 )
                 response.raise_for_status()
