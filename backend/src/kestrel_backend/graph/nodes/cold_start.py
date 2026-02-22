@@ -189,16 +189,36 @@ async def get_entity_connections(curie: str) -> dict:
             return {"edges": [], "summary": f"API error: {error_msg}"}
 
         # Extract edges, handling various response formats
+        # Kestrel one_hop_query returns compact format:
+        # {"edge_schema": ["subject", "predicate", "object", ...], "edges": {"id": [values...]}}
         edges = []
-        if isinstance(data, list):
-            edges = data
-        elif isinstance(data, dict):
-            edges = data.get("edges", data.get("results", []))
+        edge_schema = data.get("edge_schema", []) if isinstance(data, dict) else []
+        predicate_idx = edge_schema.index("predicate") if "predicate" in edge_schema else 1
+
+        raw_edges = data.get("edges", data.get("results", [])) if isinstance(data, dict) else data
+
+        # Convert compact dict format to list of edge dicts
+        if isinstance(raw_edges, dict):
+            # Compact format: {"edge_id": [subject, predicate, object, ...]}
+            for edge_id, edge_values in raw_edges.items():
+                if isinstance(edge_values, list) and len(edge_values) > predicate_idx:
+                    edges.append({
+                        "subject": {"id": edge_values[0]} if len(edge_values) > 0 else {},
+                        "predicate": edge_values[predicate_idx] if len(edge_values) > predicate_idx else "unknown",
+                        "object": {"id": edge_values[2]} if len(edge_values) > 2 else {},
+                    })
+        elif isinstance(raw_edges, list):
+            edges = raw_edges
 
         # Summarize connections by predicate
         predicate_counts: dict[str, int] = {}
         for edge in edges:
-            pred = edge.get("predicate", "unknown")
+            if isinstance(edge, dict):
+                pred = edge.get("predicate", "unknown")
+            elif isinstance(edge, list) and len(edge) > predicate_idx:
+                pred = edge[predicate_idx]
+            else:
+                pred = "unknown"
             predicate_counts[pred] = predicate_counts.get(pred, 0) + 1
 
         summary = ", ".join(f"{pred}: {count}" for pred, count in sorted(predicate_counts.items(), key=lambda x: -x[1])[:5])
