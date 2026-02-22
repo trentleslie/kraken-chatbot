@@ -128,8 +128,15 @@ async def get_similar_entities(curie: str, limit: int = ANALOGUE_LIMIT) -> list[
             return []
 
         # Extract similar entities
+        # Response format: {"CURIE": [...]} where key is the queried CURIE
         similar = []
-        results_list = data if isinstance(data, list) else data.get("results", data.get("similar_nodes", []))
+        if isinstance(data, list):
+            results_list = data
+        elif isinstance(data, dict):
+            # Try CURIE as key first (actual API response format), then fallback keys
+            results_list = data.get(curie, data.get("results", data.get("similar_nodes", [])))
+        else:
+            results_list = []
 
         for item in results_list:
             if isinstance(item, dict):
