@@ -168,17 +168,19 @@ class TestValidateApiKey:
 
     @patch("kestrel_backend.auth._pool", None)
     async def test_validate_api_key_no_pool(self):
-        """Test validation when database pool is not initialized."""
+        """Test validation when database pool is not initialized - should fail closed."""
         with patch("kestrel_backend.auth.get_settings") as mock_settings:
             mock_settings.return_value.auth_enabled = True
 
             credentials = MagicMock()
             credentials.credentials = "test-key"
 
-            result = await validate_api_key(credentials)
+            # Should fail closed with 503 when DB unavailable (security best practice)
+            with pytest.raises(HTTPException) as exc_info:
+                await validate_api_key(credentials)
 
-            # Should bypass auth if pool not available
-            assert result["authenticated"] is False
+            assert exc_info.value.status_code == 503
+            assert "unavailable" in str(exc_info.value.detail).lower()
 
 
 @pytest.mark.asyncio

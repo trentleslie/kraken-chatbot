@@ -495,6 +495,8 @@ async def websocket_chat(websocket: WebSocket):
             user_info = await validate_ws_token(token)
         except ValueError as e:
             logger.warning(f"WebSocket authentication failed: {e}")
+            # Accept first so client receives the close code properly
+            await websocket.accept()
             await websocket.close(code=4001, reason="Authentication failed")
             return
 

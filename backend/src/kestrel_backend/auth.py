@@ -6,7 +6,7 @@ WebSocket and REST endpoints.
 
 import logging
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import HTTPException, Security
@@ -51,9 +51,9 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     to_encode = data.copy()
 
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.jwt_expire_minutes)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
 
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
@@ -82,10 +82,10 @@ async def validate_api_key(credentials: HTTPAuthorizationCredentials = Security(
     api_key = credentials.credentials
     api_key_hash = hash_api_key(api_key)
 
-    # Check if API key exists in database
+    # Check if API key exists in database - fail closed if DB unavailable
     if not _pool:
-        logger.warning("Database pool not initialized, authentication bypassed")
-        return {"authenticated": False, "user_id": None}
+        logger.error("Database pool not initialized - authentication cannot proceed")
+        raise HTTPException(status_code=503, detail="Authentication service unavailable")
 
     try:
         user = await _pool.fetchrow(
@@ -146,10 +146,10 @@ async def validate_ws_token(token: Optional[str]) -> Optional[dict]:
         if not user_id:
             raise ValueError("Invalid token payload")
 
-        # Verify user exists and is active
+        # Verify user exists and is active - fail closed if DB unavailable
         if not _pool:
-            logger.warning("Database pool not initialized, WebSocket authentication bypassed")
-            return None
+            logger.error("Database pool not initialized - WebSocket authentication cannot proceed")
+            raise ValueError("Authentication service unavailable")
 
         user = await _pool.fetchrow(
             "SELECT id, is_active FROM kraken_users WHERE id = $1",
