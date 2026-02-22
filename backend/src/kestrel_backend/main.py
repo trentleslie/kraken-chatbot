@@ -169,9 +169,29 @@ app.add_middleware(
 )
 
 
+def check_langfuse_health() -> tuple[bool, str | None]:
+    """Check Langfuse observability client health.
+
+    Returns:
+        tuple: (is_healthy, error_message)
+    """
+    try:
+        settings = get_settings()
+        if not settings.langfuse_enabled:
+            return True, None  # Not enabled, so "healthy" (degraded is fine)
+
+        langfuse = _get_pipeline_langfuse()
+        if langfuse is None:
+            return False, "Langfuse client not initialized"
+
+        return True, None
+    except Exception as e:
+        return False, f"Langfuse error: {str(e)}"
+
+
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for monitoring."""
+    """Simple liveness check endpoint for monitoring."""
     return {"status": "healthy", "service": "kestrel-backend"}
 
 
@@ -179,6 +199,69 @@ async def health_check():
 async def api_health_check():
     """API health check endpoint (alternative path)."""
     return {"status": "healthy", "service": "kestrel-backend"}
+
+
+@app.get("/ready")
+async def readiness_check():
+    """Comprehensive readiness check for all critical dependencies.
+
+    Returns:
+        200 if all critical dependencies are healthy
+        503 if any critical dependency is unhealthy
+
+    Response includes individual check statuses and allows degraded state
+    for non-critical dependencies like Langfuse.
+    """
+    from .database import check_db_health
+    from .kestrel_client import check_kestrel_health
+
+    checks = {}
+    overall_status = "healthy"
+
+    # Check database (critical)
+    db_healthy, db_latency, db_error = await check_db_health()
+    checks["database"] = {
+        "status": "healthy" if db_healthy else "unhealthy",
+    }
+    if db_latency is not None:
+        checks["database"]["latency_ms"] = db_latency
+    if db_error:
+        checks["database"]["error"] = db_error
+    if not db_healthy:
+        overall_status = "unhealthy"
+
+    # Check Kestrel MCP server (critical)
+    kestrel_healthy, kestrel_latency, kestrel_error = await check_kestrel_health()
+    checks["kestrel"] = {
+        "status": "healthy" if kestrel_healthy else "unhealthy",
+    }
+    if kestrel_latency is not None:
+        checks["kestrel"]["latency_ms"] = kestrel_latency
+    if kestrel_error:
+        checks["kestrel"]["error"] = kestrel_error
+    if not kestrel_healthy:
+        overall_status = "unhealthy"
+
+    # Check Langfuse (non-critical, can be degraded)
+    langfuse_healthy, langfuse_error = check_langfuse_health()
+    checks["langfuse"] = {
+        "status": "healthy" if langfuse_healthy else "degraded",
+    }
+    if langfuse_error:
+        checks["langfuse"]["error"] = langfuse_error
+    if not langfuse_healthy and overall_status == "healthy":
+        overall_status = "degraded"
+
+    response_data = {
+        "status": overall_status,
+        "checks": checks,
+    }
+
+    # Return 503 if unhealthy, 200 otherwise (degraded is acceptable)
+    status_code = 503 if overall_status == "unhealthy" else 200
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(content=response_data, status_code=status_code)
 
 
 @app.get("/api/conversations/{conversation_id}")
