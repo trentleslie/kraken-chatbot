@@ -686,7 +686,7 @@ async def ground_hypothesis_pubmed_raw(
 async def parallel_search_hypothesis(
     hypothesis: Hypothesis,
     disease_context: str = "",
-) -> tuple[list[LiteratureSupport], list[str]]:
+) -> tuple[list[LiteratureSupport], list[str], dict[str, int]]:
     """
     Run OpenAlex + Exa + PubMed + S2 searches in parallel, merge results.
 
@@ -698,7 +698,7 @@ async def parallel_search_hypothesis(
         disease_context: Disease focus to append to queries (e.g., "type 2 diabetes")
 
     Returns:
-        Tuple of (merged/deduped literature, list of errors)
+        Tuple of (merged/deduped literature, list of errors, raw counts by source)
     """
     # Run all four searches in parallel
     # S2 has internal rate limiting (semaphore + 10s delay) so it's safe to include
@@ -722,6 +722,14 @@ async def parallel_search_hypothesis(
         all_literature.extend(literature)
         all_errors.extend(errors)
 
+    # Count raw papers by source before deduplication
+    raw_counts = {
+        "openalex": sum(1 for l in all_literature if l.source == "openalex"),
+        "exa": sum(1 for l in all_literature if l.source == "exa"),
+        "pubmed": sum(1 for l in all_literature if l.source == "pubmed"),
+        "s2": sum(1 for l in all_literature if l.source == "s2"),
+    }
+
     # Merge and deduplicate
     merged = merge_literature(all_literature)
 
@@ -730,13 +738,13 @@ async def parallel_search_hypothesis(
         hypothesis.title[:40],
         len(all_literature),
         len(merged),
-        sum(1 for l in all_literature if l.source == "openalex"),
-        sum(1 for l in all_literature if l.source == "exa"),
-        sum(1 for l in all_literature if l.source == "pubmed"),
-        sum(1 for l in all_literature if l.source == "s2"),
+        raw_counts["openalex"],
+        raw_counts["exa"],
+        raw_counts["pubmed"],
+        raw_counts["s2"],
     )
 
-    return merged, all_errors
+    return merged, all_errors, raw_counts
 
 
 async def ground_hypothesis_openalex(
@@ -960,16 +968,24 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     all_errors: list[str] = []
     grounded: list[Hypothesis] = []
 
+    # Track raw paper counts before deduplication for diagnostic logging
+    raw_paper_counts = {"kg": 0, "pubmed": 0, "openalex": 0, "exa": 0, "s2": 0}
+
     for hypothesis in to_ground:
         # Try KG PMIDs first (free, instant)
         updated, has_kg = ground_hypothesis_kg(hypothesis, kg_pmids)
         if has_kg:
             grounded.append(updated)
+            raw_paper_counts["kg"] += len(updated.literature_support)
             continue
 
         # Parallel search: OpenAlex + Exa + PubMed + S2
-        literature, errors = await parallel_search_hypothesis(hypothesis, disease_context=disease_focus)
+        literature, errors, raw_counts = await parallel_search_hypothesis(hypothesis, disease_context=disease_focus)
         all_errors.extend(errors)
+
+        # Accumulate raw counts for diagnostic logging
+        for source, count in raw_counts.items():
+            raw_paper_counts[source] += count
 
         if literature:
             updated = hypothesis.model_copy(update={"literature_support": literature})
@@ -981,7 +997,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     # Add ungrounded hypotheses
     grounded.extend(remaining)
 
-    # Count papers found by source
+    # Count papers found by source (after deduplication)
     papers_found = sum(len(h.literature_support) for h in grounded)
     kg_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "kg")
     pubmed_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "pubmed")
@@ -990,11 +1006,17 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     s2_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "s2")
 
     duration = time.time() - start
+    # Log both final counts and raw counts (before deduplication) for diagnostics
+    # Raw counts show what each source found; final counts show what survived deduplication
     logger.info(
         "Completed literature_grounding in %.1fs — %d hypotheses, %d papers "
-        "(kg=%d, pubmed=%d, openalex=%d, exa=%d, s2=%d)",
+        "(kg=%d, pubmed=%d [raw=%d], openalex=%d [raw=%d], exa=%d [raw=%d], s2=%d [raw=%d])",
         duration, len(grounded), papers_found,
-        kg_papers, pubmed_papers, openalex_papers, exa_papers, s2_papers
+        kg_papers,
+        pubmed_papers, raw_paper_counts["pubmed"],
+        openalex_papers, raw_paper_counts["openalex"],
+        exa_papers, raw_paper_counts["exa"],
+        s2_papers, raw_paper_counts["s2"]
     )
 
     # Build literature references table

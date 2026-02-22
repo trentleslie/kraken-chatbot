@@ -110,7 +110,8 @@ def _merge_into_deduped(
     deduped: dict[str, dict],
     results: list[dict],
     preset: str,
-    nodes: dict[str, dict]
+    nodes: dict[str, dict],
+    edges_dict: dict[str, list] | None = None
 ) -> None:
     """
     Merge API results into deduplicated dict, tracking which presets found each.
@@ -120,6 +121,7 @@ def _merge_into_deduped(
         results: List of result rows from API response
         preset: Which preset found these results ("established" or "hidden_gems")
         nodes: Nodes dict from API response for name lookup
+        edges_dict: Edges dict from API response for edge data lookup (keyed by edge ID)
     """
     for row in results:
         end_node_id = row.get("end_node_id", "")
@@ -130,12 +132,14 @@ def _merge_into_deduped(
         node_info = nodes.get(end_node_id, {})
         node_name = node_info.get("name", end_node_id)
 
-        # Get edge info
-        edges = row.get("edges", [])
-        if not edges:
+        # Get edge info - API returns "edge_ids" referencing edges_dict
+        edge_ids = row.get("edge_ids", [])
+        if not edge_ids:
             continue
 
-        edge = edges[0]
+        # Look up first edge from edges_dict to get predicate and source
+        first_edge_id = str(edge_ids[0])
+        edge = edges_dict.get(first_edge_id, []) if edges_dict else []
         predicate = edge[1] if len(edge) > 1 else "biolink:related_to"
         source = edge[4] if len(edge) > 4 else "unknown"
         supporting = edge[5] if len(edge) > 5 else None
@@ -365,14 +369,15 @@ async def analyze_via_api(
                 continue
 
             nodes = data.get("nodes", {})
+            edges_dict = data.get("edges", {})
             api_results = data.get("results", [])
 
             if cat_key == "disease":
-                _merge_into_deduped(disease_deduped, api_results, preset, nodes)
+                _merge_into_deduped(disease_deduped, api_results, preset, nodes, edges_dict)
             elif cat_key == "pathway":
-                _merge_into_deduped(pathway_deduped, api_results, preset, nodes)
+                _merge_into_deduped(pathway_deduped, api_results, preset, nodes, edges_dict)
             elif cat_key == "gene":
-                _merge_into_deduped(gene_deduped, api_results, preset, nodes)
+                _merge_into_deduped(gene_deduped, api_results, preset, nodes, edges_dict)
 
         # Convert deduplicated results to structured objects
         diseases, disease_findings = parse_deduped_diseases(curie, raw_name, disease_deduped)
