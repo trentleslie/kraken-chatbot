@@ -484,8 +484,6 @@ async def websocket_chat(websocket: WebSocket):
     await websocket.accept()
     connection_id = str(id(websocket))
 
-    # Generate and set correlation ID for this WebSocket connection
-    corr_id = generate_correlation_id()
     logger.info(
         "WebSocket connection established",
         extra={"connection_id": connection_id}
@@ -495,6 +493,10 @@ async def websocket_chat(websocket: WebSocket):
         while True:
             # Receive message from client
             raw_data = await websocket.receive_text()
+
+            # Generate and set correlation ID for each message (per-request tracing)
+            corr_id = generate_correlation_id()
+            correlation_id.set(corr_id)
 
             try:
                 data = json.loads(raw_data)
