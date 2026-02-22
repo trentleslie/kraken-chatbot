@@ -3,12 +3,19 @@ Cold-Start Analysis Node: Analyze sparse/unknown entities using semantic inferen
 
 For entities with few or no known connections in the KG, this node uses
 feature-based reasoning:
-1. Find semantically similar well-characterized entities via similar_nodes
-2. Query what those analogues are connected to
-3. Infer potential associations for the sparse entity
+1. Find semantically similar well-characterized entities via similar_nodes (HTTP API)
+2. Query what those analogues are connected to via one_hop_query (HTTP API)
+3. Pass real KG data to SDK for inference reasoning (no MCP tools needed)
 
 All findings are Tier 3 with explicit structural logic chains.
 The Open World Assumption applies: missing connections are "unstudied", not "nonexistent".
+
+NOTE: This node uses direct HTTP API calls to Kestrel (via call_kestrel_tool) instead of
+trying to expose tools via MCP. This is more reliable because:
+- The mcp-client-kestrel package doesn't exist on PyPI
+- Entity resolution already uses this pattern successfully
+- Direct control over KG queries ensures deterministic data retrieval
+- SDK agent reasons over REAL KG data instead of hallucinating from training knowledge
 """
 
 import asyncio
@@ -19,6 +26,7 @@ import time
 import traceback
 from typing import Any
 
+from ...kestrel_client import call_kestrel_tool
 from ..state import (
     DiscoveryState, Finding, InferredAssociation, AnalogueEntity, NoveltyScore
 )
@@ -28,60 +36,43 @@ logger = logging.getLogger(__name__)
 # Try to import Claude Agent SDK - graceful fallback if not available
 try:
     from claude_agent_sdk import query, ClaudeAgentOptions
-    from claude_agent_sdk.types import McpStdioServerConfig
     HAS_SDK = True
 except ImportError:
     HAS_SDK = False
 
 
-# Kestrel MCP command for stdio-based server (same as entity_resolution)
-KESTREL_COMMAND = "uvx"
-KESTREL_ARGS = ["mcp-client-kestrel"]
-
-# Semaphore to limit concurrent SDK calls (increased from 1 to 6 for parallelism)
+# Semaphore to limit concurrent SDK calls
 SDK_SEMAPHORE = asyncio.Semaphore(6)
 
-# Batch size for parallel analysis (reduced from 6 to limit resource contention)
+# Batch size for parallel analysis
 BATCH_SIZE = 3
 
-# Timeout for SDK query per entity (5 minutes)
-SDK_QUERY_TIMEOUT = 300
+# Timeout for SDK inference query per entity (2 minutes - reduced since no tool calls)
+SDK_INFERENCE_TIMEOUT = 120
 
-# TODO: Cold-start currently processes entities serially (~3 min each) due to
-# Claude SDK internal serialization. With 11 sparse entities, total time is ~35 min.
-# Future optimizations:
-# - Investigate SDK parallel execution capabilities
-# - Limit to top-5 sparse entities by edge count to reduce wall-clock time
+# Number of similar entities to retrieve for each sparse entity
+ANALOGUE_LIMIT = 5
 
-# System prompt for cold-start analysis
-COLD_START_PROMPT = """You are a biomedical knowledge graph analyst specializing in sparse entities —
-entities with few or no known connections. This is a COLD-START scenario.
 
-For the given entity (CURIE with {edge_count} edges), you cannot rely on direct neighbor analysis.
-Instead, use feature-based reasoning:
+# System prompt for inference reasoning (no tools needed - KG data provided in prompt)
+INFERENCE_PROMPT = """You are a biomedical knowledge graph analyst specializing in inference.
 
-STEP 1: Use similar_nodes to find 3-5 entities that are semantically similar to this one.
-        These are "analogues" - well-characterized entities that resemble the sparse one.
+You will be given:
+1. A sparse entity (few or no known KG connections)
+2. Similar entities (analogues) found via vector similarity search
+3. The connections each analogue has in the knowledge graph
 
-STEP 2: For each analogue found, use one_hop_query to discover what diseases, pathways,
-        genes, or other entities they are connected to.
-
-STEP 3: Infer what the sparse entity MIGHT be connected to based on its analogues' connections.
+Your task is to infer what the sparse entity MIGHT be connected to based on its analogues' connections.
 
 CRITICAL RULES:
-- ALL findings are Tier 3 (structural inference). This is SPECULATION, not proven fact.
-- For each inference, provide the structural logic chain:
-  "Entity X is similar to Y (similarity: 0.85). Y is connected to Z via predicate P.
-   Therefore X may also be connected to Z."
-- Include confidence calibration: how many independent analogues support each inference?
-- Suggest at least one concrete validation step per inference
+- Use ONLY the KG data provided in the prompt for inferences
+- Each inference must cite which analogue connection supports it
+- ALL findings are Tier 3 (structural inference) - SPECULATION requiring validation
+- Include confidence calibration based on how many analogues support each inference
 - Frame missing connections as "unstudied" not "nonexistent" (Open World Assumption)
 
 Return ONLY a valid JSON object (no other text):
 {
-  "analogues": [
-    {"curie": "...", "name": "...", "similarity": 0.85, "category": "biolink:..."}
-  ],
   "inferences": [
     {
       "target_curie": "...",
@@ -95,26 +86,185 @@ Return ONLY a valid JSON object (no other text):
   ]
 }
 
-If no similar entities can be found, return:
-{"analogues": [], "inferences": []}
+If no valid inferences can be made from the provided data, return:
+{"inferences": []}
 """
 
 
-def parse_cold_start_result(
+async def get_similar_entities(curie: str, limit: int = ANALOGUE_LIMIT) -> list[dict]:
+    """
+    Query Kestrel similar_nodes via HTTP API.
+
+    Returns list of similar entities with curie, name, similarity score, and category.
+    """
+    try:
+        result = await call_kestrel_tool("similar_nodes", {
+            "curie": curie,
+            "limit": limit,
+        })
+
+        if result.get("isError"):
+            logger.warning("similar_nodes failed for %s: %s", curie, result)
+            return []
+
+        content = result.get("content", [])
+        if not content:
+            return []
+
+        # Parse the JSON response
+        text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            logger.warning("Could not parse similar_nodes response for %s", curie)
+            return []
+
+        # Extract similar entities
+        similar = []
+        results_list = data if isinstance(data, list) else data.get("results", data.get("similar_nodes", []))
+
+        for item in results_list:
+            if isinstance(item, dict):
+                similar.append({
+                    "curie": item.get("id") or item.get("curie", ""),
+                    "name": item.get("name") or item.get("label", "Unknown"),
+                    "similarity": float(item.get("similarity") or item.get("score", 0.0)),
+                    "category": item.get("category") or (item.get("categories", [""])[0] if item.get("categories") else ""),
+                })
+
+        logger.info("similar_nodes for %s: found %d analogues", curie, len(similar))
+        return similar
+
+    except Exception as e:
+        logger.error("Exception in get_similar_entities for %s: %s", curie, e)
+        return []
+
+
+async def get_entity_connections(curie: str) -> dict:
+    """
+    Query Kestrel one_hop_query via HTTP API.
+
+    Returns dict with edges grouped by predicate and direction.
+    """
+    try:
+        result = await call_kestrel_tool("one_hop_query", {
+            "curie": curie,
+        })
+
+        if result.get("isError"):
+            logger.warning("one_hop_query failed for %s: %s", curie, result)
+            return {"edges": [], "summary": "Query failed"}
+
+        content = result.get("content", [])
+        if not content:
+            return {"edges": [], "summary": "No content"}
+
+        # Parse the JSON response
+        text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            logger.warning("Could not parse one_hop_query response for %s", curie)
+            return {"edges": [], "summary": "Parse error"}
+
+        # Extract edges, handling various response formats
+        edges = []
+        if isinstance(data, list):
+            edges = data
+        elif isinstance(data, dict):
+            edges = data.get("edges", data.get("results", []))
+
+        # Summarize connections by predicate
+        predicate_counts: dict[str, int] = {}
+        for edge in edges:
+            pred = edge.get("predicate", "unknown")
+            predicate_counts[pred] = predicate_counts.get(pred, 0) + 1
+
+        summary = ", ".join(f"{pred}: {count}" for pred, count in sorted(predicate_counts.items(), key=lambda x: -x[1])[:5])
+
+        logger.info("one_hop_query for %s: %d edges (%s)", curie, len(edges), summary[:100])
+        return {
+            "edges": edges[:50],  # Limit to 50 edges to keep prompt size manageable
+            "summary": summary or "No edges found",
+            "total_count": len(edges),
+        }
+
+    except Exception as e:
+        logger.error("Exception in get_entity_connections for %s: %s", curie, e)
+        return {"edges": [], "summary": f"Error: {str(e)}"}
+
+
+def format_inference_prompt(
     curie: str,
     raw_name: str,
     edge_count: int,
-    result_text: str
-) -> tuple[list[AnalogueEntity], list[InferredAssociation], list[Finding]]:
+    analogues: list[dict],
+    analogue_connections: dict[str, dict]
+) -> str:
     """
-    Parse LLM response into structured cold-start analysis objects.
+    Format prompt with actual KG data for inference reasoning.
+
+    This ensures the SDK agent reasons over REAL knowledge graph data
+    rather than hallucinating connections from training knowledge.
+    """
+    # Format analogues section
+    analogues_text = ""
+    for i, analogue in enumerate(analogues, 1):
+        analogues_text += f"\n{i}. {analogue['name']} ({analogue['curie']})"
+        analogues_text += f"\n   - Similarity: {analogue['similarity']:.2f}"
+        analogues_text += f"\n   - Category: {analogue.get('category', 'Unknown')}"
+
+    # Format connections section
+    connections_text = ""
+    for analogue_curie, conn_data in analogue_connections.items():
+        analogue_name = next((a["name"] for a in analogues if a["curie"] == analogue_curie), analogue_curie)
+        connections_text += f"\n\n### {analogue_name} ({analogue_curie})"
+        connections_text += f"\nConnection Summary: {conn_data.get('summary', 'None')}"
+        connections_text += f"\nTotal Edges: {conn_data.get('total_count', 0)}"
+
+        # Show sample edges
+        edges = conn_data.get("edges", [])[:10]  # Limit to 10 sample edges
+        if edges:
+            connections_text += "\nSample Connections:"
+            for edge in edges:
+                subject = edge.get("subject", {})
+                obj = edge.get("object", {})
+                pred = edge.get("predicate", "related_to")
+                subj_name = subject.get("name", subject.get("id", "?"))
+                obj_name = obj.get("name", obj.get("id", "?"))
+                connections_text += f"\n  - {subj_name} --[{pred}]--> {obj_name}"
+
+    return f"""## Entity to Analyze
+**{raw_name}** ({curie})
+- Known edges in KG: {edge_count} (sparse - qualifies for cold-start analysis)
+
+## Similar Entities Found (via KG similar_nodes query)
+{analogues_text if analogues_text else "No similar entities found."}
+
+## Connections for Each Analogue (via KG one_hop_query)
+{connections_text if connections_text else "No connection data available."}
+
+## Your Task
+Based on the REAL knowledge graph evidence above, infer what diseases, pathways, and biological roles {raw_name} might have.
+
+Requirements:
+- Use ONLY the KG data provided above for inferences
+- Each inference must cite which analogue connection supports it
+- All findings are Tier 3 (speculative) requiring validation
+- Consider confidence based on how many analogues share similar connections
+"""
+
+
+def parse_inference_result(
+    curie: str,
+    raw_name: str,
+    result_text: str
+) -> tuple[list[InferredAssociation], list[Finding]]:
+    """
+    Parse LLM inference response into structured objects.
 
     Uses multi-tier JSON extraction for robustness against noisy LLM output.
-
-    Returns:
-        tuple of (analogues, inferred_associations, findings)
     """
-    analogues: list[AnalogueEntity] = []
     inferences: list[InferredAssociation] = []
     findings: list[Finding] = []
 
@@ -146,19 +296,8 @@ def parse_cold_start_result(
 
     # Fallback: Return empty results
     if data is None:
-        return analogues, inferences, findings
-
-    # Parse analogues
-    for a in data.get("analogues", []):
-        try:
-            analogues.append(AnalogueEntity(
-                curie=a.get("curie", ""),
-                name=a.get("name", "Unknown"),
-                similarity=float(a.get("similarity", 0.0)),
-                category=a.get("category"),
-            ))
-        except Exception:
-            continue
+        logger.warning("Could not parse inference result for %s", curie)
+        return inferences, findings
 
     # Parse inferred associations
     for i in data.get("inferences", []):
@@ -192,19 +331,7 @@ def parse_cold_start_result(
         except Exception:
             continue
 
-    # If we found analogues but no inferences, still report the analogues as findings
-    if analogues and not findings:
-        analogue_names = [a.name for a in analogues[:3]]
-        findings.append(Finding(
-            entity=curie,
-            claim=f"{raw_name} is semantically similar to: {', '.join(analogue_names)}",
-            tier=3,
-            source="cold_start",
-            confidence="low",
-            logic_chain=f"Found {len(analogues)} analogues via vector similarity search",
-        ))
-
-    return analogues, inferences, findings
+    return inferences, findings
 
 
 async def analyze_cold_start_entity(
@@ -213,49 +340,99 @@ async def analyze_cold_start_entity(
     edge_count: int
 ) -> tuple[list[AnalogueEntity], list[InferredAssociation], list[Finding], list[str]]:
     """
-    Analyze a single sparse/cold-start entity using Claude Agent SDK.
+    Analyze a single sparse/cold-start entity using direct HTTP API + SDK inference.
+
+    Three-step process:
+    1. Get similar entities via direct Kestrel API (similar_nodes)
+    2. Get connections for each analogue via direct Kestrel API (one_hop_query)
+    3. Use SDK for inference reasoning over the real KG data (no MCP tools needed)
 
     Returns:
         tuple of (analogues, inferences, findings, errors)
     """
-    if not HAS_SDK:
-        # SDK not available - return placeholder for testing
+    errors: list[str] = []
+
+    # Step 1: Get similar entities via direct HTTP API
+    logger.info("Cold-start Step 1: Getting similar entities for '%s' (%s)...", raw_name, curie)
+    similar_entities = await get_similar_entities(curie, limit=ANALOGUE_LIMIT)
+
+    if not similar_entities:
+        logger.info("Cold-start: No similar entities found for '%s' (%s)", raw_name, curie)
         return (
             [],
             [],
             [Finding(
                 entity=curie,
-                claim=f"Cold-start analysis pending for {raw_name} (SDK unavailable)",
+                claim=f"No similar entities found for {raw_name} (cold-start analysis limited)",
                 tier=3,
                 source="cold_start",
                 confidence="low",
+                logic_chain="Vector similarity search returned no results",
+            )],
+            [],
+        )
+
+    # Convert to AnalogueEntity objects
+    analogues = [
+        AnalogueEntity(
+            curie=s["curie"],
+            name=s["name"],
+            similarity=s["similarity"],
+            category=s.get("category"),
+        )
+        for s in similar_entities
+    ]
+
+    # Step 2: Get connections for each analogue via direct HTTP API
+    logger.info("Cold-start Step 2: Getting connections for %d analogues...", len(similar_entities))
+    analogue_connections: dict[str, dict] = {}
+
+    # Query connections in parallel for efficiency
+    connection_tasks = [
+        get_entity_connections(s["curie"])
+        for s in similar_entities
+    ]
+    connection_results = await asyncio.gather(*connection_tasks, return_exceptions=True)
+
+    for entity, result in zip(similar_entities, connection_results):
+        if isinstance(result, Exception):
+            logger.warning("Failed to get connections for %s: %s", entity["curie"], result)
+            analogue_connections[entity["curie"]] = {"edges": [], "summary": f"Error: {result}"}
+        else:
+            analogue_connections[entity["curie"]] = result
+
+    # Step 3: Use SDK for inference reasoning (no MCP tools needed)
+    if not HAS_SDK:
+        # SDK not available - return analogues only
+        logger.info("Cold-start: SDK unavailable, returning %d analogues without inferences", len(analogues))
+        analogue_names = [a.name for a in analogues[:3]]
+        return (
+            analogues,
+            [],
+            [Finding(
+                entity=curie,
+                claim=f"{raw_name} is semantically similar to: {', '.join(analogue_names)}",
+                tier=3,
+                source="cold_start",
+                confidence="low",
+                logic_chain=f"Found {len(analogues)} analogues via vector similarity search (SDK unavailable for inference)",
             )],
             [],
         )
 
     try:
         async with SDK_SEMAPHORE:
-            kestrel_config = McpStdioServerConfig(
-                type="stdio",
-                command=KESTREL_COMMAND,
-                args=KESTREL_ARGS,
+            # Format prompt with real KG data
+            inference_prompt = format_inference_prompt(
+                curie, raw_name, edge_count,
+                similar_entities, analogue_connections
             )
 
-            # Format prompt with edge count context
-            # Use str.replace() instead of .format() to avoid KeyError on JSON braces
-            system_prompt = COLD_START_PROMPT.replace("{edge_count}", str(edge_count))
-
             options = ClaudeAgentOptions(
-                system_prompt=system_prompt,
-                allowed_tools=[
-                    "mcp__kestrel__similar_nodes",
-                    "mcp__kestrel__one_hop_query",
-                    "mcp__kestrel__vector_search",
-                ],
-                mcp_servers={"kestrel": kestrel_config},
-                max_turns=5,
+                system_prompt=INFERENCE_PROMPT,
+                allowed_tools=[],  # No tools needed - KG data provided in prompt
+                max_turns=1,  # Single turn - just inference reasoning
                 permission_mode="bypassPermissions",
-                max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for large KG responses
             )
 
             result_text_parts: list[str] = []
@@ -265,7 +442,7 @@ async def analyze_cold_start_entity(
                 """Collect SDK query events into result_text_parts."""
                 nonlocal event_count
                 async for event in query(
-                    prompt=f"Analyze cold-start entity: {raw_name} ({curie}, {edge_count} edges)",
+                    prompt=inference_prompt,
                     options=options
                 ):
                     event_count += 1
@@ -274,61 +451,90 @@ async def analyze_cold_start_entity(
                             if hasattr(block, 'text'):
                                 result_text_parts.append(block.text)
 
-            logger.info("Cold-start invoking SDK query for '%s' (%s)...", raw_name, curie)
+            logger.info("Cold-start Step 3: Invoking SDK inference for '%s' (%s)...", raw_name, curie)
             try:
-                await asyncio.wait_for(collect_events(), timeout=SDK_QUERY_TIMEOUT)
-                logger.info("Cold-start SDK query for '%s' completed with %d events", raw_name, event_count)
+                await asyncio.wait_for(collect_events(), timeout=SDK_INFERENCE_TIMEOUT)
+                logger.info("Cold-start SDK inference for '%s' completed with %d events", raw_name, event_count)
             except asyncio.TimeoutError:
                 logger.error(
-                    "Cold-start SDK query TIMED OUT for '%s' (%s) after %ds",
-                    raw_name, curie, SDK_QUERY_TIMEOUT
+                    "Cold-start SDK inference TIMED OUT for '%s' (%s) after %ds",
+                    raw_name, curie, SDK_INFERENCE_TIMEOUT
                 )
-                # Don't create findings for timeouts - they pollute synthesis/literature grounding
+                # Return analogues even if inference times out
+                analogue_names = [a.name for a in analogues[:3]]
                 return (
+                    analogues,
                     [],
-                    [],
-                    [],  # No findings for errors
-                    [f"SDK query timed out for {curie} after {SDK_QUERY_TIMEOUT}s"],
+                    [Finding(
+                        entity=curie,
+                        claim=f"{raw_name} is semantically similar to: {', '.join(analogue_names)}",
+                        tier=3,
+                        source="cold_start",
+                        confidence="low",
+                        logic_chain=f"Found {len(analogues)} analogues (inference timed out)",
+                    )],
+                    [f"SDK inference timed out for {curie} after {SDK_INFERENCE_TIMEOUT}s"],
                 )
             except Exception as sdk_error:
-                partial_text = "".join(result_text_parts)
                 logger.error(
-                    "Cold-start SDK query failed for '%s' (%s): %s\nPartial response: %s\n%s",
+                    "Cold-start SDK inference failed for '%s' (%s): %s\n%s",
                     raw_name, curie, repr(str(sdk_error)[:500]),
-                    repr(partial_text[:300]) if partial_text else "empty",
                     traceback.format_exc()
                 )
-                # Don't create findings for errors - they pollute synthesis/literature grounding
+                # Return analogues even if inference fails
+                analogue_names = [a.name for a in analogues[:3]]
                 return (
+                    analogues,
                     [],
-                    [],
-                    [],  # No findings for errors
-                    [f"SDK query failed for {curie}: {str(sdk_error)}"],
+                    [Finding(
+                        entity=curie,
+                        claim=f"{raw_name} is semantically similar to: {', '.join(analogue_names)}",
+                        tier=3,
+                        source="cold_start",
+                        confidence="low",
+                        logic_chain=f"Found {len(analogues)} analogues (inference failed: {str(sdk_error)[:50]})",
+                    )],
+                    [f"SDK inference failed for {curie}: {str(sdk_error)}"],
                 )
 
             result_text = "".join(result_text_parts)
 
             # Log successful response for diagnosis
             logger.info(
-                "Cold-start raw response for '%s' (%s): length=%d, preview=%s",
+                "Cold-start inference response for '%s' (%s): length=%d, preview=%s",
                 raw_name, curie, len(result_text), repr(result_text[:300])
             )
 
-        analogues, inferences, findings = parse_cold_start_result(
-            curie, raw_name, edge_count, result_text
+        # Parse inference results
+        inferences, findings = parse_inference_result(
+            curie, raw_name, result_text
         )
 
-        return analogues, inferences, findings, []
+        # If no inferences were parsed, still report the analogues
+        if not findings:
+            analogue_names = [a.name for a in analogues[:3]]
+            findings.append(Finding(
+                entity=curie,
+                claim=f"{raw_name} is semantically similar to: {', '.join(analogue_names)}",
+                tier=3,
+                source="cold_start",
+                confidence="low",
+                logic_chain=f"Found {len(analogues)} analogues via vector similarity search",
+            ))
+
+        return analogues, inferences, findings, errors
 
     except Exception as e:
         error_msg = f"Cold-start analysis failed for {curie}: {str(e)}"
         logger.error("Cold-start analysis failed for '%s' (%s): %s", raw_name, curie, e)
+        # Return analogues even on error
+        analogue_names = [a.name for a in analogues[:3]] if analogues else []
         return (
-            [],
+            analogues,
             [],
             [Finding(
                 entity=curie,
-                claim=f"Analysis failed for {raw_name}: {str(e)[:100]}",
+                claim=f"{raw_name} analysis partial: {', '.join(analogue_names) if analogue_names else 'no analogues'}",
                 tier=3,
                 source="cold_start",
                 confidence="low",
