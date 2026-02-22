@@ -355,9 +355,13 @@ class AgentEvent:
     data: dict[str, Any]
 
 
-async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
+async def run_agent_turn(user_message: str, session_id: str | None = None) -> AsyncIterator[AgentEvent]:
     """
     Run a single agent turn and yield events for streaming to the client.
+
+    Args:
+        user_message: The user's message to process
+        session_id: Optional session ID for grouping traces (typically conversation_id)
 
     Note: This is a single-turn implementation. Each call to query() is
     independent - the agent does not retain memory of previous messages
@@ -370,15 +374,18 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
     settings = get_settings()
     metrics = TurnMetrics(model=settings.model or "default")
 
-    # Start Langfuse trace for observability
+    # Start Langfuse trace for observability with session tracking
     langfuse = _get_langfuse()
     trace = None
     if langfuse:
-        trace = langfuse.start_span(
-            name="kraken_agent_turn",
-            input={"user_message": user_message},
-            metadata={"turn_id": metrics.turn_id, "model": metrics.model},
-        )
+        trace_kwargs = {
+            "name": "kraken_agent_turn",
+            "input": {"user_message": user_message},
+            "metadata": {"turn_id": metrics.turn_id, "model": metrics.model},
+        }
+        if session_id:
+            trace_kwargs["session_id"] = session_id
+        trace = langfuse.start_span(**trace_kwargs)
 
     # Configure Kestrel MCP server via stdio proxy
     # The proxy handles Kestrel's non-standard MCP-over-HTTP protocol
@@ -545,21 +552,22 @@ async def run_agent_turn(user_message: str) -> AsyncIterator[AgentEvent]:
         else:
             yield AgentEvent(type="error", data={"message": str(e)})
 
-    # Emit trace with metrics
-    yield AgentEvent(
-        type="trace",
-        data={
-            "turn_id": metrics.turn_id,
-            "input_tokens": metrics.input_tokens,
-            "output_tokens": metrics.output_tokens,
-            "cache_creation_tokens": metrics.cache_creation_tokens,
-            "cache_read_tokens": metrics.cache_read_tokens,
-            "cost_usd": metrics.cost_usd,
-            "duration_ms": metrics.duration_ms,
-            "tool_calls_count": metrics.tool_calls_count,
-            "model": metrics.model,
-        }
-    )
+    # Emit trace with metrics including trace_id for feedback linkage
+    trace_data = {
+        "turn_id": metrics.turn_id,
+        "input_tokens": metrics.input_tokens,
+        "output_tokens": metrics.output_tokens,
+        "cache_creation_tokens": metrics.cache_creation_tokens,
+        "cache_read_tokens": metrics.cache_read_tokens,
+        "cost_usd": metrics.cost_usd,
+        "duration_ms": metrics.duration_ms,
+        "tool_calls_count": metrics.tool_calls_count,
+        "model": metrics.model,
+    }
+    # Include trace_id if Langfuse tracing is enabled
+    if trace:
+        trace_data["trace_id"] = trace.id
+    yield AgentEvent(type="trace", data=trace_data)
 
     # Finalize Langfuse trace with collected metrics
     if trace and langfuse:

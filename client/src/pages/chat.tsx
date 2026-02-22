@@ -65,6 +65,7 @@ export default function ChatPage() {
         messages={messages}
         isAgentResponding={isAgentResponding}
         isConnected={isConnected}
+        conversationId={conversationId}
         onSelectStarter={handleSelectStarter}
       />
 

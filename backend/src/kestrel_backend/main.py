@@ -41,7 +41,7 @@ def _get_pipeline_langfuse():
     return _pipeline_langfuse
 
 
-from .database import init_db, close_db, get_conversation_with_turns, create_conversation, add_turn
+from .database import init_db, close_db, get_conversation_with_turns, create_conversation, add_turn, record_feedback
 from .protocol import (
     TextMessage,
     ToolUseMessage,
@@ -279,6 +279,69 @@ async def get_conversation(conversation_id: str):
     return conversation
 
 
+@app.post("/api/feedback")
+async def submit_feedback(request: Request):
+    """
+    Submit user feedback (thumbs up/down) for a turn.
+
+    Expected payload:
+    {
+        "turn_id": "uuid-string",
+        "conversation_id": "uuid-string",
+        "feedback_type": "positive" | "negative",
+        "trace_id": "langfuse-trace-id" (optional)
+    }
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    # Validate required fields
+    turn_id_str = data.get("turn_id")
+    conversation_id_str = data.get("conversation_id")
+    feedback_type = data.get("feedback_type")
+    trace_id = data.get("trace_id")
+
+    if not turn_id_str or not conversation_id_str or not feedback_type:
+        raise HTTPException(status_code=400, detail="Missing required fields: turn_id, conversation_id, feedback_type")
+
+    if feedback_type not in ["positive", "negative"]:
+        raise HTTPException(status_code=400, detail="feedback_type must be 'positive' or 'negative'")
+
+    # Parse UUIDs
+    try:
+        turn_id = UUID(turn_id_str)
+        conversation_id = UUID(conversation_id_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format")
+
+    # Record feedback in database
+    feedback_id = await record_feedback(turn_id, conversation_id, feedback_type, trace_id)
+    if not feedback_id:
+        raise HTTPException(status_code=500, detail="Failed to record feedback")
+
+    # Send feedback to Langfuse if trace_id is provided
+    langfuse = _get_pipeline_langfuse()
+    if langfuse and trace_id:
+        try:
+            # Convert feedback_type to Langfuse score value (1 for positive, 0 for negative)
+            score_value = 1 if feedback_type == "positive" else 0
+            langfuse.score(
+                trace_id=trace_id,
+                name="user_feedback",
+                value=score_value,
+                comment=f"User feedback: {feedback_type}"
+            )
+            langfuse.flush()
+        except Exception as e:
+            logger.warning(f"Failed to send feedback to Langfuse: {e}")
+            # Don't fail the request if Langfuse submission fails
+
+    return {"status": "success", "feedback_id": str(feedback_id)}
+
+
+
 async def handle_classic_mode(
     websocket: WebSocket,
     content: str,
@@ -297,7 +360,11 @@ async def handle_classic_mode(
     # Track metrics for database persistence
     turn_metrics: dict = {}
 
-    async for event in run_agent_turn(full_prompt):
+    # Get conversation_id for session tracking
+    conv_id = conversation_ids.get(connection_id)
+    session_id = str(conv_id) if conv_id else None
+
+    async for event in run_agent_turn(full_prompt, session_id=session_id):
         # Convert agent events to protocol messages
         match event.type:
             case "text":
@@ -382,12 +449,19 @@ async def handle_pipeline_mode(
     trace = None
     node_spans: dict[str, Any] = {}
 
+    # Get conversation_id for session tracking
+    conv_id = conversation_ids.get(connection_id)
+    session_id = str(conv_id) if conv_id else None
+
     if langfuse:
-        trace = langfuse.start_span(
-            name="discovery_pipeline",
-            input={"query": content, "connection_id": connection_id},
-            metadata={"mode": "pipeline", "version": "2.0"},
-        )
+        trace_kwargs = {
+            "name": "discovery_pipeline",
+            "input": {"query": content, "connection_id": connection_id},
+            "metadata": {"mode": "pipeline", "version": "2.0"},
+        }
+        if session_id:
+            trace_kwargs["session_id"] = session_id
+        trace = langfuse.start_span(**trace_kwargs)
 
     try:
         history = conversation_history.get(connection_id, [])
@@ -465,14 +539,16 @@ async def handle_pipeline_mode(
             if hasattr(e, "curie") and e.curie is not None
         )
 
-        msg = PipelineCompleteMessage(
-            synthesis_report=synthesis_report,
-            hypotheses_count=len(hypotheses),
-            entities_resolved=len(resolved_entities),
-            duration_ms=duration_ms,
-            model="claude-sonnet-4-20250514",
-        )
-        await websocket.send_text(msg.model_dump_json())
+        # Build PipelineCompleteMessage kwargs (will send after turn creation)
+        pipeline_complete_kwargs = {
+            "synthesis_report": synthesis_report,
+            "hypotheses_count": len(hypotheses),
+            "entities_resolved": len(resolved_entities),
+            "duration_ms": duration_ms,
+            "model": "claude-sonnet-4-20250514",
+        }
+        if trace:
+            pipeline_complete_kwargs["trace_id"] = trace.id
 
         logger.info(
             "Pipeline complete in %.1fs — entities=%d, resolved=%d, hypotheses=%d",
@@ -502,10 +578,12 @@ async def handle_pipeline_mode(
         if synthesis_report:
             history.append(("assistant", synthesis_report))
 
+        # Persist turn and capture turn_id for feedback
+        turn_id = None
         conv_id = conversation_ids.get(connection_id)
         if conv_id and synthesis_report:
             turn_counters[connection_id] += 1
-            await add_turn(
+            turn_id = await add_turn(
                 conversation_id=conv_id,
                 turn_number=turn_counters[connection_id],
                 user_query=content,
@@ -519,6 +597,12 @@ async def handle_pipeline_mode(
                     "node_timings": node_timings,
                 }
             )
+
+        # Send PipelineCompleteMessage with turn_id if available
+        if turn_id:
+            pipeline_complete_kwargs["turn_id"] = str(turn_id)
+        msg = PipelineCompleteMessage(**pipeline_complete_kwargs)
+        await websocket.send_text(msg.model_dump_json())
 
         max_messages = MAX_HISTORY_EXCHANGES * 2
         if len(history) > max_messages:

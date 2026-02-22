@@ -15,6 +15,7 @@ interface ChatAreaProps {
   messages: ChatMessage[];
   isAgentResponding: boolean;
   isConnected: boolean;
+  conversationId: string | null;
   onSelectStarter: (query: string) => void;
 }
 
@@ -22,6 +23,7 @@ export function ChatArea({
   messages,
   isAgentResponding,
   isConnected,
+  conversationId,
   onSelectStarter,
 }: ChatAreaProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -81,7 +83,11 @@ export function ChatArea({
               );
             case "trace":
               return (
-                <TraceBar key={msg.id} trace={msg as TraceMessage} />
+                <TraceBar
+                  key={msg.id}
+                  trace={msg as TraceMessage}
+                  conversationId={conversationId}
+                />
               );
             case "error":
               return <ErrorCard key={msg.id} message={msg.message} />;
@@ -97,6 +103,7 @@ export function ChatArea({
                 <PipelineReportCard
                   key={msg.id}
                   message={msg as PipelineCompleteMessage}
+                  conversationId={conversationId}
                 />
               );
             case "done":

@@ -1,12 +1,14 @@
 import type { TraceMessage } from "@/types/messages";
 import { formatTokens, formatCost, formatDuration } from "@/utils/formatters";
 import { Zap } from "lucide-react";
+import { FeedbackButtons } from "@/components/FeedbackButtons";
 
 interface TraceBarProps {
   trace: TraceMessage;
+  conversationId: string | null;
 }
 
-export function TraceBar({ trace }: TraceBarProps) {
+export function TraceBar({ trace, conversationId }: TraceBarProps) {
   const parts: string[] = [];
 
   if (trace.duration_ms != null) {
@@ -38,7 +40,7 @@ export function TraceBar({ trace }: TraceBarProps) {
 
   return (
     <div
-      className="flex items-center justify-center py-2"
+      className="flex flex-col items-center py-2 gap-2"
       data-testid={`trace-bar-${trace.id}`}
     >
       <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60 select-none">
@@ -50,6 +52,11 @@ export function TraceBar({ trace }: TraceBarProps) {
           </span>
         )}
       </div>
+      <FeedbackButtons
+        turnId={trace.turn_id}
+        conversationId={conversationId}
+        traceId={trace.trace_id}
+      />
     </div>
   );
 }
