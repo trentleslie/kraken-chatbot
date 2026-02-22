@@ -74,9 +74,15 @@ class KestrelClient:
     async def _ensure_client(self):
         """Ensure HTTP client is created."""
         if self._http_client is None:
+            headers = _get_headers()
+            has_api_key = "X-API-Key" in headers
+            logger.info(
+                "Creating HTTP client with headers: %s, has_api_key=%s",
+                list(headers.keys()), has_api_key
+            )
             self._http_client = httpx.AsyncClient(
                 timeout=60.0,
-                headers=_get_headers(),
+                headers=headers,
             )
 
     async def _send_request(self, method: str, params: dict | None = None, _retry: bool = True) -> dict:
@@ -228,6 +234,24 @@ class KestrelClient:
                             formatted_content.append({"type": "text", "text": str(text)})
                     else:
                         formatted_content.append({"type": "text", "text": str(item)})
+
+                # Check for embedded errors in response content
+                # Kestrel sometimes returns auth errors as content with isError=false
+                if formatted_content:
+                    first_text = formatted_content[0].get("text", "")
+                    try:
+                        embedded = json.loads(first_text)
+                        if isinstance(embedded, dict) and embedded.get("error"):
+                            logger.warning(
+                                "Kestrel tool %s returned embedded error: %s",
+                                name, embedded.get("message", "unknown")
+                            )
+                            return {
+                                "content": formatted_content,
+                                "isError": True,  # Mark as error for callers
+                            }
+                    except (json.JSONDecodeError, TypeError):
+                        pass
 
                 return {
                     "content": formatted_content,

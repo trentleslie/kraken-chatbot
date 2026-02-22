@@ -119,6 +119,14 @@ async def get_similar_entities(curie: str, limit: int = ANALOGUE_LIMIT) -> list[
             logger.warning("Could not parse similar_nodes response for %s", curie)
             return []
 
+        # Check for embedded error in response data
+        if isinstance(data, dict) and data.get("error"):
+            logger.warning(
+                "similar_nodes API error for %s: %s",
+                curie, data.get("message", "unknown error")
+            )
+            return []
+
         # Extract similar entities
         similar = []
         results_list = data if isinstance(data, list) else data.get("results", data.get("similar_nodes", []))
@@ -166,6 +174,12 @@ async def get_entity_connections(curie: str) -> dict:
         except json.JSONDecodeError:
             logger.warning("Could not parse one_hop_query response for %s", curie)
             return {"edges": [], "summary": "Parse error"}
+
+        # Check for embedded error in response data
+        if isinstance(data, dict) and data.get("error"):
+            error_msg = data.get("message", "unknown error")
+            logger.warning("one_hop_query API error for %s: %s", curie, error_msg)
+            return {"edges": [], "summary": f"API error: {error_msg}"}
 
         # Extract edges, handling various response formats
         edges = []
