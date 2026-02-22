@@ -1,4 +1,4 @@
-export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "reconnecting" | "demo";
+export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "reconnecting" | "demo" | "auth_failed";
 
 export type AgentMode = "classic" | "pipeline";
 

@@ -19,6 +19,8 @@ dependencies = [
     "python-json-logger>=2.0.0",
     "alembic>=1.13.0",
     "sqlalchemy>=2.0.0",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.0",
 ]
 
 [dependency-groups]

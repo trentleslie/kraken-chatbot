@@ -110,15 +110,23 @@ async def close_db():
         logger.info("Database connection pool closed")
 
 
-async def create_conversation(session_id: str, model: str) -> Optional[UUID]:
+async def create_conversation(session_id: str, model: str, user_id: Optional[str] = None) -> Optional[UUID]:
     """Create new conversation on first message, return ID."""
     if not _pool:
         return None
     prompt_hash = get_prompt_hash()
-    row = await _pool.fetchrow("""
-        INSERT INTO kraken_conversations (session_id, model, system_prompt_hash, agent_version)
-        VALUES ($1, $2, $3, $4) RETURNING id
-    """, session_id, model, prompt_hash, AGENT_VERSION)
+
+    if user_id:
+        row = await _pool.fetchrow("""
+            INSERT INTO kraken_conversations (session_id, model, system_prompt_hash, agent_version, user_id)
+            VALUES ($1, $2, $3, $4, $5) RETURNING id
+        """, session_id, model, prompt_hash, AGENT_VERSION, user_id)
+    else:
+        row = await _pool.fetchrow("""
+            INSERT INTO kraken_conversations (session_id, model, system_prompt_hash, agent_version)
+            VALUES ($1, $2, $3, $4) RETURNING id
+        """, session_id, model, prompt_hash, AGENT_VERSION)
+
     return row["id"]
 
 
