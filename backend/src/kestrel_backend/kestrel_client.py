@@ -72,7 +72,7 @@ class KestrelClient:
         return self._request_id
 
     async def _ensure_client(self):
-        """Ensure HTTP client is created."""
+        """Ensure HTTP client is created with connection pooling."""
         if self._http_client is None:
             headers = _get_headers()
             has_api_key = "X-API-Key" in headers
@@ -80,9 +80,30 @@ class KestrelClient:
                 "Creating HTTP client with headers: %s, has_api_key=%s",
                 list(headers.keys()), has_api_key
             )
+
+            # Configure connection pooling for improved performance
+            # - max_keepalive_connections: Keep up to 20 idle connections alive
+            # - max_connections: Allow up to 100 total connections
+            # - keepalive_expiry: Keep connections alive for 30 seconds
+            limits = httpx.Limits(
+                max_keepalive_connections=20,
+                max_connections=100,
+                keepalive_expiry=30.0,
+            )
+
+            # Check if h2 package is available for HTTP/2 support
+            try:
+                import h2  # noqa: F401
+                http2_enabled = True
+            except ImportError:
+                http2_enabled = False
+                logger.debug("h2 package not installed, HTTP/2 support disabled")
+
             self._http_client = httpx.AsyncClient(
                 timeout=60.0,
                 headers=headers,
+                limits=limits,
+                http2=http2_enabled,  # Enable HTTP/2 for multiplexing (if h2 package available)
             )
 
     async def _send_request(self, method: str, params: dict | None = None, _retry: bool = True) -> dict:
