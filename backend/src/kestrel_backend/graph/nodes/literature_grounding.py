@@ -187,7 +187,9 @@ def build_references_table(hypotheses: list[Hypothesis]) -> str:
         combined_titles = combined_titles.replace("|", "\\|")
 
         # Format citation: "Authors (Year) Title"
-        title_truncated = lit.title[:100] + "..." if len(lit.title) > 100 else lit.title
+        # Sanitize title - remove newlines that break markdown table formatting
+        title_clean = lit.title.replace("\n", " ").replace("\r", " ")
+        title_truncated = title_clean[:100] + "..." if len(title_clean) > 100 else title_clean
         citation = f'{lit.authors} ({lit.year}) "{title_truncated}"'
         citation = citation.replace("|", "\\|")
 

@@ -3,10 +3,11 @@
 import asyncio
 import json
 import logging
+import operator
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from typing import List, Tuple, Any
+from typing import List, Tuple, Any, get_type_hints, get_args, get_origin
 from uuid import UUID
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
@@ -54,6 +55,35 @@ from .protocol import (
     NODE_STATUS_MESSAGES,
 )
 from .graph.node_detail_extractors import extract_node_details
+from .graph.state import DiscoveryState
+
+
+def _get_concat_fields() -> set[str]:
+    """
+    Get field names that use operator.add reducer from DiscoveryState.
+
+    These fields should be concatenated when accumulating state from multiple
+    node outputs. Other fields should be replaced (last-write-wins).
+
+    This prevents bugs like hypothesis doubling where a non-concat field
+    gets incorrectly concatenated (e.g., synthesis creates 224 hypotheses,
+    literature_grounding returns same 224 → blind concat yields 448).
+    """
+    hints = get_type_hints(DiscoveryState, include_extras=True)
+    concat_fields = set()
+    for name, hint in hints.items():
+        # Check if this is an Annotated type with operator.add
+        if get_origin(hint) is not None:
+            args = get_args(hint)
+            for arg in args:
+                if arg is operator.add:
+                    concat_fields.add(name)
+                    break
+    return concat_fields
+
+
+# Pre-compute concat fields at module load time for efficiency
+CONCAT_LIST_FIELDS = _get_concat_fields()
 
 
 # Rate limiting state: connection_id -> list of message timestamps
@@ -300,7 +330,9 @@ async def handle_pipeline_mode(
 
             for key, value in node_output.items():
                 existing = accumulated_state.get(key)
-                if isinstance(existing, list) and isinstance(value, list):
+                # Only concatenate lists for fields with operator.add reducer
+                # Other fields use last-write-wins (e.g., hypotheses, synthesis_report)
+                if isinstance(existing, list) and isinstance(value, list) and key in CONCAT_LIST_FIELDS:
                     accumulated_state[key] = existing + value
                 else:
                     accumulated_state[key] = value
