@@ -265,8 +265,8 @@ def build_search_query(hypothesis: Hypothesis, disease_context: str = "", entity
     if disease_context:
         text = f"{text} {disease_context}"
 
-    # Add longitudinal keywords for progression hypotheses
-    if "progression" in text.lower() or "longitudinal" in text.lower():
+    # Add longitudinal keywords for progression hypotheses (avoid redundant appending)
+    if ("progression" in text.lower() or "longitudinal" in text.lower()) and "progression" not in text.split()[-2:]:
         text = f"{text} progression"
 
     # Clean up duplicate whitespace
