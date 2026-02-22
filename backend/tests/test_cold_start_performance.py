@@ -171,11 +171,11 @@ class TestEarlyTermination:
                     mock_similar.return_value = quality_analogues
                     mock_connections.return_value = {"edges": [], "summary": "No edges"}
 
-                    # Mock SDK query to return immediately
+                    # Mock SDK query to return immediately - use side_effect to create fresh generator per call
                     async def mock_query_gen(*args, **kwargs):
                         yield MagicMock(content=[MagicMock(text='{"inferences": []}')])
 
-                    mock_query.return_value = mock_query_gen()
+                    mock_query.side_effect = lambda *a, **kw: mock_query_gen()
 
                     analogues, inferences, findings, errors = await analyze_cold_start_entity(
                         "TEST:001", "Test Entity", 5
@@ -220,12 +220,12 @@ async def test_performance_10_sparse_entities():
                 ]
                 mock_connections.return_value = {"edges": [], "summary": "No edges"}
 
-                # Mock SDK query to simulate processing time
+                # Mock SDK query to simulate processing time - use side_effect for fresh generator per call
                 async def mock_query_gen(*args, **kwargs):
                     await asyncio.sleep(0.1)  # Simulate some processing
                     yield MagicMock(content=[MagicMock(text='{"inferences": []}')])
 
-                mock_query.return_value = mock_query_gen()
+                mock_query.side_effect = lambda *a, **kw: mock_query_gen()
 
                 start = time.time()
                 result = await run(state)
