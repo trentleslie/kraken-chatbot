@@ -292,6 +292,30 @@ async def call_kestrel_tool(name: str, arguments: dict[str, Any]) -> dict[str, A
     return await client.call_tool(name, arguments)
 
 
+async def check_kestrel_health() -> tuple[bool, float | None, str | None]:
+    """Check Kestrel MCP server health.
+
+    Returns:
+        tuple: (is_healthy, latency_ms, error_message)
+    """
+    import time
+    start = time.time()
+
+    try:
+        # Use health_check tool if available, otherwise try to connect
+        async with asyncio.timeout(5.0):
+            client = await get_kestrel_client()
+            # Simple check: verify we have tools loaded
+            if not client.get_tools():
+                return False, None, "Kestrel tools not available"
+            latency_ms = int((time.time() - start) * 1000)
+            return True, latency_ms, None
+    except asyncio.TimeoutError:
+        return False, None, "Kestrel connection timeout (>5s)"
+    except Exception as e:
+        return False, None, f"Kestrel error: {str(e)}"
+
+
 async def multi_hop_query(
     start_node_ids: list[str] | None = None,
     end_node_ids: list[str] | None = None,

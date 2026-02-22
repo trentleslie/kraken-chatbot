@@ -201,6 +201,30 @@ async def end_conversation(conversation_id: UUID, status: str = "completed"):
     """, conversation_id, status)
 
 
+async def check_db_health() -> tuple[bool, float | None, str | None]:
+    """Check database health with a simple query.
+
+    Returns:
+        tuple: (is_healthy, latency_ms, error_message)
+    """
+    if not _pool:
+        return False, None, "Database pool not initialized"
+
+    import time
+    start = time.time()
+
+    try:
+        # Simple query with 5s timeout
+        async with asyncio.timeout(5.0):
+            await _pool.fetchval("SELECT 1")
+        latency_ms = int((time.time() - start) * 1000)
+        return True, latency_ms, None
+    except asyncio.TimeoutError:
+        return False, None, "Database query timeout (>5s)"
+    except Exception as e:
+        return False, None, f"Database error: {str(e)}"
+
+
 async def get_conversation_with_turns(conversation_id: UUID) -> dict | None:
     """Retrieve conversation with all turns and tool calls for sharing.
 
