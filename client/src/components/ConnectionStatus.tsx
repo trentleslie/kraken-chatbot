@@ -20,6 +20,11 @@ const statusConfig: Record<
     label: "Disconnected",
     pulse: false,
   },
+  auth_failed: {
+    color: "bg-status-busy",
+    label: "Auth Failed",
+    pulse: false,
+  },
   demo: {
     color: "bg-status-online",
     label: "Demo Mode",
