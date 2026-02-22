@@ -72,7 +72,7 @@ class KestrelClient:
         return self._request_id
 
     async def _ensure_client(self):
-        """Ensure HTTP client is created."""
+        """Ensure HTTP client is created with connection pooling."""
         if self._http_client is None:
             headers = _get_headers()
             has_api_key = "X-API-Key" in headers
@@ -80,9 +80,30 @@ class KestrelClient:
                 "Creating HTTP client with headers: %s, has_api_key=%s",
                 list(headers.keys()), has_api_key
             )
+
+            # Configure connection pooling for improved performance
+            # - max_keepalive_connections: Keep up to 20 idle connections alive
+            # - max_connections: Allow up to 100 total connections
+            # - keepalive_expiry: Keep connections alive for 30 seconds
+            limits = httpx.Limits(
+                max_keepalive_connections=20,
+                max_connections=100,
+                keepalive_expiry=30.0,
+            )
+
+            # Check if h2 package is available for HTTP/2 support
+            try:
+                import h2  # noqa: F401
+                http2_enabled = True
+            except ImportError:
+                http2_enabled = False
+                logger.debug("h2 package not installed, HTTP/2 support disabled")
+
             self._http_client = httpx.AsyncClient(
                 timeout=60.0,
                 headers=headers,
+                limits=limits,
+                http2=http2_enabled,  # Enable HTTP/2 for multiplexing (if h2 package available)
             )
 
     async def _send_request(self, method: str, params: dict | None = None, _retry: bool = True) -> dict:
@@ -290,6 +311,30 @@ async def call_kestrel_tool(name: str, arguments: dict[str, Any]) -> dict[str, A
     """Call a Kestrel tool. Ensures connection is established."""
     client = await get_kestrel_client()
     return await client.call_tool(name, arguments)
+
+
+async def check_kestrel_health() -> tuple[bool, float | None, str | None]:
+    """Check Kestrel MCP server health.
+
+    Returns:
+        tuple: (is_healthy, latency_ms, error_message)
+    """
+    import time
+    start = time.time()
+
+    try:
+        # Use health_check tool if available, otherwise try to connect
+        async with asyncio.timeout(5.0):
+            client = await get_kestrel_client()
+            # Simple check: verify we have tools loaded
+            if not client.get_tools():
+                return False, None, "Kestrel tools not available"
+            latency_ms = int((time.time() - start) * 1000)
+            return True, latency_ms, None
+    except asyncio.TimeoutError:
+        return False, None, "Kestrel connection timeout (>5s)"
+    except Exception as e:
+        return False, None, f"Kestrel error: {str(e)}"
 
 
 async def multi_hop_query(

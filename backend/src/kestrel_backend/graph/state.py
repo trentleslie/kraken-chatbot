@@ -354,3 +354,4 @@ class DiscoveryState(TypedDict, total=False):
     # Uses operator.add reducer to accumulate errors from all nodes
     errors: Annotated[list[str], operator.add]
     node_timings: dict[str, float]  # Performance tracking
+    cold_start_skipped_count: int  # Number of entities skipped by cold-start optimization

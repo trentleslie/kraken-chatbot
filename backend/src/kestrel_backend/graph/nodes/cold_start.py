@@ -41,17 +41,17 @@ except ImportError:
     HAS_SDK = False
 
 
-# Semaphore to limit concurrent SDK calls
-SDK_SEMAPHORE = asyncio.Semaphore(6)
+# Semaphore to limit concurrent SDK calls (increased from 6 to 8)
+SDK_SEMAPHORE = asyncio.Semaphore(8)
 
-# Batch size for parallel analysis
-BATCH_SIZE = 3
+# Batch size for parallel analysis (increased from 3 to 5)
+BATCH_SIZE = 5
 
-# Timeout for SDK inference query per entity (2 minutes - reduced since no tool calls)
-SDK_INFERENCE_TIMEOUT = 120
+# Timeout for SDK inference query per entity (reduced from 120s to 60s)
+SDK_INFERENCE_TIMEOUT = 60
 
-# Number of similar entities to retrieve for each sparse entity
-ANALOGUE_LIMIT = 5
+# Number of similar entities to retrieve for each sparse entity (reduced from 5 to 3)
+ANALOGUE_LIMIT = 3
 
 
 # System prompt for inference reasoning (no tools needed - KG data provided in prompt)
@@ -424,6 +424,29 @@ async def analyze_cold_start_entity(
         for s in similar_entities
     ]
 
+    # Early termination: Skip SDK inference if no quality analogues
+    # Quality threshold: similarity >= 0.7
+    quality_analogues = [a for a in analogues if a.similarity >= 0.7]
+    if not quality_analogues:
+        logger.info(
+            "Cold-start: No quality analogues (similarity < 0.7) for '%s' (%s), skipping SDK inference",
+            raw_name, curie
+        )
+        analogue_names = [a.name for a in analogues[:3]]
+        return (
+            analogues,
+            [],
+            [Finding(
+                entity=curie,
+                claim=f"{raw_name} has low-quality analogues: {', '.join(analogue_names)} (max similarity < 0.7)",
+                tier=3,
+                source="cold_start",
+                confidence="low",
+                logic_chain=f"Found {len(analogues)} analogues but none with similarity >= 0.7 (skipped inference)",
+            )],
+            [],
+        )
+
     # Step 2: Get connections for each analogue via direct HTTP API
     logger.info("Cold-start Step 2: Getting connections for %d analogues...", len(similar_entities))
     analogue_connections: dict[str, dict] = {}
@@ -589,6 +612,27 @@ def chunk(items: list, size: int) -> list[list]:
     return [items[i:i + size] for i in range(0, len(items), size)]
 
 
+def score_entity_complexity(edge_count: int) -> float:
+    """
+    Score entity complexity for prioritization.
+
+    Lower score = higher priority (entities with fewer edges get analyzed first).
+    This ensures we focus on the most sparse entities that benefit most from cold-start analysis.
+
+    Args:
+        edge_count: Number of edges in KG
+
+    Returns:
+        Complexity score (lower = higher priority)
+    """
+    # Cold-start entities (0 edges) get highest priority
+    if edge_count == 0:
+        return 0.0
+    # Sparse entities sorted by edge count (1-19 edges)
+    # Score increases linearly with edge count
+    return float(edge_count)
+
+
 def get_entity_info(
     curie_or_name: str,
     novelty_scores: list[NoveltyScore],
@@ -622,28 +666,74 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     Uses semantic similarity to find analogues and infer potential associations.
     All findings are Tier 3 with explicit structural logic chains.
 
+    Performance optimization: Limits to top 5 sparse + top 3 cold-start entities
+    by edge count to reduce SDK serialization overhead.
+
     Receives: sparse_curies + cold_start_curies from triage
     Returns: cold_start_findings, inferred_associations, analogues_found, errors
     """
     sparse = state.get("sparse_curies", [])
     cold_start = state.get("cold_start_curies", [])
-    entities = sparse + cold_start
 
     logger.info("Starting cold_start with %d sparse + %d cold entities", len(sparse), len(cold_start))
     start = time.time()
 
-    if not entities:
+    if not sparse and not cold_start:
         logger.info("No sparse/cold entities, skipping cold_start")
         return {
             "cold_start_findings": [],
             "inferred_associations": [],
             "analogues_found": [],
             "errors": [],
+            "cold_start_skipped_count": 0,
         }
 
     # Get novelty scores and resolved entities for context lookup
     novelty_scores = state.get("novelty_scores", [])
     resolved_entities = state.get("resolved_entities", [])
+
+    # Prioritize entities: limit to top 5 sparse + top 3 cold-start by edge count
+    # This reduces SDK serialization overhead while focusing on most important entities
+    sparse_with_scores = []
+    for curie in sparse:
+        _, _, edge_count = get_entity_info(curie, novelty_scores, resolved_entities)
+        sparse_with_scores.append((curie, score_entity_complexity(edge_count)))
+
+    cold_start_with_scores = []
+    for curie in cold_start:
+        _, _, edge_count = get_entity_info(curie, novelty_scores, resolved_entities)
+        cold_start_with_scores.append((curie, score_entity_complexity(edge_count)))
+
+    # Sort by complexity score (lower = higher priority)
+    sparse_with_scores.sort(key=lambda x: x[1])
+    cold_start_with_scores.sort(key=lambda x: x[1])
+
+    # Limit to top entities
+    MAX_SPARSE = 5
+    MAX_COLD_START = 3
+
+    selected_sparse = [curie for curie, _ in sparse_with_scores[:MAX_SPARSE]]
+    selected_cold_start = [curie for curie, _ in cold_start_with_scores[:MAX_COLD_START]]
+
+    skipped_count = (len(sparse) - len(selected_sparse)) + (len(cold_start) - len(selected_cold_start))
+
+    if skipped_count > 0:
+        logger.info(
+            "Cold-start optimization: Processing top %d sparse + top %d cold-start entities (skipping %d entities)",
+            len(selected_sparse), len(selected_cold_start), skipped_count
+        )
+
+    entities = selected_sparse + selected_cold_start
+
+    if not entities:
+        logger.info("No entities to process after prioritization")
+        return {
+            "cold_start_findings": [],
+            "inferred_associations": [],
+            "analogues_found": [],
+            "errors": [],
+            "cold_start_skipped_count": skipped_count,
+        }
 
     all_analogues: list[AnalogueEntity] = []
     all_inferences: list[InferredAssociation] = []
@@ -694,8 +784,8 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     duration = time.time() - start
     logger.info(
-        "Completed cold_start in %.1fs — analogues=%d, inferences=%d",
-        duration, len(all_analogues), len(all_inferences)
+        "Completed cold_start in %.1fs — analogues=%d, inferences=%d, skipped=%d",
+        duration, len(all_analogues), len(all_inferences), skipped_count
     )
 
     return {
@@ -703,4 +793,5 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         "inferred_associations": all_inferences,
         "analogues_found": all_analogues,
         "errors": errors,
+        "cold_start_skipped_count": skipped_count,
     }
