@@ -15,7 +15,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 
 from .config import get_settings
-from .database import _pool
+from . import database as _db
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,9 @@ logger = logging.getLogger(__name__)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # HTTP Bearer token scheme for REST endpoints
-security = HTTPBearer()
+# auto_error=False allows requests without Bearer tokens to reach auth logic
+# (needed to support auth_disabled mode without blocking all requests)
+security = HTTPBearer(auto_error=False)
 
 
 def hash_api_key(api_key: str) -> str:
@@ -79,16 +81,20 @@ async def validate_api_key(credentials: HTTPAuthorizationCredentials = Security(
     if not settings.auth_enabled:
         return {"authenticated": False, "user_id": None}
 
+    # Require credentials when auth is enabled
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Missing API key")
+
     api_key = credentials.credentials
     api_key_hash = hash_api_key(api_key)
 
     # Check if API key exists in database - fail closed if DB unavailable
-    if not _pool:
+    if not _db._pool:
         logger.error("Database pool not initialized - authentication cannot proceed")
         raise HTTPException(status_code=503, detail="Authentication service unavailable")
 
     try:
-        user = await _pool.fetchrow(
+        user = await _db._pool.fetchrow(
             "SELECT id, is_active FROM kraken_users WHERE api_key_hash = $1",
             api_key_hash
         )
@@ -100,7 +106,7 @@ async def validate_api_key(credentials: HTTPAuthorizationCredentials = Security(
             raise HTTPException(status_code=401, detail="API key is inactive")
 
         # Update last_active timestamp
-        await _pool.execute(
+        await _db._pool.execute(
             "UPDATE kraken_users SET last_active = NOW() WHERE id = $1",
             user["id"]
         )
@@ -147,11 +153,11 @@ async def validate_ws_token(token: Optional[str]) -> Optional[dict]:
             raise ValueError("Invalid token payload")
 
         # Verify user exists and is active - fail closed if DB unavailable
-        if not _pool:
+        if not _db._pool:
             logger.error("Database pool not initialized - WebSocket authentication cannot proceed")
             raise ValueError("Authentication service unavailable")
 
-        user = await _pool.fetchrow(
+        user = await _db._pool.fetchrow(
             "SELECT id, is_active FROM kraken_users WHERE id = $1",
             user_id
         )
@@ -163,7 +169,7 @@ async def validate_ws_token(token: Optional[str]) -> Optional[dict]:
             raise ValueError("User is inactive")
 
         # Update last_active timestamp
-        await _pool.execute(
+        await _db._pool.execute(
             "UPDATE kraken_users SET last_active = NOW() WHERE id = $1",
             user["id"]
         )
@@ -195,14 +201,14 @@ async def create_user(api_key: str) -> str:
     Raises:
         ValueError: If user creation fails
     """
-    if not _pool:
+    if not _db._pool:
         raise ValueError("Database pool not initialized")
 
     api_key_hash = hash_api_key(api_key)
 
     try:
         # Check if API key already exists
-        existing = await _pool.fetchrow(
+        existing = await _db._pool.fetchrow(
             "SELECT id FROM kraken_users WHERE api_key_hash = $1",
             api_key_hash
         )
@@ -211,7 +217,7 @@ async def create_user(api_key: str) -> str:
             raise ValueError("API key already exists")
 
         # Create new user
-        row = await _pool.fetchrow(
+        row = await _db._pool.fetchrow(
             """
             INSERT INTO kraken_users (api_key_hash, created_at, last_active, is_active)
             VALUES ($1, NOW(), NOW(), TRUE)

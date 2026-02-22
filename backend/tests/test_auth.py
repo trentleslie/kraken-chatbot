@@ -92,7 +92,7 @@ class TestJWTFunctions:
 class TestValidateApiKey:
     """Test API key validation for REST endpoints."""
 
-    @patch("kestrel_backend.auth._pool")
+    @patch("kestrel_backend.database._pool")
     async def test_validate_api_key_auth_disabled(self, mock_pool):
         """Test validation when auth is disabled."""
         with patch("kestrel_backend.auth.get_settings") as mock_settings:
@@ -107,7 +107,7 @@ class TestValidateApiKey:
             assert result["user_id"] is None
             mock_pool.fetchrow.assert_not_called()
 
-    @patch("kestrel_backend.auth._pool")
+    @patch("kestrel_backend.database._pool")
     async def test_validate_api_key_success(self, mock_pool):
         """Test successful API key validation."""
         with patch("kestrel_backend.auth.get_settings") as mock_settings:
@@ -129,7 +129,7 @@ class TestValidateApiKey:
             assert result["user_id"] == "user-uuid-123"
             assert mock_pool.execute.called  # Should update last_active
 
-    @patch("kestrel_backend.auth._pool")
+    @patch("kestrel_backend.database._pool")
     async def test_validate_api_key_not_found(self, mock_pool):
         """Test validation with non-existent API key."""
         with patch("kestrel_backend.auth.get_settings") as mock_settings:
@@ -146,7 +146,7 @@ class TestValidateApiKey:
             assert exc_info.value.status_code == 401
             assert "Invalid API key" in str(exc_info.value.detail)
 
-    @patch("kestrel_backend.auth._pool")
+    @patch("kestrel_backend.database._pool")
     async def test_validate_api_key_inactive_user(self, mock_pool):
         """Test validation with inactive user."""
         with patch("kestrel_backend.auth.get_settings") as mock_settings:
@@ -166,7 +166,7 @@ class TestValidateApiKey:
             assert exc_info.value.status_code == 401
             assert "inactive" in str(exc_info.value.detail).lower()
 
-    @patch("kestrel_backend.auth._pool", None)
+    @patch("kestrel_backend.database._pool", None)
     async def test_validate_api_key_no_pool(self):
         """Test validation when database pool is not initialized - should fail closed."""
         with patch("kestrel_backend.auth.get_settings") as mock_settings:
@@ -187,7 +187,7 @@ class TestValidateApiKey:
 class TestValidateWsToken:
     """Test WebSocket token validation."""
 
-    @patch("kestrel_backend.auth._pool")
+    @patch("kestrel_backend.database._pool")
     async def test_validate_ws_token_auth_disabled(self, mock_pool):
         """Test validation when auth is disabled."""
         with patch("kestrel_backend.auth.get_settings") as mock_settings:
@@ -198,7 +198,7 @@ class TestValidateWsToken:
             assert result is None
             mock_pool.fetchrow.assert_not_called()
 
-    @patch("kestrel_backend.auth._pool")
+    @patch("kestrel_backend.database._pool")
     async def test_validate_ws_token_missing(self, mock_pool):
         """Test validation with missing token."""
         with patch("kestrel_backend.auth.get_settings") as mock_settings:
@@ -209,7 +209,7 @@ class TestValidateWsToken:
 
             assert "Missing authentication token" in str(exc_info.value)
 
-    @patch("kestrel_backend.auth._pool")
+    @patch("kestrel_backend.database._pool")
     async def test_validate_ws_token_success(self, mock_pool):
         """Test successful WebSocket token validation."""
         with patch("kestrel_backend.auth.get_settings") as mock_settings:
@@ -234,7 +234,7 @@ class TestValidateWsToken:
             assert result["user_id"] == "user-uuid-123"
             assert mock_pool.execute.called  # Should update last_active
 
-    @patch("kestrel_backend.auth._pool")
+    @patch("kestrel_backend.database._pool")
     async def test_validate_ws_token_expired(self, mock_pool):
         """Test validation with expired token."""
         with patch("kestrel_backend.auth.get_settings") as mock_settings:
@@ -252,7 +252,7 @@ class TestValidateWsToken:
 
             assert "Invalid or expired token" in str(exc_info.value)
 
-    @patch("kestrel_backend.auth._pool")
+    @patch("kestrel_backend.database._pool")
     async def test_validate_ws_token_invalid_user(self, mock_pool):
         """Test validation with non-existent user."""
         with patch("kestrel_backend.auth.get_settings") as mock_settings:
@@ -271,7 +271,7 @@ class TestValidateWsToken:
 
             assert "User not found" in str(exc_info.value)
 
-    @patch("kestrel_backend.auth._pool")
+    @patch("kestrel_backend.database._pool")
     async def test_validate_ws_token_inactive_user(self, mock_pool):
         """Test validation with inactive user."""
         with patch("kestrel_backend.auth.get_settings") as mock_settings:
@@ -298,7 +298,7 @@ class TestValidateWsToken:
 class TestCreateUser:
     """Test user creation."""
 
-    @patch("kestrel_backend.auth._pool")
+    @patch("kestrel_backend.database._pool")
     async def test_create_user_success(self, mock_pool):
         """Test successful user creation."""
         mock_pool.fetchrow = AsyncMock(side_effect=[
@@ -311,7 +311,7 @@ class TestCreateUser:
 
         assert user_id == "new-user-uuid"
 
-    @patch("kestrel_backend.auth._pool")
+    @patch("kestrel_backend.database._pool")
     async def test_create_user_duplicate_key(self, mock_pool):
         """Test user creation with duplicate API key."""
         mock_pool.fetchrow = AsyncMock(return_value={
@@ -325,7 +325,7 @@ class TestCreateUser:
 
         assert "already exists" in str(exc_info.value)
 
-    @patch("kestrel_backend.auth._pool", None)
+    @patch("kestrel_backend.database._pool", None)
     async def test_create_user_no_pool(self):
         """Test user creation when database pool is not initialized."""
         with pytest.raises(ValueError) as exc_info:
