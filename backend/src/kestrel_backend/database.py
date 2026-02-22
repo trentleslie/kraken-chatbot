@@ -201,6 +201,40 @@ async def end_conversation(conversation_id: UUID, status: str = "completed"):
     """, conversation_id, status)
 
 
+async def record_feedback(
+    turn_id: UUID,
+    conversation_id: UUID,
+    feedback_type: str,
+    trace_id: str | None = None
+) -> Optional[UUID]:
+    """Record user feedback for a turn.
+
+    Args:
+        turn_id: UUID of the turn being rated
+        conversation_id: UUID of the conversation
+        feedback_type: "positive" or "negative"
+        trace_id: Optional Langfuse trace ID for feedback correlation
+
+    Returns:
+        Feedback record UUID if successful, None otherwise
+    """
+    if not _pool or not turn_id or not conversation_id:
+        return None
+
+    # Upsert: if feedback already exists for this turn, update it
+    row = await _pool.fetchrow("""
+        INSERT INTO kraken_feedback (turn_id, conversation_id, feedback_type, trace_id)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (turn_id)
+        DO UPDATE SET feedback_type = EXCLUDED.feedback_type,
+                      trace_id = EXCLUDED.trace_id,
+                      created_at = NOW()
+        RETURNING id
+    """, turn_id, conversation_id, feedback_type, trace_id)
+
+    return row["id"] if row else None
+
+
 async def get_conversation_with_turns(conversation_id: UUID) -> dict | None:
     """Retrieve conversation with all turns and tool calls for sharing.
 

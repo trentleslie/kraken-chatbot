@@ -303,6 +303,7 @@ export function useWebSocket() {
           id: generateId(),
           type: "trace" as const,
           turn_id: data.turn_id,
+          trace_id: data.trace_id,
           input_tokens: data.input_tokens,
           output_tokens: data.output_tokens,
           cache_creation_tokens: data.cache_creation_tokens,
@@ -380,6 +381,8 @@ export function useWebSocket() {
             hypotheses_count: data.hypotheses_count,
             entities_resolved: data.entities_resolved,
             duration_ms: data.duration_ms,
+            turn_id: data.turn_id,
+            trace_id: data.trace_id,
             timestamp: Date.now(),
           },
         ]);

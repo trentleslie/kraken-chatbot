@@ -190,6 +190,7 @@ export default function SharedConversation() {
         messages={messages}
         isAgentResponding={false}
         isConnected={false}
+        conversationId={data.id}
         onSelectStarter={() => {}}
       />
       {/* No ChatInput - read-only view */}
