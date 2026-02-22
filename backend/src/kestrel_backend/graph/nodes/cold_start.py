@@ -258,7 +258,6 @@ Requirements:
 def parse_inference_result(
     curie: str,
     raw_name: str,
-    analogues: list[dict],
     result_text: str
 ) -> tuple[list[InferredAssociation], list[Finding]]:
     """
@@ -508,7 +507,7 @@ async def analyze_cold_start_entity(
 
         # Parse inference results
         inferences, findings = parse_inference_result(
-            curie, raw_name, similar_entities, result_text
+            curie, raw_name, result_text
         )
 
         # If no inferences were parsed, still report the analogues
