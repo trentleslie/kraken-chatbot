@@ -110,15 +110,32 @@ async def close_db():
         logger.info("Database connection pool closed")
 
 
-async def create_conversation(session_id: str, model: str) -> Optional[UUID]:
+async def create_conversation(session_id: str, model: str, user_id: Optional[str] = None) -> Optional[UUID]:
     """Create new conversation on first message, return ID."""
     if not _pool:
         return None
     prompt_hash = get_prompt_hash()
-    row = await _pool.fetchrow("""
-        INSERT INTO kraken_conversations (session_id, model, system_prompt_hash, agent_version)
-        VALUES ($1, $2, $3, $4) RETURNING id
-    """, session_id, model, prompt_hash, AGENT_VERSION)
+
+    # Validate user_id as UUID if provided (prevents SQL injection)
+    validated_user_id = None
+    if user_id:
+        try:
+            validated_user_id = UUID(user_id)
+        except ValueError:
+            logger.warning(f"Invalid user_id format received: {user_id[:50] if user_id else 'None'}...")
+            validated_user_id = None
+
+    if validated_user_id:
+        row = await _pool.fetchrow("""
+            INSERT INTO kraken_conversations (session_id, model, system_prompt_hash, agent_version, user_id)
+            VALUES ($1, $2, $3, $4, $5) RETURNING id
+        """, session_id, model, prompt_hash, AGENT_VERSION, validated_user_id)
+    else:
+        row = await _pool.fetchrow("""
+            INSERT INTO kraken_conversations (session_id, model, system_prompt_hash, agent_version)
+            VALUES ($1, $2, $3, $4) RETURNING id
+        """, session_id, model, prompt_hash, AGENT_VERSION)
+
     return row["id"]
 
 

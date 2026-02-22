@@ -9,13 +9,14 @@ from contextlib import asynccontextmanager
 from typing import List, Tuple, Any
 from uuid import UUID
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from langfuse import get_client
 
 from .config import get_settings
 from .agent import run_agent_turn
 from .logging_config import configure_logging, generate_correlation_id, correlation_id
+from .auth import validate_api_key, validate_ws_token
 
 # Configure logging early
 settings = get_settings()
@@ -265,7 +266,7 @@ async def readiness_check():
 
 
 @app.get("/api/conversations/{conversation_id}")
-async def get_conversation(conversation_id: str):
+async def get_conversation(conversation_id: str, auth: dict = Depends(validate_api_key)):
     """Retrieve conversation by UUID for shared viewing."""
     try:
         uuid_id = UUID(conversation_id)
@@ -645,15 +646,37 @@ async def websocket_chat(websocket: WebSocket):
     WebSocket endpoint for chat interactions.
 
     Protocol:
+    - Client connects with optional ?token=<jwt_token> query parameter
     - Client sends: {"type": "user_message", "content": "...", "agent_mode": "classic"|"pipeline"}
     - Server sends: text, tool_use, tool_result, trace, done, pipeline_progress, pipeline_complete messages
+    - Auth failure returns close code 4001
     """
+    # Extract token from query parameters
+    token = websocket.query_params.get("token")
+    user_info = None
+
+    # Validate authentication if enabled
+    settings = get_settings()
+    if settings.auth_enabled:
+        try:
+            user_info = await validate_ws_token(token)
+        except ValueError as e:
+            logger.warning(f"WebSocket authentication failed: {e}")
+            # Accept first so client receives the close code properly
+            await websocket.accept()
+            await websocket.close(code=4001, reason="Authentication failed")
+            return
+
     await websocket.accept()
     connection_id = str(id(websocket))
 
     logger.info(
         "WebSocket connection established",
-        extra={"connection_id": connection_id}
+        extra={
+            "connection_id": connection_id,
+            "authenticated": user_info is not None,
+            "user_id": user_info.get("user_id") if user_info else None
+        }
     )
 
     try:
@@ -699,7 +722,8 @@ async def websocket_chat(websocket: WebSocket):
             # Create conversation on first message
             settings = get_settings()
             if connection_id not in conversation_ids:
-                conv_id = await create_conversation(connection_id, settings.model or "default")
+                user_id = user_info.get("user_id") if user_info else None
+                conv_id = await create_conversation(connection_id, settings.model or "default", user_id)
                 if conv_id:
                     conversation_ids[connection_id] = conv_id
                     # Send conversation_id to frontend for copy link functionality

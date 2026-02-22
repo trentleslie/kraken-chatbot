@@ -22,6 +22,13 @@ class Settings(BaseModel):
     # Claude model (None = use SDK default)
     model: str | None = None
 
+    # Authentication
+    auth_enabled: bool = False
+    jwt_secret_key: str = "development-secret-key-change-in-production"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 10080  # 7 days
+    api_keys: list[str] = []  # Comma-separated in env
+
     # Langfuse observability
     langfuse_enabled: bool = True
     langfuse_public_key: str | None = None
@@ -51,12 +58,23 @@ def get_settings() -> Settings:
                 module, level = item.split(":", 1)
                 module_levels[module.strip()] = level.strip()
 
+    # Parse API keys from env var (format: "key1,key2,key3")
+    api_keys = []
+    api_keys_str = os.getenv("API_KEYS", "")
+    if api_keys_str:
+        api_keys = [k.strip() for k in api_keys_str.split(",") if k.strip()]
+
     return Settings(
         host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "8000")),
         allowed_origins=origins,
         rate_limit_per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "10")),
         model=os.getenv("CLAUDE_MODEL"),  # None = use SDK default
+        auth_enabled=os.getenv("AUTH_ENABLED", "false").lower() == "true",
+        jwt_secret_key=os.getenv("JWT_SECRET_KEY", "development-secret-key-change-in-production"),
+        jwt_algorithm=os.getenv("JWT_ALGORITHM", "HS256"),
+        jwt_expire_minutes=int(os.getenv("JWT_EXPIRE_MINUTES", "10080")),
+        api_keys=api_keys,
         langfuse_enabled=os.getenv("LANGFUSE_ENABLED", "true").lower() == "true",
         langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
         langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
