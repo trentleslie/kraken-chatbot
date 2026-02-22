@@ -40,6 +40,9 @@ jobs:
           cd backend
           ~/.local/bin/uv sync
 
+          # Run database migrations
+          ~/.local/bin/uv run alembic upgrade head
+
           # Restart backend service
           sudo systemctl restart kraken-backend
 

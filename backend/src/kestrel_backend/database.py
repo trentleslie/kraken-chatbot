@@ -1,4 +1,5 @@
 """Database persistence for KRAKEN conversations."""
+import asyncio
 import asyncpg
 import hashlib
 import json
@@ -35,13 +36,67 @@ def truncate_tool_result(result: dict) -> tuple[dict, bool]:
     return truncated, True
 
 
+async def run_migrations():
+    """Run Alembic migrations to ensure database schema is up to date.
+
+    This function runs 'alembic upgrade head' using asyncio subprocess to apply
+    all pending migrations without blocking the event loop. It should be called
+    during application startup.
+
+    Migration failures are non-fatal: the app will start even if migrations fail,
+    since the production database may already have the required tables.
+    """
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        logger.warning("DATABASE_URL not set, skipping migrations")
+        return
+
+    try:
+        # Get the backend directory (where alembic.ini is located)
+        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+
+        # Prepare environment with DATABASE_URL
+        env = {**os.environ, "DATABASE_URL": database_url}
+
+        # Run alembic upgrade head using async subprocess (non-blocking)
+        # Using create_subprocess_exec with explicit args (not shell) for safety
+        proc = await asyncio.create_subprocess_exec(
+            "alembic", "upgrade", "head",
+            cwd=backend_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env
+        )
+
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            # Log as warning but don't fail startup - production DB may already have tables
+            logger.warning(f"Migration error (non-fatal): {stderr.decode()}")
+        else:
+            logger.info("Database migrations completed successfully")
+            if stdout:
+                logger.debug(stdout.decode())
+
+    except FileNotFoundError:
+        logger.warning("alembic command not found, skipping migrations")
+    except Exception as e:
+        logger.warning(f"Failed to run migrations: {e}")
+        # Don't fail startup if migrations fail - allow app to start
+        # Production DB might already have tables
+
+
 async def init_db():
-    """Initialize connection pool."""
+    """Initialize connection pool and run migrations."""
     global _pool
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
         logger.warning("DATABASE_URL not set, conversation persistence disabled")
         return
+
+    # Run migrations first to ensure schema is up to date
+    await run_migrations()
+
     _pool = await asyncpg.create_pool(database_url)
     logger.info("Database connection pool initialized")
 
