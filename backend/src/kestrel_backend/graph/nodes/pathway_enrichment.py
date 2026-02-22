@@ -23,6 +23,7 @@ from typing import Any
 from ..state import (
     DiscoveryState, SharedNeighbor, BiologicalTheme, Finding
 )
+from ...kestrel_client import multi_hop_query
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +178,95 @@ def parse_enrichment_result(
     return shared_neighbors, themes, errors
 
 
+async def find_two_hop_shared_neighbors(
+    entity_curies: list[str],
+    max_results_per_entity: int = 50,
+) -> tuple[dict[str, int], list[str]]:
+    """
+    Find nodes that connect to 2+ input entities within 2 hops using multi_hop_query.
+
+    This complements the LLM-based one-hop analysis by finding indirect connections.
+
+    Args:
+        entity_curies: List of input entity CURIEs
+        max_results_per_entity: Limit per entity for result size control
+
+    Returns:
+        tuple of (neighbor_counts, errors)
+        - neighbor_counts: dict mapping neighbor CURIE -> count of inputs connected
+        - errors: list of error messages
+    """
+    neighbor_counts: dict[str, int] = {}
+    errors: list[str] = []
+
+    if len(entity_curies) < 2:
+        return neighbor_counts, errors
+
+    logger.info(
+        "find_two_hop_shared_neighbors: analyzing %d entities with max_hops=2",
+        len(entity_curies)
+    )
+
+    for curie in entity_curies:
+        try:
+            # Use singly-pinned multi_hop_query to explore 2 hops from each entity
+            result = await multi_hop_query(
+                start_node_ids=[curie],
+                max_hops=2,
+                limit=max_results_per_entity,
+            )
+
+            if result.get("isError"):
+                error_text = result.get("content", [{}])[0].get("text", "Unknown error")
+                errors.append(f"multi_hop_query error for {curie}: {error_text}")
+                continue
+
+            # Extract reachable nodes from result
+            content = result.get("content", [])
+            if not content:
+                continue
+
+            json_text = content[0].get("text", "")
+            if not json_text:
+                continue
+
+            data = json.loads(json_text)
+            paths = data.get("paths", data) if isinstance(data, dict) else data
+
+            if not isinstance(paths, list):
+                continue
+
+            # Count unique neighbors reached in these paths
+            for path_data in paths:
+                nodes = path_data.get("nodes", [])
+                # Count all intermediate and terminal nodes (exclude the start node)
+                for node in nodes[1:]:
+                    if node not in neighbor_counts:
+                        neighbor_counts[node] = 0
+                    neighbor_counts[node] += 1
+
+        except json.JSONDecodeError as e:
+            logger.error("Failed to parse multi_hop_query result for %s: %s", curie, str(e))
+            errors.append(f"JSON parse error for {curie}")
+        except Exception as e:
+            logger.error("Error in two-hop search for %s: %s", curie, str(e))
+            errors.append(f"Exception for {curie}: {str(e)}")
+
+    # Filter to only neighbors connected to 2+ inputs
+    shared_neighbors = {
+        curie: count
+        for curie, count in neighbor_counts.items()
+        if count >= 2
+    }
+
+    logger.info(
+        "find_two_hop_shared_neighbors: found %d shared neighbors (from %d total)",
+        len(shared_neighbors), len(neighbor_counts)
+    )
+
+    return shared_neighbors, errors
+
+
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
     Analyze pathway enrichment across all resolved entities.
@@ -259,6 +349,22 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         for e in selected_entities
     ])
 
+    # Phase A: Two-hop shared neighbor analysis via API (fast, no LLM)
+    logger.info("Starting two-hop shared neighbor analysis via API...")
+    entity_curies = [e.curie for e in selected_entities if e.curie]
+    two_hop_neighbors, two_hop_errors = await find_two_hop_shared_neighbors(
+        entity_curies=entity_curies,
+        max_results_per_entity=50,
+    )
+
+    # Log two-hop results
+    if two_hop_neighbors:
+        logger.info(
+            "Two-hop analysis found %d shared neighbors: %s",
+            len(two_hop_neighbors),
+            list(two_hop_neighbors.items())[:5]
+        )
+
     # User prompt with entity count to help LLM budget tool calls
     user_prompt = f"""Analyze these {len(selected_entities)} entities and find shared neighbors:
 
@@ -267,7 +373,9 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 You have {len(selected_entities)} entities to query. Budget your tool calls:
 - Use one_hop_query for each entity (~{len(selected_entities)} calls)
 - Use get_nodes sparingly for key shared neighbors
-- Return JSON when done"""
+- Return JSON when done
+
+NOTE: Two-hop analysis already completed separately. Focus on ONE-HOP neighbors only."""
 
     try:
         # Configure Kestrel MCP server (stdio-based, same as entity_resolution)
@@ -343,17 +451,33 @@ You have {len(selected_entities)} entities to query. Budget your tool calls:
                     confidence="high" if non_hub_count > 0 else "moderate",
                 ))
 
+        # Add two-hop findings
+        if two_hop_neighbors:
+            # Add finding about two-hop connectivity
+            top_two_hop = sorted(two_hop_neighbors.items(), key=lambda x: x[1], reverse=True)[:3]
+            two_hop_summary = ", ".join([f"{curie} ({count} inputs)" for curie, count in top_two_hop])
+            findings.append(Finding(
+                entity=", ".join([c for c, _ in top_two_hop]),
+                claim=f"Two-hop connectivity: {two_hop_summary}",
+                tier=2,
+                source="pathway_enrichment_two_hop",
+                confidence="moderate",
+            ))
+
         duration = time.time() - start
         logger.info(
-            "Completed pathway_enrichment in %.1fs — themes=%d, shared_neighbors=%d",
-            duration, len(themes), len(shared_neighbors)
+            "Completed pathway_enrichment in %.1fs — themes=%d, shared_neighbors=%d, two_hop=%d",
+            duration, len(themes), len(shared_neighbors), len(two_hop_neighbors)
         )
+
+        # Combine errors
+        all_errors = parse_errors + two_hop_errors
 
         return {
             "shared_neighbors": shared_neighbors,
             "biological_themes": themes,
             "direct_findings": findings,  # Add to direct_findings via reducer
-            "errors": parse_errors,
+            "errors": all_errors,
         }
 
     except Exception as e:

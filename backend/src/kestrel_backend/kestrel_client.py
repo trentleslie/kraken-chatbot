@@ -290,3 +290,67 @@ async def call_kestrel_tool(name: str, arguments: dict[str, Any]) -> dict[str, A
     """Call a Kestrel tool. Ensures connection is established."""
     client = await get_kestrel_client()
     return await client.call_tool(name, arguments)
+
+
+async def multi_hop_query(
+    start_node_ids: list[str] | None = None,
+    end_node_ids: list[str] | None = None,
+    max_hops: int = 3,
+    predicate_filter: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """
+    Perform a multi-hop pathfinding query in the knowledge graph.
+
+    Supports two search modes:
+    - Singly-pinned: start_node_ids provided, end_node_ids=None → explore from start nodes
+    - Doubly-pinned: both start_node_ids and end_node_ids → find paths connecting them
+
+    Args:
+        start_node_ids: List of starting CURIEs (required)
+        end_node_ids: List of target CURIEs (optional, enables doubly-pinned mode)
+        max_hops: Maximum path length (1-5, default 3)
+        predicate_filter: Comma-separated predicates to filter edges
+        limit: Maximum number of paths to return (default 100)
+
+    Returns:
+        dict with "content" list containing path results
+
+    Examples:
+        # Singly-pinned: explore 2 hops from glucose
+        await multi_hop_query(start_node_ids=["CHEBI:17234"], max_hops=2)
+
+        # Doubly-pinned: find paths from glucose to diabetes
+        await multi_hop_query(
+            start_node_ids=["CHEBI:17234"],
+            end_node_ids=["MONDO:0005148"],
+            max_hops=3
+        )
+    """
+    if not start_node_ids:
+        return {
+            "content": [{"type": "text", "text": "Error: start_node_ids is required"}],
+            "isError": True,
+        }
+
+    # Validate max_hops
+    if max_hops < 1 or max_hops > 5:
+        return {
+            "content": [{"type": "text", "text": "Error: max_hops must be between 1 and 5"}],
+            "isError": True,
+        }
+
+    # Build arguments for the MCP tool
+    arguments = {
+        "start_node_ids": start_node_ids if isinstance(start_node_ids, list) else [start_node_ids],
+        "max_hops": max_hops,
+        "limit": limit,
+    }
+
+    if end_node_ids:
+        arguments["end_node_ids"] = end_node_ids if isinstance(end_node_ids, list) else [end_node_ids]
+
+    if predicate_filter:
+        arguments["predicate_filter"] = predicate_filter
+
+    return await call_kestrel_tool("multi_hop_query", arguments)

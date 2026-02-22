@@ -23,8 +23,10 @@ from typing import Any
 
 from ..state import (
     DiscoveryState, Bridge, GapEntity, Finding,
-    DiseaseAssociation, PathwayMembership, InferredAssociation, BiologicalTheme
+    DiseaseAssociation, PathwayMembership, InferredAssociation, BiologicalTheme,
+    EntityResolution
 )
+from ...kestrel_client import multi_hop_query
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +178,199 @@ def build_study_context(state: DiscoveryState) -> str:
         parts.append(f"Entity types: {', '.join(categories)}")
 
     return "\n".join(parts) if parts else "No specific study context available"
+
+
+async def detect_bridges_via_api(
+    resolved_entities: list[EntityResolution],
+    max_hops: int = 3,
+    max_paths_per_pair: int = 5,
+) -> tuple[list[Bridge], list[str]]:
+    """
+    Detect cross-type bridges using the multi_hop_query API.
+
+    This function groups entities by category and queries for paths between
+    entities of different types (e.g., metabolite -> gene, gene -> disease).
+
+    Args:
+        resolved_entities: List of resolved entities with CURIEs and categories
+        max_hops: Maximum path length to search (default 3)
+        max_paths_per_pair: Maximum paths per entity pair (default 5)
+
+    Returns:
+        tuple of (bridges, errors)
+    """
+    bridges: list[Bridge] = []
+    errors: list[str] = []
+
+    # Group entities by category
+    by_category: dict[str, list[EntityResolution]] = {}
+    for entity in resolved_entities:
+        if not entity.curie or entity.method == "failed":
+            continue
+        category = entity.category or "biolink:NamedThing"
+        if category not in by_category:
+            by_category[category] = []
+        by_category[category].append(entity)
+
+    # Need at least 2 different categories to have cross-type bridges
+    if len(by_category) < 2:
+        logger.info("detect_bridges_via_api: need at least 2 entity categories (have %d)", len(by_category))
+        return bridges, errors
+
+    categories = list(by_category.keys())
+    logger.info(
+        "detect_bridges_via_api: found %d categories: %s",
+        len(categories),
+        [f"{cat} ({len(by_category[cat])})" for cat in categories]
+    )
+
+    # Query cross-category pairs
+    # Limit to avoid combinatorial explosion: max 3 pairs
+    pairs_checked = 0
+    max_pairs = 3
+
+    for i, cat1 in enumerate(categories):
+        for cat2 in categories[i+1:]:
+            if pairs_checked >= max_pairs:
+                logger.info("detect_bridges_via_api: reached max_pairs limit (%d)", max_pairs)
+                break
+
+            # Select representative entities from each category (max 2 per category)
+            start_entities = by_category[cat1][:2]
+            end_entities = by_category[cat2][:2]
+
+            start_curies = [e.curie for e in start_entities if e.curie]
+            end_curies = [e.curie for e in end_entities if e.curie]
+
+            if not start_curies or not end_curies:
+                continue
+
+            logger.info(
+                "detect_bridges_via_api: querying %s (%d) -> %s (%d), max_hops=%d",
+                cat1, len(start_curies), cat2, len(end_curies), max_hops
+            )
+
+            try:
+                # Use doubly-pinned multi_hop_query to find paths
+                result = await multi_hop_query(
+                    start_node_ids=start_curies,
+                    end_node_ids=end_curies,
+                    max_hops=max_hops,
+                    limit=max_paths_per_pair * len(start_curies) * len(end_curies),
+                )
+
+                if result.get("isError"):
+                    error_text = result.get("content", [{}])[0].get("text", "Unknown error")
+                    errors.append(f"multi_hop_query error for {cat1}->{cat2}: {error_text}")
+                    continue
+
+                # Parse paths from result
+                paths = parse_multi_hop_result(result, start_entities, end_entities, cat1, cat2)
+                bridges.extend(paths)
+                pairs_checked += 1
+
+            except Exception as e:
+                logger.error("Error querying %s -> %s: %s", cat1, cat2, str(e))
+                errors.append(f"Exception querying {cat1}->{cat2}: {str(e)}")
+
+        if pairs_checked >= max_pairs:
+            break
+
+    logger.info("detect_bridges_via_api: found %d bridges from %d category pairs", len(bridges), pairs_checked)
+    return bridges, errors
+
+
+def parse_multi_hop_result(
+    result: dict,
+    start_entities: list[EntityResolution],
+    end_entities: list[EntityResolution],
+    cat1: str,
+    cat2: str,
+) -> list[Bridge]:
+    """
+    Parse multi_hop_query results into Bridge objects.
+
+    Args:
+        result: The MCP tool result from multi_hop_query
+        start_entities: Starting entities for context
+        end_entities: Ending entities for context
+        cat1: Starting category name
+        cat2: Ending category name
+
+    Returns:
+        List of Bridge objects
+    """
+    bridges: list[Bridge] = []
+
+    try:
+        # Extract JSON content from MCP response
+        content = result.get("content", [])
+        if not content:
+            return bridges
+
+        # The first content item should be JSON text
+        json_text = content[0].get("text", "")
+        if not json_text:
+            return bridges
+
+        # Parse JSON response
+        data = json.loads(json_text)
+
+        # Handle different response formats
+        # Expected format: {"paths": [...]} or direct list of paths
+        paths = data.get("paths", data) if isinstance(data, dict) else data
+
+        if not isinstance(paths, list):
+            logger.warning("parse_multi_hop_result: unexpected format, expected list of paths")
+            return bridges
+
+        # Convert each path to a Bridge
+        for path_data in paths[:10]:  # Limit to top 10 paths
+            try:
+                # Extract path components
+                # Expected: {"nodes": [...], "edges": [...], "predicates": [...]}
+                nodes = path_data.get("nodes", [])
+                predicates = path_data.get("predicates", [])
+                node_names = path_data.get("node_names", [])
+
+                if len(nodes) < 2:
+                    continue
+
+                # Build path description
+                cat1_short = cat1.replace("biolink:", "")
+                cat2_short = cat2.replace("biolink:", "")
+                hop_count = len(nodes) - 1  # Number of hops = nodes - 1
+                path_description = f"{cat1_short} → {cat2_short} ({hop_count} hops)"
+
+                # Determine tier: 2 if path is short (1-2 hops), else 3
+                tier = 2 if hop_count <= 2 else 3
+
+                # Generate significance from path structure
+                if node_names and len(node_names) == len(nodes):
+                    significance = f"Path connects {node_names[0]} to {node_names[-1]}"
+                else:
+                    significance = f"Path connects {nodes[0]} to {nodes[-1]}"
+
+                bridges.append(Bridge(
+                    path_description=path_description,
+                    entities=nodes,
+                    entity_names=node_names if node_names else [],
+                    predicates=predicates if predicates else [],
+                    tier=tier,
+                    novelty="known",  # From KG, not inferred
+                    significance=significance,
+                ))
+
+            except Exception as e:
+                logger.warning("Error parsing path: %s", str(e))
+                continue
+
+    except json.JSONDecodeError as e:
+        logger.error("Failed to parse multi_hop_query JSON: %s", str(e))
+    except Exception as e:
+        logger.error("Unexpected error parsing multi_hop_result: %s", str(e))
+
+    return bridges
 
 
 def parse_integration_result(
@@ -337,12 +532,66 @@ Analyze these findings to identify cross-type bridges and expected-but-absent en
 """
 
     try:
+        # Phase A: Bridge detection using multi_hop_query API
+        logger.info("Starting API-based bridge detection...")
+        api_bridges, api_errors = await detect_bridges_via_api(
+            resolved_entities=resolved,
+            max_hops=3,
+            max_paths_per_pair=5,
+        )
+
+        # Phase B: Gap analysis using LLM (reasoning-intensive)
+        logger.info("Starting LLM-based gap analysis...")
+
         # Configure Kestrel MCP server (stdio-based, same as entity_resolution)
         kestrel_config = McpStdioServerConfig(
             type="stdio",
             command=KESTREL_COMMAND,
             args=KESTREL_ARGS,
         )
+
+        # Updated prompt focused on gap analysis only
+        gap_analysis_prompt = f"""{INTEGRATION_PROMPT}
+
+## Study Context
+{study_context}
+
+## Input Entities
+{entity_list}
+
+## Accumulated Findings
+
+### Disease Associations
+{disease_summary}
+
+### Pathway Memberships
+{pathway_summary}
+
+### Cold-Start Inferences
+{cold_start_summary}
+
+### Biological Themes
+{theme_summary}
+
+TASK: Focus ONLY on gap analysis (expected-but-absent entities).
+Bridge detection is handled separately via API.
+
+Return ONLY a valid JSON object:
+{{
+  "gaps": [
+    {{
+      "name": "BCAAs",
+      "category": "biolink:ChemicalEntity",
+      "curie": null,
+      "expected_reason": "Canonical early markers of T2D conversion",
+      "absence_interpretation": "Not measured or below detection",
+      "is_informative": false
+    }}
+  ]
+}}
+
+If no gaps found, return: {{"gaps": []}}
+"""
 
         options = ClaudeAgentOptions(
             allowed_tools=[
@@ -357,7 +606,7 @@ Analyze these findings to identify cross-type bridges and expected-but-absent en
 
         # Execute the query using async generator pattern
         result_text_parts = []
-        async for event in query(prompt=full_prompt, options=options):
+        async for event in query(prompt=gap_analysis_prompt, options=options):
             if hasattr(event, 'content'):
                 for block in event.content:
                     if hasattr(block, 'text'):
@@ -365,8 +614,12 @@ Analyze these findings to identify cross-type bridges and expected-but-absent en
 
         result_text = "".join(result_text_parts)
 
-        # Parse the result
-        bridges, gaps, parse_errors = parse_integration_result(result_text)
+        # Parse only gap analysis from LLM result
+        _, gaps, parse_errors = parse_integration_result(result_text)
+
+        # Combine bridges from API with gaps from LLM
+        bridges = api_bridges
+        parse_errors.extend(api_errors)
 
         # Create findings from significant bridges
         findings: list[Finding] = []
