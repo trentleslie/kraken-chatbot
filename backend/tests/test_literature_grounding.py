@@ -1201,11 +1201,15 @@ class TestPLISStudyBenchmark:
         )
 
         # Check if PLIS study (PMID 39746149) was found
-        # Note: External IDs format in S2 is {"PubMed": "39746149"}
+        # Note: S2 paper_id is the corpus ID, not PMID. Check URL for PubMed link.
         found_plis = False
         for lit in literature:
-            # Check paper_id or look for PMID in title/authors
-            if "39746149" in lit.paper_id or "PMID:39746149" in lit.paper_id:
+            # Check URL for PubMed reference (most reliable since model lacks external_ids)
+            if lit.url and "39746149" in lit.url:
+                found_plis = True
+                break
+            # Fallback: check paper_id in case it contains PMID reference
+            elif "39746149" in lit.paper_id or "PMID:39746149" in lit.paper_id:
                 found_plis = True
                 break
 
