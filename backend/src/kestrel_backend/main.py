@@ -9,18 +9,20 @@ from contextlib import asynccontextmanager
 from typing import List, Tuple, Any
 from uuid import UUID
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from langfuse import get_client
 
 from .config import get_settings
 from .agent import run_agent_turn
+from .logging_config import configure_logging, generate_correlation_id, correlation_id
 
-# Configure root logger for pipeline observability
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    datefmt="%H:%M:%S"
+# Configure logging early
+settings = get_settings()
+configure_logging(
+    log_level=settings.log_level,
+    log_format=settings.log_format,
+    module_levels=settings.log_module_levels
 )
 logger = logging.getLogger(__name__)
 
@@ -119,14 +121,20 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler for startup/shutdown."""
     # Startup
     settings = get_settings()
-    print(f"Starting Kestrel Backend on {settings.host}:{settings.port}")
-    print(f"Allowed origins: {settings.allowed_origins}")
-    print(f"Rate limit: {settings.rate_limit_per_minute} messages/minute")
+    logger.info(
+        "Starting Kestrel Backend",
+        extra={
+            "host": settings.host,
+            "port": settings.port,
+            "allowed_origins": settings.allowed_origins,
+            "rate_limit_per_minute": settings.rate_limit_per_minute
+        }
+    )
     await init_db()
     yield
     # Shutdown
     await close_db()
-    print("Shutting down Kestrel Backend")
+    logger.info("Shutting down Kestrel Backend")
 
 
 app = FastAPI(
@@ -135,6 +143,19 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+# Correlation ID middleware for HTTP requests
+@app.middleware("http")
+async def correlation_id_middleware(request: Request, call_next):
+    """Add correlation ID to each HTTP request for tracing."""
+    # Check if client provided correlation ID, otherwise generate one
+    corr_id = request.headers.get("X-Correlation-ID") or generate_correlation_id()
+    correlation_id.set(corr_id)
+
+    response = await call_next(request)
+    response.headers["X-Correlation-ID"] = corr_id
+    return response
 
 
 # Configure CORS for REST endpoints
@@ -216,7 +237,10 @@ async def handle_classic_mode(
                     code=event.data.get("code")
                 )
             case "trace":
-                msg = TraceMessage(**event.data)
+                # Add correlation_id to trace message
+                trace_data = event.data.copy()
+                trace_data["correlation_id"] = correlation_id.get()
+                msg = TraceMessage(**trace_data)
                 turn_metrics = event.data
             case "done":
                 msg = DoneMessage()
@@ -460,10 +484,19 @@ async def websocket_chat(websocket: WebSocket):
     await websocket.accept()
     connection_id = str(id(websocket))
 
+    logger.info(
+        "WebSocket connection established",
+        extra={"connection_id": connection_id}
+    )
+
     try:
         while True:
             # Receive message from client
             raw_data = await websocket.receive_text()
+
+            # Generate and set correlation ID for each message (per-request tracing)
+            corr_id = generate_correlation_id()
+            correlation_id.set(corr_id)
 
             try:
                 data = json.loads(raw_data)
@@ -528,7 +561,11 @@ async def websocket_chat(websocket: WebSocket):
         conversation_ids.pop(connection_id, None)
         turn_counters.pop(connection_id, None)
     except Exception as e:
-        print(f"WebSocket error: {e}")
+        logger.error(
+            "WebSocket error",
+            extra={"error": str(e), "connection_id": connection_id},
+            exc_info=True
+        )
         rate_limit_state.pop(connection_id, None)
         conversation_history.pop(connection_id, None)
         conversation_ids.pop(connection_id, None)

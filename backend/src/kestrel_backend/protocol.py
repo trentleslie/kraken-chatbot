@@ -48,6 +48,7 @@ class TraceMessage(BaseModel):
     """Usage statistics for a completed turn."""
     type: Literal["trace"] = "trace"
     turn_id: str | None = None
+    correlation_id: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_creation_tokens: int | None = None

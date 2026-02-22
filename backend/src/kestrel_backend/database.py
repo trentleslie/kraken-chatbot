@@ -2,12 +2,15 @@
 import asyncpg
 import hashlib
 import json
+import logging
 import os
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
 from .agent import SYSTEM_PROMPT, AGENT_VERSION
+
+logger = logging.getLogger(__name__)
 
 _pool: Optional[asyncpg.Pool] = None
 MAX_TOOL_RESULT_SIZE = 10 * 1024  # 10KB limit for tool results
@@ -37,10 +40,10 @@ async def init_db():
     global _pool
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
-        print("WARNING: DATABASE_URL not set, conversation persistence disabled")
+        logger.warning("DATABASE_URL not set, conversation persistence disabled")
         return
     _pool = await asyncpg.create_pool(database_url)
-    print("Database connection pool initialized")
+    logger.info("Database connection pool initialized")
 
 
 async def close_db():
@@ -49,7 +52,7 @@ async def close_db():
     if _pool:
         await _pool.close()
         _pool = None
-        print("Database connection pool closed")
+        logger.info("Database connection pool closed")
 
 
 async def create_conversation(session_id: str, model: str) -> Optional[UUID]:
