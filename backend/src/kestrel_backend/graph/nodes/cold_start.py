@@ -99,7 +99,7 @@ async def get_similar_entities(curie: str, limit: int = ANALOGUE_LIMIT) -> list[
     """
     try:
         result = await call_kestrel_tool("similar_nodes", {
-            "curie": curie,
+            "node_id": curie,
             "limit": limit,
         })
 
@@ -148,7 +148,7 @@ async def get_entity_connections(curie: str) -> dict:
     """
     try:
         result = await call_kestrel_tool("one_hop_query", {
-            "curie": curie,
+            "start_node_ids": curie,
         })
 
         if result.get("isError"):

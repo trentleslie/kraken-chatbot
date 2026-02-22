@@ -34,7 +34,7 @@ S2_SEMAPHORE = asyncio.Semaphore(1)
 
 # Delay between requests: 1s with API key, 10s without (safe margin for free tier)
 # S2 free tier: 100 req/5min = 0.33 req/s. Using 10s = 0.1 req/s for safety.
-S2_DELAY = 1.0 if S2_API_KEY else 10.0
+S2_DELAY = 1.1 if S2_API_KEY else 10.0
 
 
 async def search_papers(
