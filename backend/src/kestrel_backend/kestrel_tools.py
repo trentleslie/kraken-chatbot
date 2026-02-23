@@ -122,6 +122,28 @@ async def get_edges(args):
 
 
 @tool(
+    "multi_hop_query",
+    "Find multi-hop paths between nodes in the knowledge graph",
+    {
+        "start_node_ids": str,  # List of starting CURIEs
+        "end_node_ids": str,    # Optional: list of target CURIEs for doubly-pinned search
+        "max_hops": int,        # Maximum path length (1-5)
+        "predicate_filter": str,  # Optional: comma-separated predicates
+        "limit": int,           # Maximum paths to return
+    }
+)
+async def multi_hop_query_tool(args):
+    """
+    Perform multi-hop pathfinding in the knowledge graph.
+
+    Supports two modes:
+    - Singly-pinned: Only start_node_ids provided, explores from start nodes
+    - Doubly-pinned: Both start and end provided, finds connecting paths
+    """
+    return await call_kestrel_tool("multi_hop_query", args)
+
+
+@tool(
     "get_valid_categories",
     "Get all valid biolink category values that can be used in queries",
     {}
@@ -176,6 +198,7 @@ def create_kestrel_mcp_server():
             hybrid_search,
             get_nodes,
             get_edges,
+            multi_hop_query_tool,
             get_valid_categories,
             get_valid_predicates,
             get_valid_prefixes,

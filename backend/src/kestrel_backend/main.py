@@ -10,18 +10,21 @@ from contextlib import asynccontextmanager
 from typing import List, Tuple, Any, get_type_hints, get_args, get_origin
 from uuid import UUID
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from langfuse import get_client
 
 from .config import get_settings
 from .agent import run_agent_turn
+from .logging_config import configure_logging, generate_correlation_id, correlation_id
+from .auth import validate_api_key, validate_ws_token
 
-# Configure root logger for pipeline observability
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    datefmt="%H:%M:%S"
+# Configure logging early
+settings = get_settings()
+configure_logging(
+    log_level=settings.log_level,
+    log_format=settings.log_format,
+    module_levels=settings.log_module_levels
 )
 logger = logging.getLogger(__name__)
 
@@ -40,7 +43,7 @@ def _get_pipeline_langfuse():
     return _pipeline_langfuse
 
 
-from .database import init_db, close_db, get_conversation_with_turns, create_conversation, add_turn
+from .database import init_db, close_db, get_conversation_with_turns, create_conversation, add_turn, record_feedback
 from .protocol import (
     TextMessage,
     ToolUseMessage,
@@ -149,14 +152,20 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler for startup/shutdown."""
     # Startup
     settings = get_settings()
-    print(f"Starting Kestrel Backend on {settings.host}:{settings.port}")
-    print(f"Allowed origins: {settings.allowed_origins}")
-    print(f"Rate limit: {settings.rate_limit_per_minute} messages/minute")
+    logger.info(
+        "Starting Kestrel Backend",
+        extra={
+            "host": settings.host,
+            "port": settings.port,
+            "allowed_origins": settings.allowed_origins,
+            "rate_limit_per_minute": settings.rate_limit_per_minute
+        }
+    )
     await init_db()
     yield
     # Shutdown
     await close_db()
-    print("Shutting down Kestrel Backend")
+    logger.info("Shutting down Kestrel Backend")
 
 
 app = FastAPI(
@@ -165,6 +174,19 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+# Correlation ID middleware for HTTP requests
+@app.middleware("http")
+async def correlation_id_middleware(request: Request, call_next):
+    """Add correlation ID to each HTTP request for tracing."""
+    # Check if client provided correlation ID, otherwise generate one
+    corr_id = request.headers.get("X-Correlation-ID") or generate_correlation_id()
+    correlation_id.set(corr_id)
+
+    response = await call_next(request)
+    response.headers["X-Correlation-ID"] = corr_id
+    return response
 
 
 # Configure CORS for REST endpoints
@@ -178,20 +200,103 @@ app.add_middleware(
 )
 
 
+def check_langfuse_health() -> tuple[bool, str | None]:
+    """Check Langfuse observability client health.
+
+    Returns:
+        tuple: (is_healthy, error_message)
+    """
+    try:
+        settings = get_settings()
+        if not settings.langfuse_enabled:
+            return True, None  # Not enabled, so "healthy" (degraded is fine)
+
+        langfuse = _get_pipeline_langfuse()
+        if langfuse is None:
+            return False, "Langfuse client not initialized"
+
+        return True, None
+    except Exception as e:
+        return False, f"Langfuse error: {str(e)}"
+
+
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for monitoring."""
-    return {"status": "healthy", "service": "kestrel-backend"}
+    """Simple liveness check endpoint for monitoring."""
+    return {"status": "healthy"}
 
 
 @app.get("/api/health")
 async def api_health_check():
     """API health check endpoint (alternative path)."""
-    return {"status": "healthy", "service": "kestrel-backend"}
+    return {"status": "healthy"}
+
+
+@app.get("/ready")
+async def readiness_check():
+    """Comprehensive readiness check for all critical dependencies.
+
+    Returns:
+        200 if all critical dependencies are healthy
+        503 if any critical dependency is unhealthy
+
+    Response includes individual check statuses and allows degraded state
+    for non-critical dependencies like Langfuse.
+    """
+    from .database import check_db_health
+    from .kestrel_client import check_kestrel_health
+
+    checks = {}
+    overall_status = "healthy"
+
+    # Check database (critical)
+    db_healthy, db_latency, db_error = await check_db_health()
+    checks["database"] = {
+        "status": "healthy" if db_healthy else "unhealthy",
+    }
+    if db_latency is not None:
+        checks["database"]["latency_ms"] = db_latency
+    if db_error:
+        checks["database"]["error"] = db_error
+    if not db_healthy:
+        overall_status = "unhealthy"
+
+    # Check Kestrel MCP server (critical)
+    kestrel_healthy, kestrel_latency, kestrel_error = await check_kestrel_health()
+    checks["kestrel"] = {
+        "status": "healthy" if kestrel_healthy else "unhealthy",
+    }
+    if kestrel_latency is not None:
+        checks["kestrel"]["latency_ms"] = kestrel_latency
+    if kestrel_error:
+        checks["kestrel"]["error"] = kestrel_error
+    if not kestrel_healthy:
+        overall_status = "unhealthy"
+
+    # Check Langfuse (non-critical, can be degraded)
+    langfuse_healthy, langfuse_error = check_langfuse_health()
+    checks["langfuse"] = {
+        "status": "healthy" if langfuse_healthy else "degraded",
+    }
+    if langfuse_error:
+        checks["langfuse"]["error"] = langfuse_error
+    if not langfuse_healthy and overall_status == "healthy":
+        overall_status = "degraded"
+
+    response_data = {
+        "status": overall_status,
+        "checks": checks,
+    }
+
+    # Return 503 if unhealthy, 200 otherwise (degraded is acceptable)
+    status_code = 503 if overall_status == "unhealthy" else 200
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(content=response_data, status_code=status_code)
 
 
 @app.get("/api/conversations/{conversation_id}")
-async def get_conversation(conversation_id: str):
+async def get_conversation(conversation_id: str, auth: dict = Depends(validate_api_key)):
     """Retrieve conversation by UUID for shared viewing."""
     try:
         uuid_id = UUID(conversation_id)
@@ -203,6 +308,69 @@ async def get_conversation(conversation_id: str):
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     return conversation
+
+
+@app.post("/api/feedback")
+async def submit_feedback(request: Request, auth: dict = Depends(validate_api_key)):
+    """
+    Submit user feedback (thumbs up/down) for a turn.
+
+    Expected payload:
+    {
+        "turn_id": "uuid-string",
+        "conversation_id": "uuid-string",
+        "feedback_type": "positive" | "negative",
+        "trace_id": "langfuse-trace-id" (optional)
+    }
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    # Validate required fields
+    turn_id_str = data.get("turn_id")
+    conversation_id_str = data.get("conversation_id")
+    feedback_type = data.get("feedback_type")
+    trace_id = data.get("trace_id")
+
+    if not turn_id_str or not conversation_id_str or not feedback_type:
+        raise HTTPException(status_code=400, detail="Missing required fields: turn_id, conversation_id, feedback_type")
+
+    if feedback_type not in ["positive", "negative"]:
+        raise HTTPException(status_code=400, detail="feedback_type must be 'positive' or 'negative'")
+
+    # Parse UUIDs
+    try:
+        turn_id = UUID(turn_id_str)
+        conversation_id = UUID(conversation_id_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format")
+
+    # Record feedback in database
+    feedback_id = await record_feedback(turn_id, conversation_id, feedback_type, trace_id)
+    if not feedback_id:
+        raise HTTPException(status_code=500, detail="Failed to record feedback")
+
+    # Send feedback to Langfuse if trace_id is provided
+    langfuse = _get_pipeline_langfuse()
+    if langfuse and trace_id:
+        try:
+            # Convert feedback_type to Langfuse score value (1 for positive, 0 for negative)
+            score_value = 1 if feedback_type == "positive" else 0
+            langfuse.score(
+                trace_id=trace_id,
+                name="user_feedback",
+                value=score_value,
+                comment=f"User feedback: {feedback_type}"
+            )
+            langfuse.flush()
+        except Exception as e:
+            logger.warning(f"Failed to send feedback to Langfuse: {e}")
+            # Don't fail the request if Langfuse submission fails
+
+    return {"status": "success", "feedback_id": str(feedback_id)}
+
 
 
 async def handle_classic_mode(
@@ -223,7 +391,11 @@ async def handle_classic_mode(
     # Track metrics for database persistence
     turn_metrics: dict = {}
 
-    async for event in run_agent_turn(full_prompt):
+    # Get conversation_id for session tracking
+    conv_id = conversation_ids.get(connection_id)
+    session_id = str(conv_id) if conv_id else None
+
+    async for event in run_agent_turn(full_prompt, session_id=session_id):
         # Convert agent events to protocol messages
         match event.type:
             case "text":
@@ -246,7 +418,10 @@ async def handle_classic_mode(
                     code=event.data.get("code")
                 )
             case "trace":
-                msg = TraceMessage(**event.data)
+                # Add correlation_id to trace message
+                trace_data = event.data.copy()
+                trace_data["correlation_id"] = correlation_id.get()
+                msg = TraceMessage(**trace_data)
                 turn_metrics = event.data
             case "done":
                 msg = DoneMessage()
@@ -305,12 +480,19 @@ async def handle_pipeline_mode(
     trace = None
     node_spans: dict[str, Any] = {}
 
+    # Get conversation_id for session tracking
+    conv_id = conversation_ids.get(connection_id)
+    session_id = str(conv_id) if conv_id else None
+
     if langfuse:
-        trace = langfuse.start_span(
-            name="discovery_pipeline",
-            input={"query": content, "connection_id": connection_id},
-            metadata={"mode": "pipeline", "version": "2.0"},
-        )
+        trace_kwargs = {
+            "name": "discovery_pipeline",
+            "input": {"query": content, "connection_id": connection_id},
+            "metadata": {"mode": "pipeline", "version": "2.0"},
+        }
+        if session_id:
+            trace_kwargs["session_id"] = session_id
+        trace = langfuse.start_span(**trace_kwargs)
 
     try:
         history = conversation_history.get(connection_id, [])
@@ -390,14 +572,16 @@ async def handle_pipeline_mode(
             if hasattr(e, "curie") and e.curie is not None
         )
 
-        msg = PipelineCompleteMessage(
-            synthesis_report=synthesis_report,
-            hypotheses_count=len(hypotheses),
-            entities_resolved=len(resolved_entities),
-            duration_ms=duration_ms,
-            model="claude-sonnet-4-20250514",
-        )
-        await websocket.send_text(msg.model_dump_json())
+        # Build PipelineCompleteMessage kwargs (will send after turn creation)
+        pipeline_complete_kwargs = {
+            "synthesis_report": synthesis_report,
+            "hypotheses_count": len(hypotheses),
+            "entities_resolved": len(resolved_entities),
+            "duration_ms": duration_ms,
+            "model": "claude-sonnet-4-20250514",
+        }
+        if trace:
+            pipeline_complete_kwargs["trace_id"] = trace.id
 
         logger.info(
             "Pipeline complete in %.1fs — entities=%d, resolved=%d, hypotheses=%d",
@@ -427,10 +611,12 @@ async def handle_pipeline_mode(
         if synthesis_report:
             history.append(("assistant", synthesis_report))
 
+        # Persist turn and capture turn_id for feedback
+        turn_id = None
         conv_id = conversation_ids.get(connection_id)
         if conv_id and synthesis_report:
             turn_counters[connection_id] += 1
-            await add_turn(
+            turn_id = await add_turn(
                 conversation_id=conv_id,
                 turn_number=turn_counters[connection_id],
                 user_query=content,
@@ -444,6 +630,12 @@ async def handle_pipeline_mode(
                     "node_timings": node_timings,
                 }
             )
+
+        # Send PipelineCompleteMessage with turn_id if available
+        if turn_id:
+            pipeline_complete_kwargs["turn_id"] = str(turn_id)
+        msg = PipelineCompleteMessage(**pipeline_complete_kwargs)
+        await websocket.send_text(msg.model_dump_json())
 
         max_messages = MAX_HISTORY_EXCHANGES * 2
         if len(history) > max_messages:
@@ -486,16 +678,47 @@ async def websocket_chat(websocket: WebSocket):
     WebSocket endpoint for chat interactions.
 
     Protocol:
+    - Client connects with optional ?token=<jwt_token> query parameter
     - Client sends: {"type": "user_message", "content": "...", "agent_mode": "classic"|"pipeline"}
     - Server sends: text, tool_use, tool_result, trace, done, pipeline_progress, pipeline_complete messages
+    - Auth failure returns close code 4001
     """
+    # Extract token from query parameters
+    token = websocket.query_params.get("token")
+    user_info = None
+
+    # Validate authentication if enabled
+    settings = get_settings()
+    if settings.auth_enabled:
+        try:
+            user_info = await validate_ws_token(token)
+        except ValueError as e:
+            logger.warning(f"WebSocket authentication failed: {e}")
+            # Accept first so client receives the close code properly
+            await websocket.accept()
+            await websocket.close(code=4001, reason="Authentication failed")
+            return
+
     await websocket.accept()
     connection_id = str(id(websocket))
+
+    logger.info(
+        "WebSocket connection established",
+        extra={
+            "connection_id": connection_id,
+            "authenticated": user_info is not None,
+            "user_id": user_info.get("user_id") if user_info else None
+        }
+    )
 
     try:
         while True:
             # Receive message from client
             raw_data = await websocket.receive_text()
+
+            # Generate and set correlation ID for each message (per-request tracing)
+            corr_id = generate_correlation_id()
+            correlation_id.set(corr_id)
 
             try:
                 data = json.loads(raw_data)
@@ -531,7 +754,8 @@ async def websocket_chat(websocket: WebSocket):
             # Create conversation on first message
             settings = get_settings()
             if connection_id not in conversation_ids:
-                conv_id = await create_conversation(connection_id, settings.model or "default")
+                user_id = user_info.get("user_id") if user_info else None
+                conv_id = await create_conversation(connection_id, settings.model or "default", user_id)
                 if conv_id:
                     conversation_ids[connection_id] = conv_id
                     # Send conversation_id to frontend for copy link functionality
@@ -560,7 +784,11 @@ async def websocket_chat(websocket: WebSocket):
         conversation_ids.pop(connection_id, None)
         turn_counters.pop(connection_id, None)
     except Exception as e:
-        print(f"WebSocket error: {e}")
+        logger.error(
+            "WebSocket error",
+            extra={"error": str(e), "connection_id": connection_id},
+            exc_info=True
+        )
         rate_limit_state.pop(connection_id, None)
         conversation_history.pop(connection_id, None)
         conversation_ids.pop(connection_id, None)

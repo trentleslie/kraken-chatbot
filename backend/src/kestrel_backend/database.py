@@ -1,13 +1,17 @@
 """Database persistence for KRAKEN conversations."""
+import asyncio
 import asyncpg
 import hashlib
 import json
+import logging
 import os
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
 from .agent import SYSTEM_PROMPT, AGENT_VERSION
+
+logger = logging.getLogger(__name__)
 
 _pool: Optional[asyncpg.Pool] = None
 MAX_TOOL_RESULT_SIZE = 10 * 1024  # 10KB limit for tool results
@@ -32,15 +36,69 @@ def truncate_tool_result(result: dict) -> tuple[dict, bool]:
     return truncated, True
 
 
+async def run_migrations():
+    """Run Alembic migrations to ensure database schema is up to date.
+
+    This function runs 'alembic upgrade head' using asyncio subprocess to apply
+    all pending migrations without blocking the event loop. It should be called
+    during application startup.
+
+    Migration failures are non-fatal: the app will start even if migrations fail,
+    since the production database may already have the required tables.
+    """
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        logger.warning("DATABASE_URL not set, skipping migrations")
+        return
+
+    try:
+        # Get the backend directory (where alembic.ini is located)
+        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+
+        # Prepare environment with DATABASE_URL
+        env = {**os.environ, "DATABASE_URL": database_url}
+
+        # Run alembic upgrade head using async subprocess (non-blocking)
+        # Using create_subprocess_exec with explicit args (not shell) for safety
+        proc = await asyncio.create_subprocess_exec(
+            "alembic", "upgrade", "head",
+            cwd=backend_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env
+        )
+
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            # Log as warning but don't fail startup - production DB may already have tables
+            logger.warning(f"Migration error (non-fatal): {stderr.decode()}")
+        else:
+            logger.info("Database migrations completed successfully")
+            if stdout:
+                logger.debug(stdout.decode())
+
+    except FileNotFoundError:
+        logger.warning("alembic command not found, skipping migrations")
+    except Exception as e:
+        logger.warning(f"Failed to run migrations: {e}")
+        # Don't fail startup if migrations fail - allow app to start
+        # Production DB might already have tables
+
+
 async def init_db():
-    """Initialize connection pool."""
+    """Initialize connection pool and run migrations."""
     global _pool
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
-        print("WARNING: DATABASE_URL not set, conversation persistence disabled")
+        logger.warning("DATABASE_URL not set, conversation persistence disabled")
         return
+
+    # Run migrations first to ensure schema is up to date
+    await run_migrations()
+
     _pool = await asyncpg.create_pool(database_url)
-    print("Database connection pool initialized")
+    logger.info("Database connection pool initialized")
 
 
 async def close_db():
@@ -49,18 +107,35 @@ async def close_db():
     if _pool:
         await _pool.close()
         _pool = None
-        print("Database connection pool closed")
+        logger.info("Database connection pool closed")
 
 
-async def create_conversation(session_id: str, model: str) -> Optional[UUID]:
+async def create_conversation(session_id: str, model: str, user_id: Optional[str] = None) -> Optional[UUID]:
     """Create new conversation on first message, return ID."""
     if not _pool:
         return None
     prompt_hash = get_prompt_hash()
-    row = await _pool.fetchrow("""
-        INSERT INTO kraken_conversations (session_id, model, system_prompt_hash, agent_version)
-        VALUES ($1, $2, $3, $4) RETURNING id
-    """, session_id, model, prompt_hash, AGENT_VERSION)
+
+    # Validate user_id as UUID if provided (prevents SQL injection)
+    validated_user_id = None
+    if user_id:
+        try:
+            validated_user_id = UUID(user_id)
+        except ValueError:
+            logger.warning(f"Invalid user_id format received: {user_id[:50] if user_id else 'None'}...")
+            validated_user_id = None
+
+    if validated_user_id:
+        row = await _pool.fetchrow("""
+            INSERT INTO kraken_conversations (session_id, model, system_prompt_hash, agent_version, user_id)
+            VALUES ($1, $2, $3, $4, $5) RETURNING id
+        """, session_id, model, prompt_hash, AGENT_VERSION, validated_user_id)
+    else:
+        row = await _pool.fetchrow("""
+            INSERT INTO kraken_conversations (session_id, model, system_prompt_hash, agent_version)
+            VALUES ($1, $2, $3, $4) RETURNING id
+        """, session_id, model, prompt_hash, AGENT_VERSION)
+
     return row["id"]
 
 
@@ -141,6 +216,64 @@ async def end_conversation(conversation_id: UUID, status: str = "completed"):
         SET ended_at = NOW(), status = $2
         WHERE id = $1
     """, conversation_id, status)
+
+
+async def record_feedback(
+    turn_id: UUID,
+    conversation_id: UUID,
+    feedback_type: str,
+    trace_id: str | None = None
+) -> Optional[UUID]:
+    """Record user feedback for a turn.
+
+    Args:
+        turn_id: UUID of the turn being rated
+        conversation_id: UUID of the conversation
+        feedback_type: "positive" or "negative"
+        trace_id: Optional Langfuse trace ID for feedback correlation
+
+    Returns:
+        Feedback record UUID if successful, None otherwise
+    """
+    if not _pool or not turn_id or not conversation_id:
+        return None
+
+    # Upsert: if feedback already exists for this turn, update it
+    row = await _pool.fetchrow("""
+        INSERT INTO kraken_feedback (turn_id, conversation_id, feedback_type, trace_id)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (turn_id)
+        DO UPDATE SET feedback_type = EXCLUDED.feedback_type,
+                      trace_id = EXCLUDED.trace_id,
+                      created_at = NOW()
+        RETURNING id
+    """, turn_id, conversation_id, feedback_type, trace_id)
+
+    return row["id"] if row else None
+
+
+async def check_db_health() -> tuple[bool, float | None, str | None]:
+    """Check database health with a simple query.
+
+    Returns:
+        tuple: (is_healthy, latency_ms, error_message)
+    """
+    if not _pool:
+        return False, None, "Database pool not initialized"
+
+    import time
+    start = time.time()
+
+    try:
+        # Simple query with 5s timeout
+        async with asyncio.timeout(5.0):
+            await _pool.fetchval("SELECT 1")
+        latency_ms = int((time.time() - start) * 1000)
+        return True, latency_ms, None
+    except asyncio.TimeoutError:
+        return False, None, "Database query timeout (>5s)"
+    except Exception as e:
+        return False, None, f"Database error: {str(e)}"
 
 
 async def get_conversation_with_turns(conversation_id: UUID) -> dict | None:

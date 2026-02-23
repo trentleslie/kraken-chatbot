@@ -2,31 +2,40 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Beaker, Clock, Network } from "lucide-react";
 import type { PipelineCompleteMessage } from "@/types/messages";
+import { FeedbackButtons } from "@/components/FeedbackButtons";
 
 interface PipelineReportCardProps {
   message: PipelineCompleteMessage;
+  conversationId: string | null;
 }
 
-export function PipelineReportCard({ message }: PipelineReportCardProps) {
+export function PipelineReportCard({ message, conversationId }: PipelineReportCardProps) {
   const durationSec = (message.duration_ms / 1000).toFixed(1);
 
   return (
     <div className="flex justify-start" data-testid="pipeline-report">
       <div className="max-w-[85%] min-w-0 space-y-3">
         {/* Metadata bar */}
-        <div className="flex items-center gap-4 text-xs text-muted-foreground">
-          <div className="flex items-center gap-1">
-            <Beaker className="h-3.5 w-3.5" />
-            <span>{message.hypotheses_count} hypotheses</span>
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4 text-xs text-muted-foreground">
+            <div className="flex items-center gap-1">
+              <Beaker className="h-3.5 w-3.5" />
+              <span>{message.hypotheses_count} hypotheses</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <Network className="h-3.5 w-3.5" />
+              <span>{message.entities_resolved} entities</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <Clock className="h-3.5 w-3.5" />
+              <span>{durationSec}s</span>
+            </div>
           </div>
-          <div className="flex items-center gap-1">
-            <Network className="h-3.5 w-3.5" />
-            <span>{message.entities_resolved} entities</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <Clock className="h-3.5 w-3.5" />
-            <span>{durationSec}s</span>
-          </div>
+          <FeedbackButtons
+            turnId={message.turn_id}
+            conversationId={conversationId}
+            traceId={message.trace_id}
+          />
         </div>
 
         {/* Synthesis report */}

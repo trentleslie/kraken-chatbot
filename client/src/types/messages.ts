@@ -1,4 +1,4 @@
-export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "reconnecting" | "demo";
+export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "reconnecting" | "demo" | "auth_failed";
 
 export type AgentMode = "classic" | "pipeline";
 
@@ -52,6 +52,7 @@ export type TraceMessage = {
   id: string;
   type: "trace";
   turn_id?: string;
+  trace_id?: string;  // Langfuse trace ID for feedback
   input_tokens?: number;
   output_tokens?: number;
   cache_creation_tokens?: number;
@@ -91,6 +92,8 @@ export type PipelineCompleteMessage = {
   hypotheses_count: number;
   entities_resolved: number;
   duration_ms: number;
+  turn_id?: string;   // Database turn ID for feedback
+  trace_id?: string;  // Langfuse trace ID for feedback
   timestamp: number;
 };
 
@@ -131,6 +134,7 @@ export type IncomingMessage =
   | {
       type: "trace";
       turn_id?: string;
+      trace_id?: string;
       input_tokens?: number;
       output_tokens?: number;
       cache_creation_tokens?: number;
@@ -160,4 +164,6 @@ export type IncomingMessage =
       hypotheses_count: number;
       entities_resolved: number;
       duration_ms: number;
+      turn_id?: string;
+      trace_id?: string;
     };

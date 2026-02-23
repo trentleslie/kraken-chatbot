@@ -14,6 +14,7 @@ systematic review data showing that approximately 18% of computational predictio
 progress to clinical investigation.
 """
 
+import json
 import logging
 import time
 from typing import Any
@@ -24,6 +25,7 @@ from ..state import (
     Hypothesis
 )
 from ...literature_utils import format_pmid_link
+from ...kestrel_client import multi_hop_query
 
 logger = logging.getLogger(__name__)
 
@@ -844,6 +846,101 @@ def fallback_report(state: DiscoveryState) -> str:
     return "\n".join(report_lines)
 
 
+async def validate_bridge_hypotheses(bridges: list[Bridge]) -> list[Bridge]:
+    """
+    Validate Tier 3 bridge hypotheses using doubly-pinned multi_hop_query.
+
+    For each Tier 3 bridge, attempt to verify the path exists in the KG.
+    If verified, upgrade to Tier 2. If not verified, keep as Tier 3.
+
+    Args:
+        bridges: List of Bridge objects to validate
+
+    Returns:
+        Updated list of bridges with validated ones upgraded to Tier 2
+    """
+    if not bridges:
+        return bridges
+
+    validated_bridges: list[Bridge] = []
+    tier3_bridges = [b for b in bridges if b.tier == 3]
+    other_bridges = [b for b in bridges if b.tier != 3]
+
+    logger.info("validate_bridge_hypotheses: validating %d Tier 3 bridges", len(tier3_bridges))
+
+    for bridge in tier3_bridges:
+        if len(bridge.entities) < 2:
+            # Can't validate without start/end
+            validated_bridges.append(bridge)
+            continue
+
+        start_curie = bridge.entities[0]
+        end_curie = bridge.entities[-1]
+
+        try:
+            # Use doubly-pinned search with max_hops based on path length
+            expected_hops = len(bridge.entities) - 1
+            result = await multi_hop_query(
+                start_node_ids=[start_curie],
+                end_node_ids=[end_curie],
+                max_hops=min(expected_hops + 1, 5),  # Allow 1 extra hop, cap at 5
+                limit=1,  # We just need to know if ANY path exists
+            )
+
+            if result.get("isError"):
+                # Validation failed, keep as Tier 3
+                validated_bridges.append(bridge)
+                continue
+
+            # Check if we got any paths back
+            content = result.get("content", [])
+            if not content:
+                validated_bridges.append(bridge)
+                continue
+
+            json_text = content[0].get("text", "")
+            if not json_text:
+                validated_bridges.append(bridge)
+                continue
+
+            data = json.loads(json_text)
+            paths = data.get("paths", data) if isinstance(data, dict) else data
+
+            if paths and len(paths) > 0:
+                # Path verified! Upgrade to Tier 2
+                logger.info(
+                    "validate_bridge_hypotheses: VALIDATED %s -> %s, upgrading to Tier 2",
+                    start_curie, end_curie
+                )
+                validated_bridges.append(Bridge(
+                    path_description=bridge.path_description,
+                    entities=bridge.entities,
+                    entity_names=bridge.entity_names,
+                    predicates=bridge.predicates,
+                    tier=2,  # UPGRADED
+                    novelty="known",  # Now verified in KG
+                    significance=bridge.significance + " [KG-validated]",
+                ))
+            else:
+                # No path found, keep as Tier 3
+                validated_bridges.append(bridge)
+
+        except Exception as e:
+            logger.warning("Error validating bridge %s -> %s: %s", start_curie, end_curie, str(e))
+            # Keep as Tier 3 on error
+            validated_bridges.append(bridge)
+
+    # Combine validated bridges with other tiers
+    all_bridges = other_bridges + validated_bridges
+    logger.info(
+        "validate_bridge_hypotheses: %d bridges after validation (%d upgraded to Tier 2)",
+        len(all_bridges),
+        sum(1 for b in validated_bridges if b.tier == 2)
+    )
+
+    return all_bridges
+
+
 def extract_hypotheses(state: DiscoveryState) -> list[Hypothesis]:
     """
     Extract structured Hypothesis objects from accumulated state.
@@ -955,10 +1052,18 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     logger.info("Starting synthesis with %d findings", total_findings)
     start = time.time()
 
-    # Phase A: Assemble context (always done)
-    context = assemble_synthesis_context(state)
-    
-    # Phase B: LLM synthesis or fallback
+    # Phase A: Validate bridge hypotheses
+    bridges = state.get("bridges", [])
+    validated_bridges = await validate_bridge_hypotheses(bridges)
+
+    # Update state with validated bridges for context assembly
+    state_with_validated = dict(state)
+    state_with_validated["bridges"] = validated_bridges
+
+    # Phase B: Assemble context (always done)
+    context = assemble_synthesis_context(state_with_validated)
+
+    # Phase C: LLM synthesis or fallback
     if HAS_SDK:
         try:
             options = ClaudeAgentOptions(
@@ -984,15 +1089,17 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         report = fallback_report(state)
     
     # Extract structured hypotheses (always, from state not LLM output)
-    hypotheses = extract_hypotheses(state)
+    # Use the validated bridges for hypothesis generation
+    hypotheses = extract_hypotheses(state_with_validated)
 
     duration = time.time() - start
     logger.info(
-        "Completed synthesis in %.1fs — hypotheses=%d, report_length=%d",
-        duration, len(hypotheses), len(report)
+        "Completed synthesis in %.1fs — hypotheses=%d, report_length=%d, validated_bridges=%d",
+        duration, len(hypotheses), len(report), len(validated_bridges)
     )
 
     return {
         "synthesis_report": report,
         "hypotheses": hypotheses,
+        "bridges": validated_bridges,  # Return validated bridges
     }

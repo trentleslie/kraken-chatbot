@@ -48,6 +48,8 @@ class TraceMessage(BaseModel):
     """Usage statistics for a completed turn."""
     type: Literal["trace"] = "trace"
     turn_id: str | None = None
+    trace_id: str | None = None  # Langfuse trace ID for feedback linkage
+    correlation_id: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_creation_tokens: int | None = None
@@ -91,6 +93,8 @@ class PipelineCompleteMessage(BaseModel):
     hypotheses_count: int        # Number of hypotheses generated
     entities_resolved: int       # Number of entities resolved
     duration_ms: int             # Total execution time
+    turn_id: str | None = None   # Database turn ID for feedback linkage
+    trace_id: str | None = None  # Langfuse trace ID for feedback linkage
     # Token tracking fields for UI compatibility with TraceMessage
     model: str = "claude-sonnet-4-20250514"  # Pipeline uses SDK default
     input_tokens: int | None = None

@@ -11,6 +11,7 @@ import type {
 } from "@/types/messages";
 
 const WS_URL = import.meta.env.VITE_WS_URL || "";
+const AUTH_TOKEN = import.meta.env.VITE_AUTH_TOKEN || "";
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
 const MAX_CONNECT_ATTEMPTS_BEFORE_DEMO = 3;
@@ -303,6 +304,7 @@ export function useWebSocket() {
           id: generateId(),
           type: "trace" as const,
           turn_id: data.turn_id,
+          trace_id: data.trace_id,
           input_tokens: data.input_tokens,
           output_tokens: data.output_tokens,
           cache_creation_tokens: data.cache_creation_tokens,
@@ -380,6 +382,8 @@ export function useWebSocket() {
             hypotheses_count: data.hypotheses_count,
             entities_resolved: data.entities_resolved,
             duration_ms: data.duration_ms,
+            turn_id: data.turn_id,
+            trace_id: data.trace_id,
             timestamp: Date.now(),
           },
         ]);
@@ -429,7 +433,9 @@ export function useWebSocket() {
     setConnectionStatus("connecting");
 
     try {
-      const ws = new WebSocket(WS_URL);
+      // Append token to URL if available
+      const wsUrlWithAuth = AUTH_TOKEN ? `${WS_URL}?token=${AUTH_TOKEN}` : WS_URL;
+      const ws = new WebSocket(wsUrlWithAuth);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -449,11 +455,28 @@ export function useWebSocket() {
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         if (!mountedRef.current) return;
         wsRef.current = null;
         setIsAgentResponding(false);
         setPipelineProgress(null);
+
+        // Handle authentication failure (close code 4001)
+        if (event.code === 4001) {
+          setConnectionStatus("auth_failed");
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: generateId(),
+              type: "error" as const,
+              message: "Authentication failed. Please check your credentials.",
+              code: "AUTH_FAILED",
+              timestamp: Date.now(),
+            },
+          ]);
+          return;
+        }
+
         scheduleReconnect();
       };
 
