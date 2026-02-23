@@ -40,7 +40,8 @@ jobs:
           cd backend
           ~/.local/bin/uv sync
 
-          # Run database migrations
+          # Run database migrations (source .env for DATABASE_URL)
+          set -a && source .env && set +a
           ~/.local/bin/uv run alembic upgrade head
 
           # Restart backend service
