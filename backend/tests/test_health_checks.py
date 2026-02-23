@@ -312,4 +312,5 @@ class TestHealthEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "healthy"
-        assert data["service"] == "kestrel-backend"
+        # Service name intentionally omitted (security: avoid internal service name disclosure)
+        assert "service" not in data
