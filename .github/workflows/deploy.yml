@@ -24,7 +24,7 @@ jobs:
           HOST: ${{ secrets.LIGHTSAIL_HOST }}
           USER: ${{ secrets.LIGHTSAIL_USER }}
         run: |
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/key \
+          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -i ~/.ssh/key \
             "${USER}@${HOST}" << 'EOF'
           set -e
 
