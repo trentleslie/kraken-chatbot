@@ -386,9 +386,11 @@ async def multi_hop_query(
         }
 
     # Build arguments for the MCP tool
+    # Note: Kestrel API v1.16.0 uses 'max_path_length' (not 'max_hops')
+    # and 'predicate' (not 'predicate_filter')
     arguments = {
         "start_node_ids": start_node_ids if isinstance(start_node_ids, list) else [start_node_ids],
-        "max_hops": max_hops,
+        "max_path_length": max_hops,  # API parameter name differs from wrapper
         "limit": limit,
     }
 
@@ -396,6 +398,6 @@ async def multi_hop_query(
         arguments["end_node_ids"] = end_node_ids if isinstance(end_node_ids, list) else [end_node_ids]
 
     if predicate_filter:
-        arguments["predicate_filter"] = predicate_filter
+        arguments["predicate"] = predicate_filter  # API uses 'predicate'
 
     return await call_kestrel_tool("multi_hop_query", arguments)
