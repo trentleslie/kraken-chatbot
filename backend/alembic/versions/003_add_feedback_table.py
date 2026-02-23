@@ -1,7 +1,7 @@
 """Add feedback table for Langfuse integration
 
 Revision ID: 003
-Revises: 001
+Revises: 002
 Create Date: 2026-02-22 10:00:00.000000
 
 This migration adds the kraken_feedback table to store user feedback
@@ -15,7 +15,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = '003'
-down_revision: Union[str, None] = '001'
+down_revision: Union[str, None] = '002'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
