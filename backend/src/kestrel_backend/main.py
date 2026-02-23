@@ -485,14 +485,13 @@ async def handle_pipeline_mode(
     session_id = str(conv_id) if conv_id else None
 
     if langfuse:
-        trace_kwargs = {
-            "name": "discovery_pipeline",
-            "input": {"query": content, "connection_id": connection_id},
-            "metadata": {"mode": "pipeline", "version": "2.0"},
-        }
+        trace = langfuse.start_span(
+            name="discovery_pipeline",
+            input={"query": content, "connection_id": connection_id},
+            metadata={"mode": "pipeline", "version": "2.0"},
+        )
         if session_id:
-            trace_kwargs["session_id"] = session_id
-        trace = langfuse.start_span(**trace_kwargs)
+            trace.update_trace(session_id=session_id)
 
     try:
         history = conversation_history.get(connection_id, [])

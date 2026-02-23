@@ -378,14 +378,13 @@ async def run_agent_turn(user_message: str, session_id: str | None = None) -> As
     langfuse = _get_langfuse()
     trace = None
     if langfuse:
-        trace_kwargs = {
-            "name": "kraken_agent_turn",
-            "input": {"user_message": user_message},
-            "metadata": {"turn_id": metrics.turn_id, "model": metrics.model},
-        }
+        trace = langfuse.start_span(
+            name="kraken_agent_turn",
+            input={"user_message": user_message},
+            metadata={"turn_id": metrics.turn_id, "model": metrics.model},
+        )
         if session_id:
-            trace_kwargs["session_id"] = session_id
-        trace = langfuse.start_span(**trace_kwargs)
+            trace.update_trace(session_id=session_id)
 
     # Configure Kestrel MCP server via stdio proxy
     # The proxy handles Kestrel's non-standard MCP-over-HTTP protocol
