@@ -119,7 +119,12 @@ async def validate_api_key(credentials: HTTPAuthorizationCredentials = Security(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"API key validation error: {e}", exc_info=True)
+        # Log error type only - exception message may contain query parameters
+        logger.error(
+            "API key validation error",
+            extra={"error_type": type(e).__name__},
+            exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Authentication error")
 
 
@@ -179,12 +184,18 @@ async def validate_ws_token(token: Optional[str]) -> Optional[dict]:
         }
 
     except JWTError as e:
+        # JWTError messages are safe (no credentials) - log for debugging
         logger.warning(f"JWT validation error: {e}")
         raise ValueError("Invalid or expired token")
     except ValueError:
         raise
     except Exception as e:
-        logger.error(f"WebSocket token validation error: {e}", exc_info=True)
+        # Log error type only - exception message may contain query parameters
+        logger.error(
+            "WebSocket token validation error",
+            extra={"error_type": type(e).__name__},
+            exc_info=True
+        )
         raise ValueError("Authentication error")
 
 
@@ -231,5 +242,10 @@ async def create_user(api_key: str) -> str:
     except ValueError:
         raise
     except Exception as e:
-        logger.error(f"User creation error: {e}", exc_info=True)
+        # Log error type only - exception message may contain query parameters
+        logger.error(
+            "User creation error",
+            extra={"error_type": type(e).__name__},
+            exc_info=True
+        )
         raise ValueError("Failed to create user")

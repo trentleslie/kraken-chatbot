@@ -193,13 +193,13 @@ def check_langfuse_health() -> tuple[bool, str | None]:
 @app.get("/health")
 async def health_check():
     """Simple liveness check endpoint for monitoring."""
-    return {"status": "healthy", "service": "kestrel-backend"}
+    return {"status": "healthy"}
 
 
 @app.get("/api/health")
 async def api_health_check():
     """API health check endpoint (alternative path)."""
-    return {"status": "healthy", "service": "kestrel-backend"}
+    return {"status": "healthy"}
 
 
 @app.get("/ready")
@@ -281,7 +281,7 @@ async def get_conversation(conversation_id: str, auth: dict = Depends(validate_a
 
 
 @app.post("/api/feedback")
-async def submit_feedback(request: Request):
+async def submit_feedback(request: Request, auth: dict = Depends(validate_api_key)):
     """
     Submit user feedback (thumbs up/down) for a turn.
 
