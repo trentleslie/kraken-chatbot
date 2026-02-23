@@ -1,11 +1,14 @@
-"""Alembic migration environment for async PostgreSQL."""
-import asyncio
+"""Alembic migration environment using synchronous psycopg2.
+
+Uses psycopg2 (sync) instead of asyncpg (async) for migrations because:
+1. Migrations are one-off DDL operations that don't need async performance
+2. asyncpg can have issues with event loop creation in SSH/CI environments
+3. Sync migrations are simpler and more reliable for deployment pipelines
+"""
 import os
 from logging.config import fileConfig
 
-from sqlalchemy import pool
-from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 
@@ -35,9 +38,12 @@ target_metadata = Base.metadata
 # Get database URL from environment variable
 database_url = os.environ.get("DATABASE_URL")
 if database_url:
-    # Replace postgresql:// with postgresql+asyncpg:// for async support
-    if database_url.startswith("postgresql://"):
-        database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    # Use psycopg2 (sync) for migrations - more reliable in CI/SSH environments
+    # Replace any async driver specification with psycopg2
+    if "+asyncpg" in database_url:
+        database_url = database_url.replace("+asyncpg", "+psycopg2")
+    elif database_url.startswith("postgresql://"):
+        database_url = database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
     config.set_main_option("sqlalchemy.url", database_url)
 
 
@@ -65,34 +71,19 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-def do_run_migrations(connection: Connection) -> None:
-    """Run migrations with the given connection."""
-    context.configure(connection=connection, target_metadata=target_metadata)
-
-    with context.begin_transaction():
-        context.run_migrations()
-
-
-async def run_async_migrations() -> None:
-    """Run migrations in async mode."""
-    configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = config.get_main_option("sqlalchemy.url")
-
-    connectable = async_engine_from_config(
-        configuration,
+def run_migrations_online() -> None:
+    """Run migrations in 'online' mode using synchronous psycopg2."""
+    connectable = engine_from_config(
+        config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
 
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
+    with connectable.connect() as connection:
+        context.configure(connection=connection, target_metadata=target_metadata)
 
-    await connectable.dispose()
-
-
-def run_migrations_online() -> None:
-    """Run migrations in 'online' mode."""
-    asyncio.run(run_async_migrations())
+        with context.begin_transaction():
+            context.run_migrations()
 
 
 if context.is_offline_mode():
