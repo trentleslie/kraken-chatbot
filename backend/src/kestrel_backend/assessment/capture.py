@@ -17,6 +17,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 
@@ -90,10 +91,9 @@ class PipelineCapture:
             # Import here to avoid circular imports and heavy module loading at import time
             from ..graph.runner import run_discovery
 
-            # We need to intercept httpx calls during pipeline execution.
-            # respx works at the transport level, but for recording we need a
-            # passthrough approach: make real requests and capture the responses.
-            # We monkey-patch httpx.AsyncClient to wrap the send method.
+            # Intercept httpx calls during pipeline execution to record
+            # request/response pairs. Uses patch.object for safe, scoped
+            # patching (no global mutation, safe for concurrent use).
             original_send = httpx.AsyncClient.send
 
             async def recording_send(self_client, request, *args, **kwargs):
@@ -103,11 +103,8 @@ class PipelineCapture:
                     recorder.record_interaction(request, response)
                 return response
 
-            httpx.AsyncClient.send = recording_send
-            try:
+            with patch.object(httpx.AsyncClient, "send", recording_send):
                 state = await run_discovery(query, conversation_history)
-            finally:
-                httpx.AsyncClient.send = original_send
 
         except Exception as e:
             error = str(e)

@@ -129,32 +129,6 @@ class CassetteReplayer:
         return self._metadata
 
 
-def create_recording_transport(
-    recorder: CassetteRecorder,
-    base_transport: httpx.AsyncBaseTransport | None = None,
-) -> respx.MockRouter:
-    """Create a respx mock router that records all requests while passing them through.
-
-    This is used during baseline capture: real HTTP calls are made, but request/response
-    pairs are also recorded to the CassetteRecorder.
-
-    Returns a respx router configured to intercept all requests. The caller should
-    use it as a context manager or via respx.mock().
-    """
-    router = respx.MockRouter(assert_all_called=False)
-
-    def side_effect(request: httpx.Request) -> httpx.Response:
-        # This function is called by respx when a request matches.
-        # We can't make real network calls from inside respx side_effects easily,
-        # so recording mode uses a different approach — see the capture module.
-        raise NotImplementedError(
-            "Recording transport should not be used directly. "
-            "Use the capture module's record-then-save pattern instead."
-        )
-
-    return router
-
-
 def setup_replay(cassette_path: Path) -> tuple[respx.MockRouter, CassetteReplayer]:
     """Set up respx to replay cached responses from a cassette file.
 
@@ -180,7 +154,7 @@ def setup_replay(cassette_path: Path) -> tuple[respx.MockRouter, CassetteReplaye
                 "No cassette match for %s %s — passing through",
                 request.method, request.url,
             )
-            raise respx.errors.AllMockedResponsesSent(
+            raise RuntimeError(
                 f"No recorded response for {request.method} {request.url}"
             )
         return response
