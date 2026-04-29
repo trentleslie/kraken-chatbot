@@ -443,6 +443,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             "Tier 2 (LLM): Processing %d entities that failed Tier 1 and 1.5",
             len(failed_entities)
         )
+        for idx in tier2_needed_indices:
+            logger.info(
+                "FALLBACK_EVENT node=entity_resolution entity=%s reason=tier1_failed tier=2",
+                entities[idx],
+            )
 
         # First pass: Standard resolution in batches
         tier2_results = []

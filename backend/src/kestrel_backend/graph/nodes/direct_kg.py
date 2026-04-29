@@ -711,6 +711,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         tier2_start = time.time()
         logger.info("Tier 2 (LLM): Processing %d unique entities that failed Tier 1",
                     len(tier2_needed_curies))
+        for curie in tier2_needed_curies:
+            logger.info(
+                "FALLBACK_EVENT node=direct_kg entity=%s reason=tier1_api_failed tier=2",
+                curie,
+            )
 
         for batch in chunk(tier2_needed_curies, _config.batch_size):
             batch_tasks = []
