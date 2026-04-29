@@ -111,7 +111,11 @@ class CassetteReplayer:
 
         idx = self._consumed.get(key, 0)
         if idx >= len(interactions):
-            # Wrap around if more requests than recorded (shouldn't happen in normal use)
+            # More requests than recorded — replay last response but warn
+            logger.warning(
+                "Over-consumption for key %s: recorded %d interaction(s), got request #%d; replaying last",
+                key, len(interactions), idx + 1,
+            )
             idx = len(interactions) - 1
 
         interaction = interactions[idx]
