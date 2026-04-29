@@ -30,6 +30,8 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "testcontainers[postgres]>=4.0.0",
     "httpx>=0.27.0",
+    "respx>=0.22.0",
+    "scipy>=1.14.0",  # Used by PR5 scorer (Spearman correlation)
 ]
 
 [tool.pytest.ini_options]
