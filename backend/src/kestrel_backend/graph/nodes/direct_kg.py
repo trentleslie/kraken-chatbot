@@ -31,16 +31,9 @@ from ...kestrel_client import call_kestrel_tool
 from ..state import (
     DiscoveryState, Finding, DiseaseAssociation, PathwayMembership, NoveltyScore
 )
+from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
 
 logger = logging.getLogger(__name__)
-
-# Try to import Claude Agent SDK - graceful fallback if not available
-try:
-    from claude_agent_sdk import query, ClaudeAgentOptions
-    from claude_agent_sdk.types import McpStdioServerConfig
-    HAS_SDK = True
-except ImportError:
-    HAS_SDK = False
 
 
 # =============================================================================
@@ -55,10 +48,6 @@ PRESETS = ["established", "hidden_gems"]
 
 # Hub detection threshold (uses edge_count from triage's novelty_scores)
 HUB_THRESHOLD = 5000  # Entities with >5000 edges are flagged as hubs
-
-# Kestrel MCP command for stdio-based server (used by Tier 2)
-KESTREL_COMMAND = "uvx"
-KESTREL_ARGS = ["mcp-client-kestrel"]
 
 # Semaphore to limit concurrent SDK calls (Tier 2 only)
 SDK_SEMAPHORE = asyncio.Semaphore(6)
@@ -573,11 +562,7 @@ async def analyze_single_entity(
 
     try:
         async with SDK_SEMAPHORE:
-            kestrel_config = McpStdioServerConfig(
-                type="stdio",
-                command=KESTREL_COMMAND,
-                args=KESTREL_ARGS,
-            )
+            kestrel_config = get_kestrel_mcp_config()
 
             options = ClaudeAgentOptions(
                 system_prompt=DIRECT_KG_PROMPT,
@@ -630,10 +615,6 @@ async def analyze_single_entity(
 # =============================================================================
 # Helper Functions
 # =============================================================================
-
-def chunk(items: list, size: int) -> list[list]:
-    """Split a list into chunks of specified size."""
-    return [items[i:i + size] for i in range(0, len(items), size)]
 
 
 def get_raw_name_for_curie(curie: str, novelty_scores: list[NoveltyScore], resolved_entities: list) -> str:

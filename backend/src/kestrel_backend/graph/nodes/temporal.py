@@ -29,21 +29,9 @@ from ..state import (
     DiscoveryState, TemporalClassification, Finding,
     DiseaseAssociation, PathwayMembership, InferredAssociation, Bridge
 )
+from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
 
 logger = logging.getLogger(__name__)
-
-# Try to import Claude Agent SDK - graceful fallback if not available
-try:
-    from claude_agent_sdk import query, ClaudeAgentOptions
-    from claude_agent_sdk.types import McpStdioServerConfig
-    HAS_SDK = True
-except ImportError:
-    HAS_SDK = False
-
-
-# Kestrel MCP command for stdio-based server (same as entity_resolution)
-KESTREL_COMMAND = "uvx"
-KESTREL_ARGS = ["mcp-client-kestrel"]
 
 
 TEMPORAL_PROMPT = """You are a temporal biomedical analyst specializing in longitudinal studies.
@@ -299,11 +287,7 @@ Classify each finding by its temporal relationship to disease progression.
 
     try:
         # Configure Kestrel MCP server (stdio-based, same as entity_resolution)
-        kestrel_config = McpStdioServerConfig(
-            type="stdio",
-            command=KESTREL_COMMAND,
-            args=KESTREL_ARGS,
-        )
+        kestrel_config = get_kestrel_mcp_config()
 
         options = ClaudeAgentOptions(
             allowed_tools=["mcp__kestrel__one_hop_query"],  # Minimal - just for validation

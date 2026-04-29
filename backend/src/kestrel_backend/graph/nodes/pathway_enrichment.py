@@ -24,21 +24,9 @@ from ..state import (
     DiscoveryState, SharedNeighbor, BiologicalTheme, Finding
 )
 from ...kestrel_client import multi_hop_query
+from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
 
 logger = logging.getLogger(__name__)
-
-# Try to import Claude Agent SDK - graceful fallback if not available
-try:
-    from claude_agent_sdk import query, ClaudeAgentOptions
-    from claude_agent_sdk.types import McpStdioServerConfig
-    HAS_SDK = True
-except ImportError:
-    HAS_SDK = False
-
-
-# Kestrel MCP command for stdio-based server (same as entity_resolution)
-KESTREL_COMMAND = "uvx"
-KESTREL_ARGS = ["mcp-client-kestrel"]
 
 # Hub threshold - nodes with more edges are flagged
 HUB_THRESHOLD = 1000
@@ -379,11 +367,7 @@ NOTE: Two-hop analysis already completed separately. Focus on ONE-HOP neighbors 
 
     try:
         # Configure Kestrel MCP server (stdio-based, same as entity_resolution)
-        kestrel_config = McpStdioServerConfig(
-            type="stdio",
-            command=KESTREL_COMMAND,
-            args=KESTREL_ARGS,
-        )
+        kestrel_config = get_kestrel_mcp_config()
 
         options = ClaudeAgentOptions(
             system_prompt=PATHWAY_ENRICHMENT_PROMPT,

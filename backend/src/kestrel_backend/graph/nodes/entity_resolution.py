@@ -28,21 +28,9 @@ from typing import Any
 
 from ...kestrel_client import call_kestrel_tool
 from ..state import DiscoveryState, EntityResolution
+from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
 
 logger = logging.getLogger(__name__)
-
-# Try to import Claude Agent SDK - graceful fallback if not available
-try:
-    from claude_agent_sdk import query, ClaudeAgentOptions
-    from claude_agent_sdk.types import McpStdioServerConfig
-    HAS_SDK = True
-except ImportError:
-    HAS_SDK = False
-
-
-# Kestrel MCP command for stdio-based server
-KESTREL_COMMAND = "uvx"
-KESTREL_ARGS = ["mcp-client-kestrel"]
 
 # Semaphore to serialize SDK calls and prevent concurrent CLI spawn issues
 SDK_SEMAPHORE = asyncio.Semaphore(1)
@@ -293,11 +281,7 @@ async def resolve_single_entity(entity: str, is_retry: bool = False) -> EntityRe
 
     try:
         async with SDK_SEMAPHORE:
-            kestrel_config = McpStdioServerConfig(
-                type="stdio",
-                command=KESTREL_COMMAND,
-                args=KESTREL_ARGS,
-            )
+            kestrel_config = get_kestrel_mcp_config()
 
             # Use more aggressive prompt for retry attempts
             prompt_to_use = RESOLUTION_PROMPT
@@ -339,10 +323,6 @@ async def resolve_single_entity(entity: str, is_retry: bool = False) -> EntityRe
             method="failed",
         )
 
-
-def chunk(items: list, size: int) -> list[list]:
-    """Split a list into chunks of specified size."""
-    return [items[i:i + size] for i in range(0, len(items), size)]
 
 
 async def run(state: DiscoveryState) -> dict[str, Any]:

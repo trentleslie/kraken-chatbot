@@ -30,15 +30,9 @@ from ...kestrel_client import call_kestrel_tool
 from ..state import (
     DiscoveryState, Finding, InferredAssociation, AnalogueEntity, NoveltyScore
 )
+from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
 
 logger = logging.getLogger(__name__)
-
-# Try to import Claude Agent SDK - graceful fallback if not available
-try:
-    from claude_agent_sdk import query, ClaudeAgentOptions
-    HAS_SDK = True
-except ImportError:
-    HAS_SDK = False
 
 
 # Semaphore to limit concurrent SDK calls (increased from 6 to 8)
@@ -606,10 +600,6 @@ async def analyze_cold_start_entity(
             [error_msg],
         )
 
-
-def chunk(items: list, size: int) -> list[list]:
-    """Split a list into chunks of specified size."""
-    return [items[i:i + size] for i in range(0, len(items), size)]
 
 
 def score_entity_complexity(edge_count: int) -> float:
