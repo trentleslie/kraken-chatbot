@@ -25,11 +25,11 @@ from ..state import (
 )
 from ...kestrel_client import multi_hop_query
 from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
+from ..pipeline_config import get_pipeline_config
 
 logger = logging.getLogger(__name__)
 
-# Hub threshold - nodes with more edges are flagged
-HUB_THRESHOLD = 1000
+_config = get_pipeline_config().pathway_enrichment
 
 # Minimum edge count to include entity in pathway analysis
 # Only moderate (20-199) and well-characterized (200+) entities have enough
@@ -143,7 +143,7 @@ def parse_enrichment_result(
                 name=sn.get("name", "Unknown"),
                 category=sn.get("category", "biolink:NamedThing"),
                 degree=sn.get("degree", 0),
-                is_hub=sn.get("is_hub", False) or sn.get("degree", 0) > HUB_THRESHOLD,
+                is_hub=sn.get("is_hub", False) or sn.get("degree", 0) > _config.hub_threshold,
                 connected_inputs=sn.get("connected_inputs", []),
                 predicates=sn.get("predicates", []),
             ))

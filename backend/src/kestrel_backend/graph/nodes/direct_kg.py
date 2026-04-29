@@ -32,28 +32,21 @@ from ..state import (
     DiscoveryState, Finding, DiseaseAssociation, PathwayMembership, NoveltyScore
 )
 from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
+from ..pipeline_config import get_pipeline_config
 
 logger = logging.getLogger(__name__)
 
+_config = get_pipeline_config().direct_kg
 
 # =============================================================================
 # Configuration Constants
 # =============================================================================
 
-# Edges per preset per category (6 calls × 25 = 150 max per entity)
-PRESET_LIMIT = 25
-
 # Ranking presets to use (Kestrel API supports these)
 PRESETS = ["established", "hidden_gems"]
 
-# Hub detection threshold (uses edge_count from triage's novelty_scores)
-HUB_THRESHOLD = 5000  # Entities with >5000 edges are flagged as hubs
-
 # Semaphore to limit concurrent SDK calls (Tier 2 only)
-SDK_SEMAPHORE = asyncio.Semaphore(6)
-
-# Batch size for parallel analysis
-BATCH_SIZE = 6
+SDK_SEMAPHORE = asyncio.Semaphore(get_pipeline_config().direct_kg.sdk_semaphore)
 
 # System prompt for direct KG analysis (Tier 2 LLM fallback)
 DIRECT_KG_PROMPT = """You are a biomedical knowledge graph analyst. For the given entity (CURIE),
@@ -324,7 +317,7 @@ async def analyze_via_api(
                     "end_node_category": cat_filter,
                     "ranking": preset,
                     "mode": "slim",
-                    "limit": PRESET_LIMIT,
+                    "limit": _config.preset_limit,
                 }))
                 task_labels.append((cat_key, preset))
 
@@ -719,7 +712,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         logger.info("Tier 2 (LLM): Processing %d unique entities that failed Tier 1",
                     len(tier2_needed_curies))
 
-        for batch in chunk(tier2_needed_curies, BATCH_SIZE):
+        for batch in chunk(tier2_needed_curies, _config.batch_size):
             batch_tasks = []
             for curie in batch:
                 raw_name = get_raw_name_for_curie(curie, novelty_scores, resolved_entities)
@@ -755,7 +748,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     # Flag hubs based on novelty_scores edge_count
     for score in novelty_scores:
-        if score.edge_count > HUB_THRESHOLD:
+        if score.edge_count > _config.hub_threshold:
             if score.curie not in all_hub_flags:
                 all_hub_flags.append(score.curie)
                 logger.info("Flagged hub entity: %s (edges=%d)", score.curie, score.edge_count)

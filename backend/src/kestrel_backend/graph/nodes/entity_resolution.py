@@ -29,11 +29,14 @@ from typing import Any
 from ...kestrel_client import call_kestrel_tool
 from ..state import DiscoveryState, EntityResolution
 from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
+from ..pipeline_config import get_pipeline_config
 
 logger = logging.getLogger(__name__)
 
+_config = get_pipeline_config().entity_resolution
+
 # Semaphore to serialize SDK calls and prevent concurrent CLI spawn issues
-SDK_SEMAPHORE = asyncio.Semaphore(1)
+SDK_SEMAPHORE = asyncio.Semaphore(get_pipeline_config().entity_resolution.sdk_semaphore)
 
 # Enhanced prompt for entity resolution with retry strategies
 RESOLUTION_PROMPT = """You are an expert biomedical entity resolver for the Kestrel knowledge graph.
@@ -87,12 +90,6 @@ Return ONLY valid JSON:
 
 If truly not found: {"curie": null, "name": null, "category": null, "confidence": 0.0}"""
 
-# Batch size for parallel resolution
-BATCH_SIZE = 6
-
-# Minimum score threshold for Tier 1 API resolution
-# Below this score, entities fall through to Tier 2 LLM
-TIER1_MIN_SCORE = 0.6
 
 
 async def resolve_via_api(entity: str) -> EntityResolution | None:
@@ -172,13 +169,13 @@ async def resolve_via_api(entity: str) -> EntityResolution | None:
             confidence = 0.90
         elif score > 0.8:
             confidence = 0.80
-        elif score > TIER1_MIN_SCORE:
+        elif score > _config.tier1_min_score:
             confidence = 0.70
         else:
             # Score too low - fall through to Tier 2
             logger.info(
                 "Tier 1 '%s': Score %.2f below threshold %.2f, falling through to Tier 2",
-                entity, score, TIER1_MIN_SCORE
+                entity, score, _config.tier1_min_score
             )
             return None
 
@@ -449,7 +446,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
         # First pass: Standard resolution in batches
         tier2_results = []
-        for batch in chunk(failed_entities, BATCH_SIZE):
+        for batch in chunk(failed_entities, _config.batch_size):
             batch_results = await asyncio.gather(
                 *[resolve_single_entity(e) for e in batch],
                 return_exceptions=True,
@@ -481,7 +478,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 len(still_failed_entities)
             )
 
-            retry_batch_size = max(2, BATCH_SIZE // 2)
+            retry_batch_size = max(2, _config.batch_size // 2)
             retry_results = []
 
             for batch in chunk(still_failed_entities, retry_batch_size):

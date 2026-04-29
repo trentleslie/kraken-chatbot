@@ -28,8 +28,13 @@ class TestKestrelConfig:
         config = get_kestrel_mcp_config()
         if HAS_SDK:
             assert config is not None
-            assert config.command == "uvx"
-            assert config.args == ["mcp-client-kestrel"]
+            # McpStdioServerConfig may be a dict or object depending on SDK version
+            if isinstance(config, dict):
+                assert config["command"] == "uvx"
+                assert config["args"] == ["mcp-client-kestrel"]
+            else:
+                assert config.command == "uvx"
+                assert config.args == ["mcp-client-kestrel"]
         else:
             assert config is None
 

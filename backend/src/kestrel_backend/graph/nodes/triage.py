@@ -31,11 +31,14 @@ from typing import Any
 from ...kestrel_client import call_kestrel_tool
 from ..state import DiscoveryState, NoveltyScore, EntityResolution
 from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
+from ..pipeline_config import get_pipeline_config
 
 logger = logging.getLogger(__name__)
 
+_config = get_pipeline_config().triage
+
 # Semaphore to serialize SDK calls and prevent concurrent CLI spawn issues
-SDK_SEMAPHORE = asyncio.Semaphore(1)
+SDK_SEMAPHORE = asyncio.Semaphore(get_pipeline_config().triage.sdk_semaphore)
 
 # Concise prompt for edge counting
 EDGE_COUNT_PROMPT = """You are a knowledge graph edge counter.
@@ -50,8 +53,6 @@ If the query fails or returns no results, return:
 
 Be extremely concise. No explanations."""
 
-# Batch size for parallel edge counting
-BATCH_SIZE = 6
 
 # Classification thresholds
 THRESHOLD_WELL_CHARACTERIZED = 200
@@ -309,7 +310,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         )
 
         tier2_results = []
-        for batch in chunk(failed_entities, BATCH_SIZE):
+        for batch in chunk(failed_entities, _config.batch_size):
             batch_results = await asyncio.gather(
                 *[count_edges_single(e) for e in batch],
                 return_exceptions=True,
