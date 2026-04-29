@@ -44,6 +44,10 @@ def get_kestrel_mcp_config() -> Any:
     )
 
 
+# NOTE: create_agent_options is not yet used by existing nodes (they call
+# ClaudeAgentOptions directly). It will be used by PR5's LLM-as-judge scorer
+# and the config-flagged literature classifier. Kept here to avoid a second
+# refactor pass when those features land.
 def create_agent_options(
     system_prompt: str,
     allowed_tools: list[str] | None = None,

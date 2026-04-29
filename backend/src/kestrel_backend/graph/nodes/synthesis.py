@@ -26,7 +26,7 @@ from ..state import (
 )
 from ...literature_utils import format_pmid_link
 from ...kestrel_client import multi_hop_query
-from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
+from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions
 
 logger = logging.getLogger(__name__)
 

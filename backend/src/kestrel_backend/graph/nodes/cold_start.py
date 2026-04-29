@@ -30,7 +30,7 @@ from ...kestrel_client import call_kestrel_tool
 from ..state import (
     DiscoveryState, Finding, InferredAssociation, AnalogueEntity, NoveltyScore
 )
-from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
+from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, chunk
 from ..pipeline_config import get_pipeline_config
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 _config = get_pipeline_config().cold_start
 
 # Semaphore to limit concurrent SDK calls
-SDK_SEMAPHORE = asyncio.Semaphore(get_pipeline_config().cold_start.sdk_semaphore)
+SDK_SEMAPHORE = asyncio.Semaphore(_config.sdk_semaphore)
 
 
 # System prompt for inference reasoning (no tools needed - KG data provided in prompt)
@@ -78,12 +78,14 @@ If no valid inferences can be made from the provided data, return:
 """
 
 
-async def get_similar_entities(curie: str, limit: int = _config.analogue_limit) -> list[dict]:
+async def get_similar_entities(curie: str, limit: int | None = None) -> list[dict]:
     """
     Query Kestrel similar_nodes via HTTP API.
 
     Returns list of similar entities with curie, name, similarity score, and category.
     """
+    if limit is None:
+        limit = get_pipeline_config().cold_start.analogue_limit
     try:
         result = await call_kestrel_tool("similar_nodes", {
             "node_id": curie,

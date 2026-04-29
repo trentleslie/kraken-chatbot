@@ -46,7 +46,7 @@ _config = get_pipeline_config().direct_kg
 PRESETS = ["established", "hidden_gems"]
 
 # Semaphore to limit concurrent SDK calls (Tier 2 only)
-SDK_SEMAPHORE = asyncio.Semaphore(get_pipeline_config().direct_kg.sdk_semaphore)
+SDK_SEMAPHORE = asyncio.Semaphore(_config.sdk_semaphore)
 
 # System prompt for direct KG analysis (Tier 2 LLM fallback)
 DIRECT_KG_PROMPT = """You are a biomedical knowledge graph analyst. For the given entity (CURIE),

@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 _config = get_pipeline_config().triage
 
 # Semaphore to serialize SDK calls and prevent concurrent CLI spawn issues
-SDK_SEMAPHORE = asyncio.Semaphore(get_pipeline_config().triage.sdk_semaphore)
+SDK_SEMAPHORE = asyncio.Semaphore(_config.sdk_semaphore)
 
 # Concise prompt for edge counting
 EDGE_COUNT_PROMPT = """You are a knowledge graph edge counter.

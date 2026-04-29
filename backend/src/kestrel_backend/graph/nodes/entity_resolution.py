@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 _config = get_pipeline_config().entity_resolution
 
 # Semaphore to serialize SDK calls and prevent concurrent CLI spawn issues
-SDK_SEMAPHORE = asyncio.Semaphore(get_pipeline_config().entity_resolution.sdk_semaphore)
+SDK_SEMAPHORE = asyncio.Semaphore(_config.sdk_semaphore)
 
 # Enhanced prompt for entity resolution with retry strategies
 RESOLUTION_PROMPT = """You are an expert biomedical entity resolver for the Kestrel knowledge graph.
