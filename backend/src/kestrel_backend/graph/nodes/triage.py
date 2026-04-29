@@ -32,6 +32,7 @@ from ...kestrel_client import call_kestrel_tool
 from ..state import DiscoveryState, NoveltyScore, EntityResolution
 from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
 from ..pipeline_config import get_pipeline_config
+from ..state_contracts import validate_state, TriageInput, TriageOutput
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +235,7 @@ async def count_edges_single(entity: EntityResolution) -> NoveltyScore:
 
 
 
+@validate_state(TriageInput, TriageOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
     Triage resolved entities by KG connectivity using two-tier approach.

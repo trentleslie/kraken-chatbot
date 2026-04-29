@@ -15,6 +15,7 @@ import re
 import time
 from typing import Any
 from ..state import DiscoveryState
+from ..state_contracts import validate_state, IntakeInput, IntakeOutput
 
 logger = logging.getLogger(__name__)
 
@@ -600,6 +601,7 @@ def detect_longitudinal_context(query: str) -> tuple[bool, int | None]:
     return is_longitudinal, duration
 
 
+@validate_state(IntakeInput, IntakeOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
     Process input query and extract structured information.

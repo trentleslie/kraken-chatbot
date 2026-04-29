@@ -30,6 +30,7 @@ from ..state import (
     DiseaseAssociation, PathwayMembership, InferredAssociation, Bridge
 )
 from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
+from ..state_contracts import validate_state, TemporalInput, TemporalOutput
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +225,7 @@ def parse_temporal_result(
     return classifications, errors
 
 
+@validate_state(TemporalInput, TemporalOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
     Classify findings by temporal relationship to disease progression.
