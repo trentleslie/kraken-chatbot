@@ -30,6 +30,7 @@ from ...kestrel_client import call_kestrel_tool
 from ..state import DiscoveryState, EntityResolution
 from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
 from ..pipeline_config import get_pipeline_config
+from ..state_contracts import validate_state, EntityResolutionInput, EntityResolutionOutput
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +323,7 @@ async def resolve_single_entity(entity: str, is_retry: bool = False) -> EntityRe
 
 
 
+@validate_state(EntityResolutionInput, EntityResolutionOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
     Resolve all raw entities to knowledge graph identifiers.

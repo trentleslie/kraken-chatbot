@@ -32,6 +32,7 @@ from ..state import (
 )
 from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, chunk
 from ..pipeline_config import get_pipeline_config
+from ..state_contracts import validate_state, ColdStartInput, ColdStartOutput
 
 logger = logging.getLogger(__name__)
 
@@ -644,6 +645,7 @@ def get_entity_info(
     return curie_or_name, curie_or_name, 0
 
 
+@validate_state(ColdStartInput, ColdStartOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
     Analyze entities with sparse or no KG representation.

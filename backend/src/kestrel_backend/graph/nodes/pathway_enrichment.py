@@ -26,6 +26,7 @@ from ..state import (
 from ...kestrel_client import multi_hop_query
 from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
 from ..pipeline_config import get_pipeline_config
+from ..state_contracts import validate_state, PathwayEnrichmentInput, PathwayEnrichmentOutput
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +256,7 @@ async def find_two_hop_shared_neighbors(
     return shared_neighbors, errors
 
 
+@validate_state(PathwayEnrichmentInput, PathwayEnrichmentOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
     Analyze pathway enrichment across all resolved entities.

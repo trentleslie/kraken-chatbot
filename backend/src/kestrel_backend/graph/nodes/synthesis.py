@@ -27,6 +27,7 @@ from ..state import (
 from ...literature_utils import format_pmid_link
 from ...kestrel_client import multi_hop_query
 from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions
+from ..state_contracts import validate_state, SynthesisInput, SynthesisOutput
 
 logger = logging.getLogger(__name__)
 
@@ -1026,6 +1027,7 @@ def extract_hypotheses(state: DiscoveryState) -> list[Hypothesis]:
     return hypotheses
 
 
+@validate_state(SynthesisInput, SynthesisOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
     Generate a synthesis report and extract hypotheses from all analysis phases.

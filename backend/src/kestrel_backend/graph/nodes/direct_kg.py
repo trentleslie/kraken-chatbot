@@ -33,6 +33,7 @@ from ..state import (
 )
 from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
 from ..pipeline_config import get_pipeline_config
+from ..state_contracts import validate_state, DirectKGInput, DirectKGOutput
 
 logger = logging.getLogger(__name__)
 
@@ -627,6 +628,7 @@ def get_raw_name_for_curie(curie: str, novelty_scores: list[NoveltyScore], resol
 # Main Run Function
 # =============================================================================
 
+@validate_state(DirectKGInput, DirectKGOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
     Analyze entities using Kestrel ranking presets for established vs novel connections.

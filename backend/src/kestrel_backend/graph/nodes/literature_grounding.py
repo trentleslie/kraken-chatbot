@@ -36,6 +36,7 @@ from ...pubmed_client import (
 )
 
 from ..pipeline_config import get_pipeline_config
+from ..state_contracts import validate_state, LiteratureGroundingInput, LiteratureGroundingOutput
 
 logger = logging.getLogger(__name__)
 
@@ -1030,6 +1031,7 @@ def ground_hypothesis_kg(
     return hypothesis, False
 
 
+@validate_state(LiteratureGroundingInput, LiteratureGroundingOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
     Ground synthesis hypotheses with literature citations.

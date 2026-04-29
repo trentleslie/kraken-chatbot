@@ -28,6 +28,7 @@ from ..state import (
 )
 from ...kestrel_client import multi_hop_query
 from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
+from ..state_contracts import validate_state, IntegrationInput, IntegrationOutput
 
 logger = logging.getLogger(__name__)
 
@@ -438,6 +439,7 @@ def parse_integration_result(
     return bridges, gaps, errors
 
 
+@validate_state(IntegrationInput, IntegrationOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
     Perform integration analysis: bridge detection and gap analysis.
