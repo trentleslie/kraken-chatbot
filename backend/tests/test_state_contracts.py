@@ -84,8 +84,21 @@ class TestTriageContract:
         assert len(model.resolved_entities) == 1
 
     def test_valid_output(self):
-        model = TriageOutput.model_validate({"novelty_scores": [{"score": 0.8}]})
+        model = TriageOutput.model_validate({
+            "novelty_scores": [{"score": 0.8}],
+            "well_characterized_curies": ["CHEBI:15422"],
+            "moderate_curies": [],
+            "sparse_curies": ["CHEBI:99999"],
+            "cold_start_curies": [],
+        })
         assert len(model.novelty_scores) == 1
+        assert model.well_characterized_curies == ["CHEBI:15422"]
+        assert model.sparse_curies == ["CHEBI:99999"]
+
+    def test_missing_classification_buckets_raises(self):
+        """Triage output must include all 4 classification bucket lists."""
+        with pytest.raises(Exception):
+            TriageOutput.model_validate({"novelty_scores": [{"score": 0.8}]})
 
 
 class TestDirectKGContract:

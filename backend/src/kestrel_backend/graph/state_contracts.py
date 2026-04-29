@@ -201,6 +201,10 @@ class EntityResolutionOutput(_ContractBase):
 class TriageOutput(_ContractBase):
     """Triage must produce novelty_scores and classification buckets."""
     novelty_scores: list[Any]
+    well_characterized_curies: list[str]
+    moderate_curies: list[str]
+    sparse_curies: list[str]
+    cold_start_curies: list[str]
 
 
 class DirectKGOutput(_ContractBase):
