@@ -18,6 +18,8 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
+_CV_WARNING_THRESHOLD = 0.5
+
 
 class CheckResult(BaseModel):
     """Result of a single structural check."""
@@ -174,7 +176,7 @@ def check_finding_count_stability(
     lower = metric_band.get("lower_bound", 0)
     upper = metric_band.get("upper_bound", float("inf"))
     cv = metric_band.get("cv", 0)
-    is_high_variance = metric_band.get("status") == "warning"
+    is_high_variance = cv > _CV_WARNING_THRESHOLD
 
     in_band = lower <= direct <= upper
 
@@ -186,8 +188,8 @@ def check_finding_count_stability(
         status = "warning"
         passed = True
         logger.warning(
-            "Finding count %d outside band [%.1f, %.1f] but CV=%.3f exceeds threshold — warning only",
-            direct, lower, upper, cv,
+            "Finding count %d outside band [%.1f, %.1f] but CV=%.3f > %.1f threshold — warning only",
+            direct, lower, upper, cv, _CV_WARNING_THRESHOLD,
         )
     else:
         status = "fail"
