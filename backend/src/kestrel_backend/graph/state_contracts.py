@@ -20,7 +20,7 @@ import functools
 import logging
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,18 @@ class DirectKGInput(_ContractBase):
     novelty_scores: list[Any] | None = None
     resolved_entities: list[Any] | None = None
 
+    @model_validator(mode="after")
+    def at_least_one_curie_list(self) -> "DirectKGInput":
+        wc = self.well_characterized_curies or []
+        mod = self.moderate_curies or []
+        if not wc and not mod:
+            raise ValueError(
+                "DirectKGInput requires at least one of well_characterized_curies or "
+                "moderate_curies to be non-empty. Both are empty/None — "
+                "this suggests triage found no well-characterized or moderate entities."
+            )
+        return self
+
 
 class ColdStartInput(_ContractBase):
     """Cold start reads sparse and cold-start CURIEs from triage."""
@@ -81,6 +93,18 @@ class ColdStartInput(_ContractBase):
     cold_start_curies: list[str] | None = None
     novelty_scores: list[Any] | None = None
     resolved_entities: list[Any] | None = None
+
+    @model_validator(mode="after")
+    def at_least_one_curie_list(self) -> "ColdStartInput":
+        sparse = self.sparse_curies or []
+        cold = self.cold_start_curies or []
+        if not sparse and not cold:
+            raise ValueError(
+                "ColdStartInput requires at least one of sparse_curies or "
+                "cold_start_curies to be non-empty. Both are empty/None — "
+                "this suggests triage found no sparse or cold-start entities."
+            )
+        return self
 
 
 class PathwayEnrichmentInput(_ContractBase):
@@ -255,10 +279,10 @@ def validate_state(input_model: type[_ContractBase], output_model: type[_Contrac
 
         @functools.wraps(func)
         async def wrapper(state, *args, **kwargs):
-            # Validate input
+            # Validate input — catch only ValidationError, let other exceptions propagate
             try:
                 input_model.model_validate(dict(state))
-            except Exception as e:
+            except ValidationError as e:
                 errors = _extract_validation_errors(e)
                 raise StateValidationError(node_name, "input", errors) from e
 
@@ -269,9 +293,20 @@ def validate_state(input_model: type[_ContractBase], output_model: type[_Contrac
             if result is not None:
                 try:
                     output_model.model_validate(result)
-                except Exception as e:
+                except ValidationError as e:
                     errors = _extract_validation_errors(e)
                     raise StateValidationError(node_name, "output", errors) from e
+            else:
+                # Log warning when None is returned from nodes with required output fields
+                required_fields = [
+                    name for name, field in output_model.model_fields.items()
+                    if field.is_required()
+                ]
+                if required_fields:
+                    logger.warning(
+                        "Node '%s' returned None but output contract requires: %s",
+                        node_name, ", ".join(required_fields),
+                    )
 
             return result
 
@@ -281,7 +316,6 @@ def validate_state(input_model: type[_ContractBase], output_model: type[_Contrac
 
 def _extract_validation_errors(exc: Exception) -> list[str]:
     """Extract human-readable error messages from a Pydantic validation exception."""
-    from pydantic import ValidationError
     if isinstance(exc, ValidationError):
         return [
             f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}"

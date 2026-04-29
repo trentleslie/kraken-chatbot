@@ -96,10 +96,17 @@ class TestDirectKGContract:
         })
         assert model.well_characterized_curies == ["CHEBI:15422"]
 
-    def test_all_optional_fields(self):
-        """Direct KG input fields are all optional (may not run on cold-start-only path)."""
-        model = DirectKGInput.model_validate({})
-        assert model.well_characterized_curies is None
+    def test_both_curie_lists_empty_raises(self):
+        """Direct KG requires at least one of well_characterized or moderate CURIEs."""
+        with pytest.raises(ValueError, match="at least one of well_characterized_curies or moderate_curies"):
+            DirectKGInput.model_validate({})
+
+    def test_moderate_only_valid(self):
+        model = DirectKGInput.model_validate({
+            "well_characterized_curies": [],
+            "moderate_curies": ["CHEBI:12345"],
+        })
+        assert model.moderate_curies == ["CHEBI:12345"]
 
     def test_valid_output(self):
         model = DirectKGOutput.model_validate({
@@ -116,9 +123,17 @@ class TestColdStartContract:
         })
         assert model.sparse_curies == ["CHEBI:99999"]
 
-    def test_all_optional_fields(self):
-        model = ColdStartInput.model_validate({})
-        assert model.sparse_curies is None
+    def test_both_curie_lists_empty_raises(self):
+        """Cold start requires at least one of sparse or cold_start CURIEs."""
+        with pytest.raises(ValueError, match="at least one of sparse_curies or cold_start_curies"):
+            ColdStartInput.model_validate({})
+
+    def test_cold_start_only_valid(self):
+        model = ColdStartInput.model_validate({
+            "sparse_curies": [],
+            "cold_start_curies": ["UNKNOWN:1"],
+        })
+        assert model.cold_start_curies == ["UNKNOWN:1"]
 
     def test_valid_output(self):
         model = ColdStartOutput.model_validate({
