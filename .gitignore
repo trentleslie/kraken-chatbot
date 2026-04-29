@@ -11,3 +11,9 @@ backend/.env
 __pycache__/
 *.pyc
 .ruff_cache/
+
+# Assessment data — track queries and schema, ignore large cassettes and outputs
+backend/assessment_data/cassettes/
+backend/assessment_data/outputs/
+backend/assessment_data/canonical/
+backend/assessment_data/capture_summary.json

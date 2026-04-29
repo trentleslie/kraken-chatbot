@@ -1,0 +1,62 @@
+[
+  {
+    "query": "What is the relationship between NAD+ metabolism and cellular aging?",
+    "path_type": "well-characterized",
+    "expected_entities": ["NAD+", "aging"],
+    "notes": "Well-studied metabolite with extensive KG coverage"
+  },
+  {
+    "query": "How does the SIRT1 protein influence longevity pathways?",
+    "path_type": "well-characterized",
+    "expected_entities": ["SIRT1", "longevity"],
+    "notes": "Well-characterized sirtuin with many known associations"
+  },
+  {
+    "query": "What are the metabolic effects of berberine on glucose homeostasis?",
+    "path_type": "sparse",
+    "expected_entities": ["berberine", "glucose"],
+    "notes": "Natural compound with moderate KG coverage"
+  },
+  {
+    "query": "How does urolithin A affect mitochondrial function?",
+    "path_type": "sparse",
+    "expected_entities": ["urolithin A", "mitochondria"],
+    "notes": "Emerging metabolite with sparse KG edges"
+  },
+  {
+    "query": "What is the mechanism of action of pterostilbene in neuroprotection?",
+    "path_type": "cold-start",
+    "expected_entities": ["pterostilbene", "neuroprotection"],
+    "notes": "Resveratrol analogue — may trigger cold-start path"
+  },
+  {
+    "query": "How does ergothioneine protect against oxidative stress?",
+    "path_type": "cold-start",
+    "expected_entities": ["ergothioneine", "oxidative stress"],
+    "notes": "Rare amino acid — likely cold-start with analogue inference"
+  },
+  {
+    "query": "How do NAD+ levels change with age and what interventions restore them? Include longitudinal data.",
+    "path_type": "longitudinal",
+    "expected_entities": ["NAD+", "aging"],
+    "notes": "Explicit longitudinal framing should trigger temporal node"
+  },
+  {
+    "query": "Track the progression of insulin resistance markers over time in metabolic syndrome. Longitudinal analysis.",
+    "path_type": "longitudinal",
+    "expected_entities": ["insulin resistance", "metabolic syndrome"],
+    "notes": "Longitudinal query with clinical context"
+  },
+  {
+    "query": "What are the shared pathways between NMN supplementation, AMPK activation, and autophagy regulation?",
+    "path_type": "multi-entity",
+    "expected_entities": ["NMN", "AMPK", "autophagy"],
+    "notes": "Three entities — exercises integration node's cross-type bridging"
+  },
+  {
+    "query": "How do resveratrol, quercetin, and fisetin interact in senolytic therapy?",
+    "path_type": "multi-entity",
+    "expected_entities": ["resveratrol", "quercetin", "fisetin"],
+    "notes": "Multiple polyphenols — tests pathway enrichment across entities"
+  }
+]
