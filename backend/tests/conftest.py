@@ -398,7 +398,7 @@ def mock_stream_discovery():
                 {"name": "adenosine", "curie": "CHEBI:16335"}
             ]}),
             ("triage", {"triage_scores": [{"curie": "CHEBI:27732", "score": 0.8}]}),
-            ("direct_kg", {"kg_results": [{"type": "pathway", "name": "Purine metabolism"}]}),
+            ("direct_kg", {"direct_findings": [{"text": "Purine metabolism pathway identified", "tier": "tier1"}]}),
             ("pathway_enrichment", {"pathways": ["Purine metabolism"]}),
             ("integration", {"bridges": []}),
             ("synthesis", {

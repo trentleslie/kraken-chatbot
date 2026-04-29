@@ -31,40 +31,22 @@ from ...kestrel_client import call_kestrel_tool
 from ..state import (
     DiscoveryState, Finding, DiseaseAssociation, PathwayMembership, NoveltyScore
 )
+from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
+from ..pipeline_config import get_pipeline_config
 
 logger = logging.getLogger(__name__)
 
-# Try to import Claude Agent SDK - graceful fallback if not available
-try:
-    from claude_agent_sdk import query, ClaudeAgentOptions
-    from claude_agent_sdk.types import McpStdioServerConfig
-    HAS_SDK = True
-except ImportError:
-    HAS_SDK = False
-
+_config = get_pipeline_config().direct_kg
 
 # =============================================================================
 # Configuration Constants
 # =============================================================================
 
-# Edges per preset per category (6 calls × 25 = 150 max per entity)
-PRESET_LIMIT = 25
-
 # Ranking presets to use (Kestrel API supports these)
 PRESETS = ["established", "hidden_gems"]
 
-# Hub detection threshold (uses edge_count from triage's novelty_scores)
-HUB_THRESHOLD = 5000  # Entities with >5000 edges are flagged as hubs
-
-# Kestrel MCP command for stdio-based server (used by Tier 2)
-KESTREL_COMMAND = "uvx"
-KESTREL_ARGS = ["mcp-client-kestrel"]
-
 # Semaphore to limit concurrent SDK calls (Tier 2 only)
-SDK_SEMAPHORE = asyncio.Semaphore(6)
-
-# Batch size for parallel analysis
-BATCH_SIZE = 6
+SDK_SEMAPHORE = asyncio.Semaphore(_config.sdk_semaphore)
 
 # System prompt for direct KG analysis (Tier 2 LLM fallback)
 DIRECT_KG_PROMPT = """You are a biomedical knowledge graph analyst. For the given entity (CURIE),
@@ -335,7 +317,7 @@ async def analyze_via_api(
                     "end_node_category": cat_filter,
                     "ranking": preset,
                     "mode": "slim",
-                    "limit": PRESET_LIMIT,
+                    "limit": _config.preset_limit,
                 }))
                 task_labels.append((cat_key, preset))
 
@@ -573,11 +555,7 @@ async def analyze_single_entity(
 
     try:
         async with SDK_SEMAPHORE:
-            kestrel_config = McpStdioServerConfig(
-                type="stdio",
-                command=KESTREL_COMMAND,
-                args=KESTREL_ARGS,
-            )
+            kestrel_config = get_kestrel_mcp_config()
 
             options = ClaudeAgentOptions(
                 system_prompt=DIRECT_KG_PROMPT,
@@ -630,10 +608,6 @@ async def analyze_single_entity(
 # =============================================================================
 # Helper Functions
 # =============================================================================
-
-def chunk(items: list, size: int) -> list[list]:
-    """Split a list into chunks of specified size."""
-    return [items[i:i + size] for i in range(0, len(items), size)]
 
 
 def get_raw_name_for_curie(curie: str, novelty_scores: list[NoveltyScore], resolved_entities: list) -> str:
@@ -737,8 +711,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         tier2_start = time.time()
         logger.info("Tier 2 (LLM): Processing %d unique entities that failed Tier 1",
                     len(tier2_needed_curies))
+        for curie in tier2_needed_curies:
+            logger.info(
+                "FALLBACK_EVENT node=direct_kg entity=%s reason=tier1_api_failed tier=2",
+                curie,
+            )
 
-        for batch in chunk(tier2_needed_curies, BATCH_SIZE):
+        for batch in chunk(tier2_needed_curies, _config.batch_size):
             batch_tasks = []
             for curie in batch:
                 raw_name = get_raw_name_for_curie(curie, novelty_scores, resolved_entities)
@@ -774,7 +753,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     # Flag hubs based on novelty_scores edge_count
     for score in novelty_scores:
-        if score.edge_count > HUB_THRESHOLD:
+        if score.edge_count > _config.hub_threshold:
             if score.curie not in all_hub_flags:
                 all_hub_flags.append(score.curie)
                 logger.info("Flagged hub entity: %s (edges=%d)", score.curie, score.edge_count)

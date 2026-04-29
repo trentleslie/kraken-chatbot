@@ -27,21 +27,9 @@ from ..state import (
     EntityResolution
 )
 from ...kestrel_client import multi_hop_query
+from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
 
 logger = logging.getLogger(__name__)
-
-# Try to import Claude Agent SDK - graceful fallback if not available
-try:
-    from claude_agent_sdk import query, ClaudeAgentOptions
-    from claude_agent_sdk.types import McpStdioServerConfig
-    HAS_SDK = True
-except ImportError:
-    HAS_SDK = False
-
-
-# Kestrel MCP command for stdio-based server (same as entity_resolution)
-KESTREL_COMMAND = "uvx"
-KESTREL_ARGS = ["mcp-client-kestrel"]
 
 
 INTEGRATION_PROMPT = """You are a biomedical knowledge graph integration analyst.
@@ -544,11 +532,7 @@ Analyze these findings to identify cross-type bridges and expected-but-absent en
         logger.info("Starting LLM-based gap analysis...")
 
         # Configure Kestrel MCP server (stdio-based, same as entity_resolution)
-        kestrel_config = McpStdioServerConfig(
-            type="stdio",
-            command=KESTREL_COMMAND,
-            args=KESTREL_ARGS,
-        )
+        kestrel_config = get_kestrel_mcp_config()
 
         # Updated prompt focused on gap analysis only
         gap_analysis_prompt = f"""{INTEGRATION_PROMPT}

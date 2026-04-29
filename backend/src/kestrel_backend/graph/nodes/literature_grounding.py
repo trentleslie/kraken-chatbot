@@ -35,12 +35,11 @@ from ...pubmed_client import (
     search_papers as pubmed_search_papers, PubMedSearchError
 )
 
+from ..pipeline_config import get_pipeline_config
+
 logger = logging.getLogger(__name__)
 
-# Configuration
-PAPERS_PER_HYPOTHESIS = 3  # Max papers to attach per hypothesis
-MAX_HYPOTHESES = 15  # Max hypotheses to ground (prioritize by tier)
-PARALLEL_FETCH_LIMIT = 6  # Fetch 2x papers per source for deduplication
+_config = get_pipeline_config().literature_grounding
 
 # Source priority for deduplication (lower = higher priority)
 SOURCE_PRIORITY = {"kg": 1, "pubmed": 2, "openalex": 3, "exa": 4, "s2": 5}
@@ -484,7 +483,7 @@ def get_unique_key(lit: LiteratureSupport) -> str:
 
 def merge_literature(
     all_results: list[LiteratureSupport],
-    limit: int = PAPERS_PER_HYPOTHESIS
+    limit: int = _config.papers_per_hypothesis
 ) -> list[LiteratureSupport]:
     """
     Deduplicate literature by unique key, prefer higher-priority sources.
@@ -558,7 +557,7 @@ def merge_literature(
 
 async def ground_hypothesis_s2_raw(
     hypothesis: Hypothesis,
-    limit: int = PARALLEL_FETCH_LIMIT,
+    limit: int = _config.parallel_fetch_limit,
     disease_context: str = "",
     entity_names: dict[str, str] | None = None,
 ) -> tuple[list[LiteratureSupport], list[str]]:
@@ -668,7 +667,7 @@ async def ground_hypothesis_s2_raw(
 
 async def ground_hypothesis_openalex_raw(
     hypothesis: Hypothesis,
-    limit: int = PARALLEL_FETCH_LIMIT,
+    limit: int = _config.parallel_fetch_limit,
     disease_context: str = "",
 ) -> tuple[list[LiteratureSupport], list[str]]:
     """
@@ -707,7 +706,7 @@ async def ground_hypothesis_openalex_raw(
 
 async def ground_hypothesis_exa_raw(
     hypothesis: Hypothesis,
-    limit: int = PARALLEL_FETCH_LIMIT,
+    limit: int = _config.parallel_fetch_limit,
     disease_context: str = "",
 ) -> tuple[list[LiteratureSupport], list[str]]:
     """
@@ -757,7 +756,7 @@ async def ground_hypothesis_exa_raw(
 
 async def ground_hypothesis_pubmed_raw(
     hypothesis: Hypothesis,
-    limit: int = PARALLEL_FETCH_LIMIT,
+    limit: int = _config.parallel_fetch_limit,
     disease_context: str = "",
 ) -> tuple[list[LiteratureSupport], list[str]]:
     """
@@ -882,7 +881,7 @@ async def ground_hypothesis_openalex(
         return hypothesis, ["Empty search query"]
 
     # Search OpenAlex
-    works = await search_works(query, limit=PAPERS_PER_HYPOTHESIS * 2)
+    works = await search_works(query, limit=_config.papers_per_hypothesis * 2)
 
     if not works:
         logger.debug("No OpenAlex papers found for: %s", hypothesis.title[:50])
@@ -890,7 +889,7 @@ async def ground_hypothesis_openalex(
 
     # Build LiteratureSupport objects from top results
     literature: list[LiteratureSupport] = []
-    for i, work in enumerate(works[:PAPERS_PER_HYPOTHESIS]):
+    for i, work in enumerate(works[:_config.papers_per_hypothesis]):
         try:
             # Score decreases slightly for lower-ranked results
             relevance = 0.9 - (i * 0.05)
@@ -925,7 +924,7 @@ async def ground_hypothesis_exa(
         return hypothesis, ["Empty search query"]
 
     try:
-        results = await exa_search_papers(query, limit=PAPERS_PER_HYPOTHESIS * 2)
+        results = await exa_search_papers(query, limit=_config.papers_per_hypothesis * 2)
     except ExaSearchError as e:
         logger.warning("Exa error for hypothesis: %s — %s", hypothesis.title[:50], e)
         return hypothesis, [f"Exa error: {e}"]
@@ -936,7 +935,7 @@ async def ground_hypothesis_exa(
 
     # Build LiteratureSupport objects
     literature: list[LiteratureSupport] = []
-    for result in results[:PAPERS_PER_HYPOTHESIS]:
+    for result in results[:_config.papers_per_hypothesis]:
         try:
             lit_support = create_literature_from_exa(result)
             literature.append(lit_support)
@@ -970,7 +969,7 @@ async def ground_hypothesis_s2(
 
     # Search Semantic Scholar with rate limit handling
     try:
-        papers = await s2_search_papers(query, limit=PAPERS_PER_HYPOTHESIS * 2)
+        papers = await s2_search_papers(query, limit=_config.papers_per_hypothesis * 2)
     except S2RateLimitError:
         logger.warning("S2 rate limited, skipping for hypothesis: %s", hypothesis.title[:50])
         return hypothesis, ["S2 rate limited - skipped"]
@@ -986,7 +985,7 @@ async def ground_hypothesis_s2(
         scored_papers.append((score, paper))
 
     scored_papers.sort(key=lambda x: x[0], reverse=True)
-    top_papers = scored_papers[:PAPERS_PER_HYPOTHESIS]
+    top_papers = scored_papers[:_config.papers_per_hypothesis]
 
     # Build LiteratureSupport objects
     literature: list[LiteratureSupport] = []
@@ -1019,8 +1018,8 @@ def ground_hypothesis_kg(
 
     for entity in hypothesis.supporting_entities:
         if entity in kg_pmids:
-            for pmid in kg_pmids[entity][:PAPERS_PER_HYPOTHESIS]:
-                if len(literature) >= PAPERS_PER_HYPOTHESIS:
+            for pmid in kg_pmids[entity][:_config.papers_per_hypothesis]:
+                if len(literature) >= _config.papers_per_hypothesis:
                     break
                 literature.append(create_literature_from_pmid(pmid))
 
@@ -1079,8 +1078,8 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     # Prioritize hypotheses by tier
     sorted_hypotheses = sorted(hypotheses, key=lambda h: h.tier)
-    to_ground = sorted_hypotheses[:MAX_HYPOTHESES]
-    remaining = sorted_hypotheses[MAX_HYPOTHESES:]
+    to_ground = sorted_hypotheses[:_config.max_hypotheses]
+    remaining = sorted_hypotheses[_config.max_hypotheses:]
 
     logger.info(
         "Grounding %d/%d hypotheses (tiers: %s)",

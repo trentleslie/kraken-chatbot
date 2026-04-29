@@ -26,15 +26,9 @@ from ..state import (
 )
 from ...literature_utils import format_pmid_link
 from ...kestrel_client import multi_hop_query
+from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions
 
 logger = logging.getLogger(__name__)
-
-# Try to import Claude Agent SDK - graceful fallback if not available
-try:
-    from claude_agent_sdk import query, ClaudeAgentOptions
-    HAS_SDK = True
-except ImportError:
-    HAS_SDK = False
 
 
 # Validation gap calibration constant

@@ -28,24 +28,15 @@ from typing import Any
 
 from ...kestrel_client import call_kestrel_tool
 from ..state import DiscoveryState, EntityResolution
+from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
+from ..pipeline_config import get_pipeline_config
 
 logger = logging.getLogger(__name__)
 
-# Try to import Claude Agent SDK - graceful fallback if not available
-try:
-    from claude_agent_sdk import query, ClaudeAgentOptions
-    from claude_agent_sdk.types import McpStdioServerConfig
-    HAS_SDK = True
-except ImportError:
-    HAS_SDK = False
-
-
-# Kestrel MCP command for stdio-based server
-KESTREL_COMMAND = "uvx"
-KESTREL_ARGS = ["mcp-client-kestrel"]
+_config = get_pipeline_config().entity_resolution
 
 # Semaphore to serialize SDK calls and prevent concurrent CLI spawn issues
-SDK_SEMAPHORE = asyncio.Semaphore(1)
+SDK_SEMAPHORE = asyncio.Semaphore(_config.sdk_semaphore)
 
 # Enhanced prompt for entity resolution with retry strategies
 RESOLUTION_PROMPT = """You are an expert biomedical entity resolver for the Kestrel knowledge graph.
@@ -99,12 +90,6 @@ Return ONLY valid JSON:
 
 If truly not found: {"curie": null, "name": null, "category": null, "confidence": 0.0}"""
 
-# Batch size for parallel resolution
-BATCH_SIZE = 6
-
-# Minimum score threshold for Tier 1 API resolution
-# Below this score, entities fall through to Tier 2 LLM
-TIER1_MIN_SCORE = 0.6
 
 
 async def resolve_via_api(entity: str) -> EntityResolution | None:
@@ -184,13 +169,13 @@ async def resolve_via_api(entity: str) -> EntityResolution | None:
             confidence = 0.90
         elif score > 0.8:
             confidence = 0.80
-        elif score > TIER1_MIN_SCORE:
+        elif score > _config.tier1_min_score:
             confidence = 0.70
         else:
             # Score too low - fall through to Tier 2
             logger.info(
                 "Tier 1 '%s': Score %.2f below threshold %.2f, falling through to Tier 2",
-                entity, score, TIER1_MIN_SCORE
+                entity, score, _config.tier1_min_score
             )
             return None
 
@@ -293,11 +278,7 @@ async def resolve_single_entity(entity: str, is_retry: bool = False) -> EntityRe
 
     try:
         async with SDK_SEMAPHORE:
-            kestrel_config = McpStdioServerConfig(
-                type="stdio",
-                command=KESTREL_COMMAND,
-                args=KESTREL_ARGS,
-            )
+            kestrel_config = get_kestrel_mcp_config()
 
             # Use more aggressive prompt for retry attempts
             prompt_to_use = RESOLUTION_PROMPT
@@ -339,10 +320,6 @@ async def resolve_single_entity(entity: str, is_retry: bool = False) -> EntityRe
             method="failed",
         )
 
-
-def chunk(items: list, size: int) -> list[list]:
-    """Split a list into chunks of specified size."""
-    return [items[i:i + size] for i in range(0, len(items), size)]
 
 
 async def run(state: DiscoveryState) -> dict[str, Any]:
@@ -466,10 +443,15 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             "Tier 2 (LLM): Processing %d entities that failed Tier 1 and 1.5",
             len(failed_entities)
         )
+        for idx in tier2_needed_indices:
+            logger.info(
+                "FALLBACK_EVENT node=entity_resolution entity=%s reason=tier1_failed tier=2",
+                entities[idx],
+            )
 
         # First pass: Standard resolution in batches
         tier2_results = []
-        for batch in chunk(failed_entities, BATCH_SIZE):
+        for batch in chunk(failed_entities, _config.batch_size):
             batch_results = await asyncio.gather(
                 *[resolve_single_entity(e) for e in batch],
                 return_exceptions=True,
@@ -501,7 +483,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 len(still_failed_entities)
             )
 
-            retry_batch_size = max(2, BATCH_SIZE // 2)
+            retry_batch_size = max(2, _config.batch_size // 2)
             retry_results = []
 
             for batch in chunk(still_failed_entities, retry_batch_size):

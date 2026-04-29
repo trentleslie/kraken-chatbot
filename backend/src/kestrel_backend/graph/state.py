@@ -260,10 +260,6 @@ class Hypothesis(BaseModel):
     )
 
 
-# Legacy alias for backward compatibility
-NoveltyTriage = NoveltyScore
-
-
 class DiscoveryState(TypedDict, total=False):
     """
     State schema for the KRAKEN discovery workflow.
@@ -328,16 +324,6 @@ class DiscoveryState(TypedDict, total=False):
 
     # === Phase 4b: Temporal Analysis (Conditional) ===
     temporal_classifications: Annotated[list[TemporalClassification], operator.add]
-
-    # Legacy fields for compatibility
-    kg_results: dict  # Direct KG query results
-    predictions: dict  # Cold-start predictions
-    pathway_enrichment: dict  # Pathway analysis
-    legacy_bridges: list[dict]  # Cross-type bridge paths (legacy)
-    gap_analysis: dict  # Missing edge analysis (legacy)
-    novelty_triage: list[NoveltyScore]  # Legacy alias
-    well_characterized_ids: list[str]  # Legacy alias
-    sparse_ids: list[str]  # Legacy alias
 
     # === Phase 5: Temporal Analysis ===
     temporal_patterns: dict | None

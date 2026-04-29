@@ -30,28 +30,15 @@ from ...kestrel_client import call_kestrel_tool
 from ..state import (
     DiscoveryState, Finding, InferredAssociation, AnalogueEntity, NoveltyScore
 )
+from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, chunk
+from ..pipeline_config import get_pipeline_config
 
 logger = logging.getLogger(__name__)
 
-# Try to import Claude Agent SDK - graceful fallback if not available
-try:
-    from claude_agent_sdk import query, ClaudeAgentOptions
-    HAS_SDK = True
-except ImportError:
-    HAS_SDK = False
+_config = get_pipeline_config().cold_start
 
-
-# Semaphore to limit concurrent SDK calls (increased from 6 to 8)
-SDK_SEMAPHORE = asyncio.Semaphore(8)
-
-# Batch size for parallel analysis (increased from 3 to 5)
-BATCH_SIZE = 5
-
-# Timeout for SDK inference query per entity (reduced from 120s to 60s)
-SDK_INFERENCE_TIMEOUT = 60
-
-# Number of similar entities to retrieve for each sparse entity (reduced from 5 to 3)
-ANALOGUE_LIMIT = 3
+# Semaphore to limit concurrent SDK calls
+SDK_SEMAPHORE = asyncio.Semaphore(_config.sdk_semaphore)
 
 
 # System prompt for inference reasoning (no tools needed - KG data provided in prompt)
@@ -91,12 +78,14 @@ If no valid inferences can be made from the provided data, return:
 """
 
 
-async def get_similar_entities(curie: str, limit: int = ANALOGUE_LIMIT) -> list[dict]:
+async def get_similar_entities(curie: str, limit: int | None = None) -> list[dict]:
     """
     Query Kestrel similar_nodes via HTTP API.
 
     Returns list of similar entities with curie, name, similarity score, and category.
     """
+    if limit is None:
+        limit = get_pipeline_config().cold_start.analogue_limit
     try:
         result = await call_kestrel_tool("similar_nodes", {
             "node_id": curie,
@@ -395,7 +384,7 @@ async def analyze_cold_start_entity(
 
     # Step 1: Get similar entities via direct HTTP API
     logger.info("Cold-start Step 1: Getting similar entities for '%s' (%s)...", raw_name, curie)
-    similar_entities = await get_similar_entities(curie, limit=ANALOGUE_LIMIT)
+    similar_entities = await get_similar_entities(curie, limit=_config.analogue_limit)
 
     if not similar_entities:
         logger.info("Cold-start: No similar entities found for '%s' (%s)", raw_name, curie)
@@ -517,12 +506,12 @@ async def analyze_cold_start_entity(
 
             logger.info("Cold-start Step 3: Invoking SDK inference for '%s' (%s)...", raw_name, curie)
             try:
-                await asyncio.wait_for(collect_events(), timeout=SDK_INFERENCE_TIMEOUT)
+                await asyncio.wait_for(collect_events(), timeout=_config.inference_timeout)
                 logger.info("Cold-start SDK inference for '%s' completed with %d events", raw_name, event_count)
             except asyncio.TimeoutError:
                 logger.error(
                     "Cold-start SDK inference TIMED OUT for '%s' (%s) after %ds",
-                    raw_name, curie, SDK_INFERENCE_TIMEOUT
+                    raw_name, curie, _config.inference_timeout
                 )
                 # Return analogues even if inference times out
                 analogue_names = [a.name for a in analogues[:3]]
@@ -537,7 +526,7 @@ async def analyze_cold_start_entity(
                         confidence="low",
                         logic_chain=f"Found {len(analogues)} analogues (inference timed out)",
                     )],
-                    [f"SDK inference timed out for {curie} after {SDK_INFERENCE_TIMEOUT}s"],
+                    [f"SDK inference timed out for {curie} after {_config.inference_timeout}s"],
                 )
             except Exception as sdk_error:
                 logger.error(
@@ -606,10 +595,6 @@ async def analyze_cold_start_entity(
             [error_msg],
         )
 
-
-def chunk(items: list, size: int) -> list[list]:
-    """Split a list into chunks of specified size."""
-    return [items[i:i + size] for i in range(0, len(items), size)]
 
 
 def score_entity_complexity(edge_count: int) -> float:
@@ -741,8 +726,8 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     errors: list[str] = []
 
     # Process in batches for controlled parallelism
-    batches = chunk(entities, BATCH_SIZE)
-    logger.info("Cold-start processing %d batches of up to %d entities each", len(batches), BATCH_SIZE)
+    batches = chunk(entities, _config.batch_size)
+    logger.info("Cold-start processing %d batches of up to %d entities each", len(batches), _config.batch_size)
 
     for batch_idx, batch in enumerate(batches):
         batch_tasks = []
@@ -776,7 +761,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 errors.extend(errs)
 
         # Progress logging
-        processed_count = min((batch_idx + 1) * BATCH_SIZE, len(entities))
+        processed_count = min((batch_idx + 1) * _config.batch_size, len(entities))
         logger.info(
             "Cold-start progress: %d/%d entities processed (batch %d/%d)",
             processed_count, len(entities), batch_idx + 1, len(batches)
