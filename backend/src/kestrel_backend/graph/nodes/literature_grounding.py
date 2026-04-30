@@ -25,6 +25,7 @@ from ...openalex import (
 )
 from ...semantic_scholar import (
     search_papers as s2_search_papers, score_relevance, classify_relationship,
+    classify_relationship_llm,
     extract_key_passage, format_authors, extract_doi, S2RateLimitError
 )
 from ...exa_client import (
@@ -409,7 +410,7 @@ def create_literature_from_exa(result: dict) -> LiteratureSupport:
     )
 
 
-def create_literature_from_s2(paper: dict, hypothesis_claim: str) -> LiteratureSupport:
+async def create_literature_from_s2(paper: dict, hypothesis_claim: str) -> LiteratureSupport:
     """Create LiteratureSupport from Semantic Scholar paper."""
     doi = extract_doi(paper)
     pmid = None
@@ -434,7 +435,11 @@ def create_literature_from_s2(paper: dict, hypothesis_claim: str) -> LiteratureS
         doi=doi,
         url=url,
         relevance_score=round(score_relevance(paper, hypothesis_claim), 3),
-        relationship=classify_relationship(paper, hypothesis_claim),
+        relationship=(
+            await classify_relationship_llm(paper, hypothesis_claim)
+            if _config.use_llm_classifier
+            else classify_relationship(paper, hypothesis_claim)
+        ),
         key_passage=extract_key_passage(paper, hypothesis_claim),
         citation_count=paper.get("citationCount") or 0,
         source="s2",
@@ -653,7 +658,7 @@ async def ground_hypothesis_s2_raw(
     literature: list[LiteratureSupport] = []
     for paper in all_papers.values():
         try:
-            lit_support = create_literature_from_s2(paper, hypothesis.claim)
+            lit_support = await create_literature_from_s2(paper, hypothesis.claim)
             literature.append(lit_support)
         except Exception as e:
             errors.append(f"Error processing S2 paper: {e}")
@@ -992,7 +997,7 @@ async def ground_hypothesis_s2(
     literature: list[LiteratureSupport] = []
     for score, paper in top_papers:
         try:
-            lit_support = create_literature_from_s2(paper, hypothesis.claim)
+            lit_support = await create_literature_from_s2(paper, hypothesis.claim)
             literature.append(lit_support)
         except Exception as e:
             errors.append(f"Error processing S2 paper: {e}")

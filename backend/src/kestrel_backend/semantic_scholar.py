@@ -147,24 +147,105 @@ def score_relevance(paper: dict, hypothesis_claim: str) -> float:
 def classify_relationship(
     paper: dict,
     hypothesis_claim: str
-) -> Literal["supporting", "contradicting", "nuancing"]:
+) -> Literal["supporting", "contradicting", "tangential", "methodological"]:
     """
-    Classify how paper relates to hypothesis.
+    Classify how paper relates to hypothesis (default: returns "supporting").
 
-    TODO (v2): Use cross-encoder or LLM for accurate classification.
-    Keyword-based classification has high false positive rate for "contradicting",
-    which is worse than no classification. For v1, return "supporting" for all.
+    This is the baseline classifier used when use_llm_classifier=False.
+    See classify_relationship_llm() for the LLM-based alternative.
 
     Args:
         paper: Paper dict with abstract
         hypothesis_claim: The hypothesis claim text
 
     Returns:
-        Always "supporting" in v1 (see TODO above)
+        Always "supporting" (conservative default to avoid false contradictions)
     """
-    # v1: Return "supporting" for all papers
-    # False "contradicting" labels are worse than no classification
     return "supporting"
+
+
+async def classify_relationship_llm(
+    paper: dict,
+    hypothesis_claim: str,
+) -> Literal["supporting", "contradicting", "tangential", "methodological"]:
+    """
+    Classify how paper relates to hypothesis using LLM reasoning.
+
+    Enabled when use_llm_classifier=True in PipelineConfig. Falls back to
+    "supporting" if SDK is unavailable or LLM returns unexpected output.
+
+    Categories:
+    - supporting: paper provides evidence for the hypothesis
+    - contradicting: paper provides evidence against the hypothesis
+    - tangential: paper is about a related but different topic
+    - methodological: paper describes methods relevant to testing the hypothesis
+
+    Args:
+        paper: Paper dict with title and abstract
+        hypothesis_claim: The hypothesis claim text
+
+    Returns:
+        Classification category string
+    """
+    from .graph.sdk_utils import HAS_SDK, query, ClaudeAgentOptions
+
+    if not HAS_SDK:
+        return "supporting"
+
+    title = paper.get("title", "Unknown")
+    abstract = paper.get("abstract", paper.get("snippet", ""))[:500]
+
+    prompt = f"""Classify the relationship between this paper and the hypothesis.
+
+Hypothesis: {hypothesis_claim}
+
+Paper title: {title}
+Paper abstract: {abstract}
+
+Categories:
+- supporting: provides evidence FOR the hypothesis
+- contradicting: provides evidence AGAINST the hypothesis
+- tangential: related topic but does not directly address the hypothesis
+- methodological: describes methods relevant to testing the hypothesis
+
+Return ONLY one word: supporting, contradicting, tangential, or methodological"""
+
+    try:
+        options = ClaudeAgentOptions(
+            system_prompt="You are a biomedical literature classifier. Return only the classification category.",
+            allowed_tools=[],
+            max_turns=1,
+            permission_mode="bypassPermissions",
+        )
+
+        result_text = ""
+        async for event in query(prompt=prompt, options=options):
+            if hasattr(event, "text"):
+                result_text += event.text
+            elif isinstance(event, dict) and "text" in event:
+                result_text += event["text"]
+
+        classification = result_text.strip().lower()
+
+        valid_categories = {"supporting", "contradicting", "tangential", "methodological"}
+        if classification in valid_categories:
+            return classification
+
+        # Try to find a valid category in the response
+        for cat in valid_categories:
+            if cat in classification:
+                logger.info("Extracted classification '%s' from response: %s", cat, classification[:50])
+                return cat
+
+        logger.warning(
+            "Unexpected classification '%s' for paper '%s' — defaulting to supporting",
+            classification[:50], title[:50],
+        )
+        return "supporting"
+
+    except Exception as e:
+        logger.warning("LLM classification failed for paper '%s': %s — defaulting to supporting", title[:50], e)
+        return "supporting"
 
 
 def extract_key_passage(paper: dict, hypothesis_claim: str) -> str:

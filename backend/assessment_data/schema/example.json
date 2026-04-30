@@ -1,0 +1,109 @@
+{
+  "timestamp": "2026-04-29T23:23:15.958415+00:00",
+  "schema_version": "v1",
+  "mode": "replay",
+  "query_reports": [
+    {
+      "query": "What is the relationship between NAD+ metabolism and cellular aging?",
+      "query_hash": "abc123def456",
+      "path_type": "well-characterized",
+      "checks": [
+        {
+          "name": "pipeline_completion",
+          "passed": true,
+          "status": "pass",
+          "metric": "nodes_executed",
+          "expected": [
+            "intake",
+            "entity_resolution",
+            "triage",
+            "synthesis"
+          ],
+          "actual": [
+            "intake",
+            "entity_resolution",
+            "triage",
+            "synthesis"
+          ],
+          "tolerance": null,
+          "message": "All core nodes executed"
+        },
+        {
+          "name": "schema_conformance",
+          "passed": true,
+          "status": "pass",
+          "metric": "type_violations",
+          "expected": 0,
+          "actual": 0,
+          "tolerance": null,
+          "message": "All fields conform"
+        },
+        {
+          "name": "entity_resolution_recall",
+          "passed": true,
+          "status": "pass",
+          "metric": "recall",
+          "expected": [
+            "CHEBI:15422"
+          ],
+          "actual": [
+            "CHEBI:15422",
+            "HP:0011462"
+          ],
+          "tolerance": null,
+          "message": "All expected CURIEs found"
+        },
+        {
+          "name": "finding_count_stability",
+          "passed": true,
+          "status": "pass",
+          "metric": "direct_finding_count",
+          "expected": {
+            "lower": 1.0,
+            "upper": 5.0
+          },
+          "actual": 3,
+          "tolerance": {
+            "cv": 0.2,
+            "high_variance": false
+          },
+          "message": "Direct findings: 3 (band: [1.0, 5.0])"
+        },
+        {
+          "name": "hypothesis_completeness",
+          "passed": true,
+          "status": "pass",
+          "metric": "incomplete_hypotheses",
+          "expected": 0,
+          "actual": 0,
+          "tolerance": null,
+          "message": "All 2 hypotheses complete"
+        }
+      ],
+      "passed": true,
+      "warnings": 0,
+      "human_judgment": [
+        {
+          "override_plausibility": null,
+          "override_relevance": null,
+          "override_novelty": null,
+          "notes": null
+        },
+        {
+          "override_plausibility": null,
+          "override_relevance": null,
+          "override_novelty": null,
+          "notes": null
+        }
+      ]
+    }
+  ],
+  "aggregate": {
+    "total_queries": 1,
+    "passed": 1,
+    "failed": 0,
+    "total_warnings": 0,
+    "total_checks": 5,
+    "pass_rate": 1.0
+  }
+}

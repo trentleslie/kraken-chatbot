@@ -220,9 +220,7 @@ class LiteratureSupport(BaseModel):
     doi: str | None = Field(None, description="DOI if available")
     url: str | None = Field(None, description="Clickable URL (PubMed, DOI, etc.)")
     relevance_score: float = Field(default=1.0, ge=0, le=1, description="Relevance to hypothesis (0-1)")
-    # TODO: v2 - Use cross-encoder or LLM for relationship classification
-    # Currently set to "supporting" for all papers to avoid false contradictions
-    relationship: Literal["supporting", "contradicting", "nuancing"] = Field(
+    relationship: Literal["supporting", "contradicting", "tangential", "methodological"] = Field(
         "supporting", description="How paper relates to hypothesis"
     )
     key_passage: str = Field(default="", description="Most relevant passage from abstract")
