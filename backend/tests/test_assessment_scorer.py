@@ -94,6 +94,24 @@ class TestParseScores:
         scores = _parse_scores("[]", 0)
         assert len(scores) == 0
 
+    def test_string_scores_coerced_to_int(self):
+        """LLMs sometimes return scores as strings — should be coerced."""
+        response = json.dumps([
+            {"hypothesis_index": 0, "plausibility": "8", "relevance": "9", "novelty": "6"},
+        ])
+        scores = _parse_scores(response, 1)
+        assert scores[0].plausibility == 8
+        assert scores[0].error is None
+
+    def test_unparseable_score_entry_produces_default(self):
+        """Completely unparseable score values should produce defaults with error."""
+        response = json.dumps([
+            {"hypothesis_index": 0, "plausibility": "high", "relevance": {}, "novelty": None},
+        ])
+        scores = _parse_scores(response, 1)
+        assert scores[0].plausibility == 5
+        assert scores[0].error is not None
+
 
 class TestScoreHypotheses:
     async def test_empty_hypotheses_returns_empty(self):
@@ -147,8 +165,8 @@ class TestComputeStability:
         result = compute_stability([[]])
         assert "error" in result
 
-    def test_degenerate_scores_handled(self):
-        """All-same scores should be flagged as degenerate."""
+    def test_degenerate_scores_use_krippendorff_fallback(self):
+        """All-same scores should be flagged as degenerate and use alpha fallback."""
         run1 = [
             HypothesisScore(hypothesis_index=0, plausibility=5, relevance=5, novelty=5),
             HypothesisScore(hypothesis_index=1, plausibility=5, relevance=5, novelty=5),
@@ -157,6 +175,13 @@ class TestComputeStability:
 
         for dim in ["plausibility", "relevance", "novelty"]:
             assert result["per_dimension"][dim]["n_degenerate"] > 0
+
+        # Krippendorff's alpha should be computed as fallback
+        assert result["krippendorffs_alpha"] is not None
+        # All-same scores = perfect agreement = alpha 1.0
+        assert result["krippendorffs_alpha"] == 1.0
+        # Should count as stable via alpha fallback
+        assert result["meets_threshold"] is True
 
     def test_mixed_stability(self):
         """Some dimensions stable, others not."""

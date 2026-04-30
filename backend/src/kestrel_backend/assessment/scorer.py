@@ -142,13 +142,20 @@ def _parse_scores(
     for i in range(num_hypotheses):
         if i < len(data):
             entry = data[i]
-            scores.append(HypothesisScore(
-                hypothesis_index=i,
-                plausibility=max(1, min(10, entry.get("plausibility", 5))),
-                relevance=max(1, min(10, entry.get("relevance", 5))),
-                novelty=max(1, min(10, entry.get("novelty", 5))),
-                rationale=entry.get("rationale", ""),
-            ))
+            try:
+                scores.append(HypothesisScore(
+                    hypothesis_index=i,
+                    plausibility=max(1, min(10, int(entry.get("plausibility", 5)))),
+                    relevance=max(1, min(10, int(entry.get("relevance", 5)))),
+                    novelty=max(1, min(10, int(entry.get("novelty", 5)))),
+                    rationale=entry.get("rationale", ""),
+                ))
+            except (TypeError, ValueError):
+                scores.append(HypothesisScore(
+                    hypothesis_index=i,
+                    plausibility=5, relevance=5, novelty=5,
+                    error="Failed to parse score entry",
+                ))
         else:
             scores.append(HypothesisScore(
                 hypothesis_index=i,
@@ -286,14 +293,98 @@ def compute_stability(
             "all_correlations": [round(c, 4) if c is not None else None for c in correlations],
         }
 
+    # Krippendorff's alpha fallback for degenerate cases
+    # When all scores are identical across runs, Spearman is undefined but
+    # the scorer is actually perfectly stable — alpha captures this correctly
+    krippendorffs_alpha = None
+    any_degenerate = any(r["n_degenerate"] > 0 for r in results.values())
+    if any_degenerate:
+        krippendorffs_alpha = _compute_krippendorff_alpha(run_scores, dimensions)
+
     # Overall stability assessment
     means = [r["mean_pairwise_spearman"] for r in results.values() if r["mean_pairwise_spearman"] is not None]
-    overall_stable = all(m >= 0.80 for m in means) if means else False
+
+    if means:
+        overall_stable = all(m >= 0.80 for m in means)
+    elif krippendorffs_alpha is not None:
+        # All dimensions degenerate — fall back to alpha
+        overall_stable = krippendorffs_alpha >= 0.80
+    else:
+        overall_stable = False
 
     return {
         "per_dimension": results,
         "overall_mean": round(sum(means) / len(means), 4) if means else None,
+        "krippendorffs_alpha": krippendorffs_alpha,
         "meets_threshold": overall_stable,
         "threshold": 0.80,
         "n_runs": len(run_scores),
     }
+
+
+def _compute_krippendorff_alpha(
+    run_scores: list[list[HypothesisScore]],
+    dimensions: list[str],
+) -> float:
+    """Compute Krippendorff's alpha across all dimensions as a fallback metric.
+
+    For degenerate cases where all scores are identical, alpha = 1.0 (perfect
+    agreement), which correctly represents that the scorer is stable.
+    """
+    # Flatten all scores across dimensions into a reliability matrix
+    # Rows = raters (runs), Columns = units (hypothesis x dimension)
+    n_runs = len(run_scores)
+    if n_runs < 2:
+        return 0.0
+
+    n_hypotheses = len(run_scores[0]) if run_scores[0] else 0
+    if n_hypotheses == 0:
+        return 1.0
+
+    # Build matrix: each row is a run, each column is a (hypothesis, dimension) pair
+    matrix = []
+    for run in run_scores:
+        row = []
+        for score in run:
+            for dim in dimensions:
+                row.append(getattr(score, dim))
+        matrix.append(row)
+
+    # Check if all values are identical — if so, alpha = 1.0
+    flat = [v for row in matrix for v in row]
+    if len(set(flat)) <= 1:
+        return 1.0
+
+    # Compute observed and expected disagreement
+    n_units = len(matrix[0])
+    n_raters = len(matrix)
+
+    # Observed disagreement
+    observed = 0
+    total_pairs = 0
+    for col in range(n_units):
+        values = [matrix[r][col] for r in range(n_raters)]
+        for i in range(len(values)):
+            for j in range(i + 1, len(values)):
+                observed += (values[i] - values[j]) ** 2
+                total_pairs += 1
+
+    if total_pairs == 0:
+        return 1.0
+
+    D_o = observed / total_pairs
+
+    # Expected disagreement (across all values)
+    all_values = flat
+    n_total = len(all_values)
+    D_e = 0
+    for i in range(n_total):
+        for j in range(i + 1, n_total):
+            D_e += (all_values[i] - all_values[j]) ** 2
+    D_e = D_e / (n_total * (n_total - 1) / 2) if n_total > 1 else 0
+
+    if D_e == 0:
+        return 1.0
+
+    alpha = 1 - D_o / D_e
+    return round(alpha, 4)
