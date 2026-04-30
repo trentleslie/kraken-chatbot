@@ -36,6 +36,7 @@ backend/             FastAPI backend with Claude Agent SDK + LangGraph discovery
       runner.py      Pipeline execution and streaming
       nodes/         Individual pipeline nodes
 docs/                Architecture documentation
+  solutions/         Documented solutions (bugs, best practices, patterns) with YAML frontmatter
 ```
 
 ### Dual Operating Modes
