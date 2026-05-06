@@ -1,20 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import { useAuth as useClerkAuth } from "@clerk/react";
-
-const clerkEnabled = !!import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
-
-/**
- * Safe auth hook that returns no-op values when Clerk is not configured.
- * When ClerkProvider is not present (no VITE_CLERK_PUBLISHABLE_KEY),
- * calling useAuth() directly would throw. This wrapper avoids that.
- */
-function useAuth() {
-  if (!clerkEnabled) {
-    return { getToken: async () => null as string | null, isSignedIn: undefined };
-  }
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  return useClerkAuth();
-}
+import { useAuth } from "@clerk/react";
 import type {
   ChatMessage,
   ConnectionStatus,
