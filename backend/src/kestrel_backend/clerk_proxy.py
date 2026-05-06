@@ -27,6 +27,7 @@ ALLOWED_PATH_PREFIXES = (
     "/v1/environment",
     "/v1/dev_browser",
     "/.well-known/",
+    "/npm/",  # Clerk JS SDK bundle loaded via proxy
 )
 
 CLERK_FAPI_BASE = "https://frontend-api.clerk.dev"
