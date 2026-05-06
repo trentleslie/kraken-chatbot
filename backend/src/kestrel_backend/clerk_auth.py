@@ -27,6 +27,11 @@ def _get_jwks_client() -> PyJWKClient:
     global _jwks_client
     if _jwks_client is None:
         settings = get_settings()
+        if not settings.clerk_jwks_url:
+            raise RuntimeError(
+                "CLERK_JWKS_URL is not configured. "
+                "Set the env var or disable Clerk auth with CLERK_AUTH_ENABLED=false."
+            )
         _jwks_client = PyJWKClient(settings.clerk_jwks_url)
     return _jwks_client
 
@@ -41,10 +46,16 @@ def verify_clerk_token(token: str) -> dict:
 
     Returns the decoded token payload with user info.
     Raises jwt.exceptions.PyJWTError on any verification failure.
+    Raises RuntimeError if CLERK_JWKS_URL or CLERK_ISSUER is not configured.
     """
     settings = get_settings()
-    jwks_client = _get_jwks_client()
 
+    if not settings.clerk_issuer:
+        raise RuntimeError(
+            "CLERK_ISSUER is not configured. Cannot validate token issuer."
+        )
+
+    jwks_client = _get_jwks_client()
     signing_key = jwks_client.get_signing_key_from_jwt(token)
 
     payload = jwt.decode(
