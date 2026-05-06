@@ -36,7 +36,7 @@ CLERK_FAPI_BASE = "https://frontend-api.clerk.dev"
 def _get_http_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None:
-        _http_client = httpx.AsyncClient(timeout=30.0)
+        _http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
     return _http_client
 
 
