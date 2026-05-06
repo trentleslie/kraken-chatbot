@@ -22,12 +22,21 @@ class Settings(BaseModel):
     # Claude model (None = use SDK default)
     model: str | None = None
 
-    # Authentication
+    # Legacy authentication (to be removed — see clerk_auth.py)
     auth_enabled: bool = False
     jwt_secret_key: str = "development-secret-key-change-in-production"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 10080  # 7 days
     api_keys: list[str] = []  # Comma-separated in env
+
+    # Clerk authentication
+    clerk_auth_enabled: bool = False
+    clerk_secret_key: str | None = None
+    clerk_jwks_url: str | None = None
+    clerk_issuer: str | None = None
+    clerk_proxy_url: str | None = None  # e.g., https://dev-kraken.expertintheloop.io/api/__clerk
+    clerk_allowed_email_domains: list[str] = []
+    clerk_allowed_emails: list[str] = []
 
     # Langfuse observability
     langfuse_enabled: bool = True
@@ -64,6 +73,22 @@ def get_settings() -> Settings:
     if api_keys_str:
         api_keys = [k.strip() for k in api_keys_str.split(",") if k.strip()]
 
+    # Parse Clerk allowed email domains and emails
+    clerk_domains = []
+    clerk_domains_str = os.getenv("ALLOWED_EMAIL_DOMAINS", "")
+    if clerk_domains_str:
+        clerk_domains = [d.strip().lower() for d in clerk_domains_str.split(",") if d.strip()]
+
+    clerk_emails = []
+    clerk_emails_str = os.getenv("ALLOWED_EMAILS", "")
+    if clerk_emails_str:
+        clerk_emails = [e.strip().lower() for e in clerk_emails_str.split(",") if e.strip()]
+
+    # Clerk auth: fail-closed design. If CLERK_AUTH_ENABLED=true but CLERK_SECRET_KEY is missing,
+    # we log a critical warning at startup. The app will start but auth will reject all requests.
+    clerk_auth_enabled = os.getenv("CLERK_AUTH_ENABLED", "false").lower() == "true"
+    clerk_secret_key = os.getenv("CLERK_SECRET_KEY")
+
     return Settings(
         host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "8000")),
@@ -75,6 +100,13 @@ def get_settings() -> Settings:
         jwt_algorithm=os.getenv("JWT_ALGORITHM", "HS256"),
         jwt_expire_minutes=int(os.getenv("JWT_EXPIRE_MINUTES", "10080")),
         api_keys=api_keys,
+        clerk_auth_enabled=clerk_auth_enabled,
+        clerk_secret_key=clerk_secret_key,
+        clerk_jwks_url=os.getenv("CLERK_JWKS_URL"),
+        clerk_issuer=os.getenv("CLERK_ISSUER"),
+        clerk_proxy_url=os.getenv("CLERK_PROXY_URL"),
+        clerk_allowed_email_domains=clerk_domains,
+        clerk_allowed_emails=clerk_emails,
         langfuse_enabled=os.getenv("LANGFUSE_ENABLED", "true").lower() == "true",
         langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
         langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY"),

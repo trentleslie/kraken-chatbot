@@ -18,6 +18,8 @@ from .config import get_settings
 from .agent import run_agent_turn
 from .logging_config import configure_logging, generate_correlation_id, correlation_id
 from .auth import validate_api_key, validate_ws_token
+from .clerk_auth import get_current_user, validate_ws_clerk_token
+from .clerk_proxy import router as clerk_proxy_router
 
 # Configure logging early
 settings = get_settings()
@@ -195,9 +197,21 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
+
+# Mount Clerk FAPI proxy router
+app.include_router(clerk_proxy_router)
+
+# Fail-closed: warn if Clerk auth is enabled but secret key is missing
+if settings.clerk_auth_enabled and not settings.clerk_secret_key:
+    import sys
+    logging.getLogger(__name__).critical(
+        "CLERK_AUTH_ENABLED=true but CLERK_SECRET_KEY is not set. "
+        "All authenticated requests will be rejected. "
+        "Set CLERK_SECRET_KEY or set CLERK_AUTH_ENABLED=false."
+    )
 
 
 def check_langfuse_health() -> tuple[bool, str | None]:
@@ -296,7 +310,7 @@ async def readiness_check():
 
 
 @app.get("/api/conversations/{conversation_id}")
-async def get_conversation(conversation_id: str, auth: dict = Depends(validate_api_key)):
+async def get_conversation(conversation_id: str, auth: dict = Depends(get_current_user)):
     """Retrieve conversation by UUID for shared viewing."""
     try:
         uuid_id = UUID(conversation_id)
@@ -311,7 +325,7 @@ async def get_conversation(conversation_id: str, auth: dict = Depends(validate_a
 
 
 @app.post("/api/feedback")
-async def submit_feedback(request: Request, auth: dict = Depends(validate_api_key)):
+async def submit_feedback(request: Request, auth: dict = Depends(get_current_user)):
     """
     Submit user feedback (thumbs up/down) for a turn.
 
@@ -686,14 +700,21 @@ async def websocket_chat(websocket: WebSocket):
     token = websocket.query_params.get("token")
     user_info = None
 
-    # Validate authentication if enabled
+    # Validate authentication via Clerk (or legacy auth as fallback)
     settings = get_settings()
-    if settings.auth_enabled:
+    if settings.clerk_auth_enabled:
+        try:
+            user_info = await validate_ws_clerk_token(token)
+        except ValueError as e:
+            logger.warning(f"WebSocket Clerk authentication failed: {e}")
+            await websocket.accept()
+            await websocket.close(code=4001, reason="Authentication failed")
+            return
+    elif settings.auth_enabled:
         try:
             user_info = await validate_ws_token(token)
         except ValueError as e:
             logger.warning(f"WebSocket authentication failed: {e}")
-            # Accept first so client receives the close code properly
             await websocket.accept()
             await websocket.close(code=4001, reason="Authentication failed")
             return
