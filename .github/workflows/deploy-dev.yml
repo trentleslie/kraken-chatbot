@@ -75,9 +75,14 @@ jobs:
           git reset --hard "origin/\$BRANCH"
           echo "Deployed commit: \$(git rev-parse HEAD)"
 
-          # Rebuild frontend with dev WebSocket URL
+          # Rebuild frontend with dev WebSocket URL and Clerk auth
           npm ci
-          VITE_WS_URL=wss://dev-kraken.expertintheloop.io/ws/chat npm run build
+          VITE_WS_URL=wss://dev-kraken.expertintheloop.io/ws/chat \
+          VITE_CLERK_PUBLISHABLE_KEY=pk_test_YW1hemVkLXN0dWQtODUuY2xlcmsuYWNjb3VudHMuZGV2JA \
+          VITE_CLERK_PROXY_URL=https://dev-kraken.expertintheloop.io/api/__clerk \
+          VITE_ALLOWED_EMAIL_DOMAINS=phenomehealth.org \
+          VITE_ALLOWED_EMAILS=trentleslie@gmail.com \
+          npm run build
 
           # Update backend dependencies
           cd backend

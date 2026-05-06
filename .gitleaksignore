@@ -1,3 +1,7 @@
 # Test API keys - intentionally hardcoded for testing
 backend/tests/test_database_integration.py:generic-api-key:571
 backend/tests/test_database_integration.py:generic-api-key:598
+
+# Clerk publishable keys are public by design (embedded in frontend, visible in browser)
+.github/workflows/deploy-dev.yml:stripe-access-token:81
+.github/workflows/deploy-dev.yml:generic-api-key:81
