@@ -17,7 +17,6 @@ from langfuse import get_client
 from .config import get_settings
 from .agent import run_agent_turn
 from .logging_config import configure_logging, generate_correlation_id, correlation_id
-from .auth import validate_api_key, validate_ws_token
 from .clerk_auth import get_current_user, validate_ws_clerk_token
 from .clerk_proxy import router as clerk_proxy_router
 
@@ -700,19 +699,11 @@ async def websocket_chat(websocket: WebSocket):
     token = websocket.query_params.get("token")
     user_info = None
 
-    # Validate authentication via Clerk (or legacy auth as fallback)
+    # Validate authentication via Clerk
     settings = get_settings()
     if settings.clerk_auth_enabled:
         try:
             user_info = await validate_ws_clerk_token(token)
-        except ValueError as e:
-            logger.warning(f"WebSocket Clerk authentication failed: {e}")
-            await websocket.accept()
-            await websocket.close(code=4001, reason="Authentication failed")
-            return
-    elif settings.auth_enabled:
-        try:
-            user_info = await validate_ws_token(token)
         except ValueError as e:
             logger.warning(f"WebSocket authentication failed: {e}")
             await websocket.accept()
