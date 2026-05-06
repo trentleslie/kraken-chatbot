@@ -176,6 +176,66 @@ claude login  # Opens browser for OAuth
 
 If authentication expires, the backend returns `AUTH_ERROR` to the frontend.
 
+## Dev Branch Workflow
+
+### Overview
+
+| Property | Value |
+|----------|-------|
+| Branch | `dev` (long-lived integration branch) |
+| URL | `https://dev-kraken.expertintheloop.io` |
+| Backend Port | 8006 |
+| Service | `kraken-backend-dev` |
+| Database | `kraken_dev` (separate from prod `kraken_db`) |
+| Deploy Dir | `/home/ubuntu/kraken-chatbot-dev` |
+
+### How It Works
+
+Pushing to the `dev` branch triggers `.github/workflows/deploy-dev.yml`:
+1. SSH into Lightsail
+2. Pull latest code for the target branch
+3. Rebuild frontend with `VITE_WS_URL=wss://dev-kraken.expertintheloop.io/ws/chat`
+4. Sync backend dependencies with uv
+5. Run Alembic migrations against `kraken_dev` database
+6. Restart `kraken-backend-dev` service
+7. Readiness check on port 8006
+
+Manual dispatch: use `workflow_dispatch` to deploy any branch to the dev environment.
+
+### Feature Branch Flow
+
+1. Create feature branch from `dev`: `git checkout -b feat/my-feature`
+2. Develop and push to feature branch
+3. Merge into `dev` to test at `dev-kraken.expertintheloop.io`
+4. Once verified, create PR from feature branch to `main` for production
+
+### Dev Service Management
+
+```bash
+sudo systemctl status kraken-backend-dev
+sudo journalctl -u kraken-backend-dev -f
+sudo systemctl restart kraken-backend-dev
+```
+
+### Important Notes
+
+- **Separate database**: Dev uses `kraken_dev`, prod uses `kraken_db`. Alembic migrations are independent.
+- **Shared Claude OAuth tokens**: Prod and dev share `~/.claude/` on the server. If OAuth expires, both environments lose Claude access simultaneously. Run `claude login` on the server to refresh.
+- **Concurrency group**: Dev deploys use `lightsail-deploy-kraken`. A separate PR to `main` should add the same group to `deploy.yml` for full dev-prod serialization. Until then, concurrent dev+prod deploys are possible but unlikely.
+- **`origin/dev_main` branch**: Stale, superseded by `dev`. Do not use.
+
+### Server-Side Setup (for new dev environment)
+
+1. `git clone` the repo to `/home/ubuntu/kraken-chatbot-dev`, checkout `dev`
+2. `createdb kraken_dev`
+3. Copy `deploy/dev/.env.example` to `backend/.env`, fill in secrets, `chmod 600`
+4. `sudo cp deploy/dev/kraken-backend-dev.service /etc/systemd/system/`
+5. `sudo cp deploy/dev/nginx-kraken-dev.conf /etc/nginx/sites-available/`, symlink to `sites-enabled`
+6. `sudo certbot --nginx -d dev-kraken.expertintheloop.io`
+7. `sudo nginx -t && sudo systemctl reload nginx`
+8. `sudo systemctl daemon-reload && sudo systemctl enable kraken-backend-dev`
+9. Push any change to `dev` to trigger the first deploy
+
 ## Recent Bug Fixes (Reference)
 
 ### PR #6: Duplicate CURIE Handling + Regex Fix
