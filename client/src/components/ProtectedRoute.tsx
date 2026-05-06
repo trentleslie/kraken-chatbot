@@ -1,5 +1,4 @@
-import { useUser } from "@clerk/react";
-import { Redirect } from "wouter";
+import { useUser, SignInButton } from "@clerk/react";
 import AccessDeniedPage from "@/pages/AccessDenied";
 
 // Configurable allow-policy for UX gating (backend is authoritative source of truth).
@@ -14,7 +13,16 @@ export default function ProtectedRoute({ component: Component }: { component: Re
   const { user, isLoaded, isSignedIn } = useUser();
 
   if (!isLoaded) return null;
-  if (!isSignedIn) return <Redirect to="/login" />;
+
+  if (!isSignedIn) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center p-6 text-center">
+        <h1 className="text-2xl font-bold tracking-tight mb-4">Sign in to continue</h1>
+        <p className="text-muted-foreground mb-6">Authentication is required to access this application.</p>
+        <SignInButton />
+      </div>
+    );
+  }
 
   // If no domain restrictions configured, allow all authenticated users
   if (ALLOWED_UX_DOMAINS.length === 0 && ALLOWED_UX_EMAILS.size === 0) {
