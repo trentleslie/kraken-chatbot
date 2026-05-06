@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import { useAuth } from "@clerk/react";
 import type {
   ChatMessage,
   ConnectionStatus,
@@ -11,7 +12,6 @@ import type {
 } from "@/types/messages";
 
 const WS_URL = import.meta.env.VITE_WS_URL || "";
-const AUTH_TOKEN = import.meta.env.VITE_AUTH_TOKEN || "";
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
 const MAX_CONNECT_ATTEMPTS_BEFORE_DEMO = 3;
@@ -220,6 +220,9 @@ export function useWebSocket() {
   const [agentMode, setAgentMode] = useState<AgentMode>("classic");
   const [pipelineProgress, setPipelineProgress] = useState<PipelineProgress | null>(null);
 
+  // Clerk auth: get fresh session token for WebSocket connections
+  const { getToken, isSignedIn } = useAuth();
+
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -417,7 +420,7 @@ export function useWebSocket() {
     }, delay);
   }, [enterDemoMode]);
 
-  const connectWs = useCallback(() => {
+  const connectWs = useCallback(async () => {
     if (!WS_URL) {
       enterDemoMode();
       return;
@@ -433,8 +436,18 @@ export function useWebSocket() {
     setConnectionStatus("connecting");
 
     try {
-      // Append token to URL if available
-      const wsUrlWithAuth = AUTH_TOKEN ? `${WS_URL}?token=${AUTH_TOKEN}` : WS_URL;
+      // Get fresh Clerk session token for WebSocket auth
+      let wsUrlWithAuth = WS_URL;
+      if (isSignedIn) {
+        try {
+          const token = await getToken();
+          if (token) {
+            wsUrlWithAuth = `${WS_URL}?token=${token}`;
+          }
+        } catch (e) {
+          console.warn("Failed to get Clerk token for WebSocket:", e);
+        }
+      }
       const ws = new WebSocket(wsUrlWithAuth);
       wsRef.current = ws;
 
@@ -487,7 +500,7 @@ export function useWebSocket() {
       setConnectionStatus("disconnected");
       scheduleReconnect();
     }
-  }, [handleIncomingMessage, scheduleReconnect, enterDemoMode]);
+  }, [handleIncomingMessage, scheduleReconnect, enterDemoMode, getToken, isSignedIn]);
 
   const runDemoScenario = useCallback(
     (userContent: string) => {
