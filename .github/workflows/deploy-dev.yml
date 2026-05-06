@@ -75,13 +75,11 @@ jobs:
           git reset --hard "origin/\$BRANCH"
           echo "Deployed commit: \$(git rev-parse HEAD)"
 
-          # Rebuild frontend with dev WebSocket URL and Clerk auth
+          # Rebuild frontend — export VITE_* vars from backend .env for the build
+          # (Clerk publishable key, allowed domains, etc. are set in the server's .env)
           npm ci
-          VITE_WS_URL=wss://dev-kraken.expertintheloop.io/ws/chat \
-          VITE_CLERK_PUBLISHABLE_KEY=pk_test_YW1hemVkLXN0dWQtODUuY2xlcmsuYWNjb3VudHMuZGV2JA \
-          VITE_ALLOWED_EMAIL_DOMAINS=phenomehealth.org \
-          VITE_ALLOWED_EMAILS=trentleslie@gmail.com \
-          npm run build
+          set -a; source <(grep '^VITE_' "\$DEPLOY_DIR/backend/.env" 2>/dev/null); set +a
+          VITE_WS_URL=wss://dev-kraken.expertintheloop.io/ws/chat npm run build
 
           # Update backend dependencies
           cd backend
