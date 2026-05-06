@@ -100,21 +100,19 @@ async def clerk_proxy(request: Request, path: str) -> Response:
 
     # Forward response headers (including Set-Cookie for Clerk sessions)
     # Note: httpx auto-decompresses gzip responses, so resp.content is always
-    # decompressed. We must NOT forward the original content-encoding header
-    # since the body is no longer compressed. Let nginx handle re-compression.
+    # decompressed. We strip content-encoding (body is no longer compressed)
+    # and content-length (let Starlette/nginx set correct length for the
+    # decompressed body). This allows nginx gzip module to re-compress and
+    # correctly set content-encoding: gzip for the browser.
     response_headers = {}
     for key, value in resp.headers.multi_items():
         lower_key = key.lower()
-        if lower_key in ("transfer-encoding", "connection", "content-encoding"):
+        if lower_key in ("transfer-encoding", "connection", "content-encoding", "content-length"):
             continue
         response_headers[key] = value
 
-    # Set correct content-length for the (decompressed) body
-    body = resp.content
-    response_headers["content-length"] = str(len(body))
-
     return Response(
-        content=body,
+        content=resp.content,
         status_code=resp.status_code,
         headers=response_headers,
     )
