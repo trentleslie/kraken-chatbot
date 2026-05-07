@@ -17,7 +17,8 @@ from langfuse import get_client
 from .config import get_settings
 from .agent import run_agent_turn
 from .logging_config import configure_logging, generate_correlation_id, correlation_id
-from .auth import validate_api_key, validate_ws_token
+from .clerk_auth import get_current_user, validate_ws_clerk_token
+from .clerk_proxy import router as clerk_proxy_router, close_http_client
 
 # Configure logging early
 settings = get_settings()
@@ -164,6 +165,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     yield
     # Shutdown
+    await close_http_client()
     await close_db()
     logger.info("Shutting down Kestrel Backend")
 
@@ -195,9 +197,29 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
+
+# Mount Clerk FAPI proxy router
+app.include_router(clerk_proxy_router)
+
+# Fail-closed: warn if Clerk auth is enabled but required config is missing
+if settings.clerk_auth_enabled:
+    _missing = []
+    if not settings.clerk_secret_key:
+        _missing.append("CLERK_SECRET_KEY")
+    if not settings.clerk_jwks_url:
+        _missing.append("CLERK_JWKS_URL")
+    if not settings.clerk_issuer:
+        _missing.append("CLERK_ISSUER")
+    if _missing:
+        logging.getLogger(__name__).critical(
+            "CLERK_AUTH_ENABLED=true but missing required config: %s. "
+            "All authenticated requests will be rejected. "
+            "Set these env vars or set CLERK_AUTH_ENABLED=false.",
+            ", ".join(_missing),
+        )
 
 
 def check_langfuse_health() -> tuple[bool, str | None]:
@@ -296,7 +318,7 @@ async def readiness_check():
 
 
 @app.get("/api/conversations/{conversation_id}")
-async def get_conversation(conversation_id: str, auth: dict = Depends(validate_api_key)):
+async def get_conversation(conversation_id: str, auth: dict = Depends(get_current_user)):
     """Retrieve conversation by UUID for shared viewing."""
     try:
         uuid_id = UUID(conversation_id)
@@ -311,7 +333,7 @@ async def get_conversation(conversation_id: str, auth: dict = Depends(validate_a
 
 
 @app.post("/api/feedback")
-async def submit_feedback(request: Request, auth: dict = Depends(validate_api_key)):
+async def submit_feedback(request: Request, auth: dict = Depends(get_current_user)):
     """
     Submit user feedback (thumbs up/down) for a turn.
 
@@ -686,14 +708,13 @@ async def websocket_chat(websocket: WebSocket):
     token = websocket.query_params.get("token")
     user_info = None
 
-    # Validate authentication if enabled
+    # Validate authentication via Clerk
     settings = get_settings()
-    if settings.auth_enabled:
+    if settings.clerk_auth_enabled:
         try:
-            user_info = await validate_ws_token(token)
+            user_info = await validate_ws_clerk_token(token)
         except ValueError as e:
             logger.warning(f"WebSocket authentication failed: {e}")
-            # Accept first so client receives the close code properly
             await websocket.accept()
             await websocket.close(code=4001, reason="Authentication failed")
             return

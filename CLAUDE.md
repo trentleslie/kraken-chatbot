@@ -236,6 +236,49 @@ sudo systemctl restart kraken-backend-dev
 8. `sudo systemctl daemon-reload && sudo systemctl enable kraken-backend-dev`
 9. Push any change to `dev` to trigger the first deploy
 
+## Clerk Authentication
+
+### How It Works
+
+Users sign in via [Clerk](https://clerk.com). The frontend uses `@clerk/react` with a proxy URL. The backend verifies Clerk JWT tokens using PyJWT + JWKS.
+
+```
+Browser → ClerkProvider (proxyUrl → /api/__clerk) → Clerk FAPI
+         → useAuth().getToken() → WebSocket ?token=<jwt>
+         → FastAPI verifies JWT via PyJWKClient (RS256, JWKS)
+         → Email domain whitelist check
+```
+
+### Environment Variables
+
+| Variable | Where | Purpose |
+|----------|-------|---------|
+| `CLERK_AUTH_ENABLED` | Backend | `true` to enable auth. Fails to start if `true` without `CLERK_SECRET_KEY` |
+| `CLERK_SECRET_KEY` | Backend | Clerk server secret for proxy and JWKS |
+| `CLERK_JWKS_URL` | Backend | Clerk JWKS endpoint for token verification |
+| `CLERK_ISSUER` | Backend | Expected JWT `iss` claim |
+| `CLERK_PROXY_URL` | Backend | Full URL of the Clerk proxy (e.g., `https://dev-kraken.../api/__clerk`) |
+| `ALLOWED_EMAIL_DOMAINS` | Backend | Comma-separated email domains (authoritative) |
+| `ALLOWED_EMAILS` | Backend | Comma-separated email overrides |
+| `VITE_CLERK_PUBLISHABLE_KEY` | Frontend | Clerk public key (baked at build time) |
+| `VITE_CLERK_PROXY_URL` | Frontend | Clerk proxy URL (baked at build time) |
+| `VITE_ALLOWED_EMAIL_DOMAINS` | Frontend | UX-level domain gate (not authoritative) |
+| `VITE_ALLOWED_EMAILS` | Frontend | UX-level email overrides |
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `backend/src/kestrel_backend/clerk_auth.py` | JWT verification, FastAPI dependencies |
+| `backend/src/kestrel_backend/clerk_proxy.py` | Clerk FAPI proxy at `/api/__clerk` |
+| `client/src/components/ProtectedRoute.tsx` | Frontend auth gate + email domain check |
+| `client/src/pages/Login.tsx` | Clerk SignIn page |
+| `client/src/pages/AccessDenied.tsx` | Unauthorized email domain page |
+
+### Local Development
+
+Set `CLERK_AUTH_ENABLED=false` in `backend/.env` to disable auth entirely for local development. The frontend also skips Clerk when `VITE_CLERK_PUBLISHABLE_KEY` is not set.
+
 ## Recent Bug Fixes (Reference)
 
 ### PR #6: Duplicate CURIE Handling + Regex Fix

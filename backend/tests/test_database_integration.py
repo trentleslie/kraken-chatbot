@@ -65,8 +65,8 @@ class TestConversationOperations:
 
     async def test_conversation_creation_with_user(self, clean_db):
         """Test conversation creation with associated user."""
+        import hashlib
         from kestrel_backend import database as db
-        from kestrel_backend.auth import hash_api_key
 
         original_pool = db._pool
         db._pool = clean_db
@@ -78,7 +78,7 @@ class TestConversationOperations:
                     INSERT INTO kraken_users (api_key_hash)
                     VALUES ($1)
                     RETURNING id
-                """, hash_api_key("test-key"))
+                """, hashlib.sha256("test-key".encode()).hexdigest())
                 user_id = user_row["id"]
 
             # Create conversation with user
@@ -556,59 +556,6 @@ class TestDatabaseHealthCheck:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-class TestUserOperations:
-    """Test user table operations."""
-
-    async def test_create_user(self, clean_db):
-        """Test user creation via auth module."""
-        from kestrel_backend import database as db
-        from kestrel_backend.auth import create_user, hash_api_key
-
-        original_pool = db._pool
-        db._pool = clean_db
-
-        try:
-            api_key = "test-api-key-12345"
-            user_id = await create_user(api_key)
-
-            assert user_id is not None
-
-            # Verify in database
-            async with clean_db.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT * FROM kraken_users WHERE api_key_hash = $1",
-                    hash_api_key(api_key)
-                )
-
-            assert row is not None
-            assert row["is_active"] is True
-            assert str(row["id"]) == user_id
-        finally:
-            db._pool = original_pool
-
-    async def test_create_duplicate_user_fails(self, clean_db):
-        """Test that duplicate API key creation fails."""
-        from kestrel_backend import database as db
-        from kestrel_backend.auth import create_user
-
-        original_pool = db._pool
-        db._pool = clean_db
-
-        try:
-            api_key = "test-api-key-12345"
-
-            # First creation should succeed
-            await create_user(api_key)
-
-            # Second creation should fail
-            with pytest.raises(ValueError) as exc_info:
-                await create_user(api_key)
-
-            assert "already exists" in str(exc_info.value)
-        finally:
-            db._pool = original_pool
-
-
 # ============================================================================
 # Test Edge Cases
 # ============================================================================
