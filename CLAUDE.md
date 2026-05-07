@@ -19,6 +19,30 @@ uv run uvicorn src.kestrel_backend.main:app --reload --host 127.0.0.1 --port 800
 cd backend && uv run pytest tests/ -v -m "not integration"
 ```
 
+## LangGraph Studio (Local Development)
+
+Visual debugger for the KRAKEN discovery pipeline.
+
+### Setup
+
+1. Ensure `backend/.env` exists: `cp backend/.env.example backend/.env` and fill in API keys
+2. `cd backend && uv run langgraph dev`
+3. Open the Studio URL printed in the terminal (requires a free [LangSmith](https://smith.langchain.com) account)
+4. Graph topology renders automatically; invoke with a test query to see node execution
+
+### Configuration
+
+- `backend/langgraph.json` — graph entry point (`kestrel_backend.graph.builder:build_discovery_graph`) and env reference
+- `backend/.env` — API keys (not committed)
+
+### Notes
+
+- Studio is a dev tool only — does not affect production deployment
+- Hot-reloads on code changes
+- Runs in-memory (no Docker/Redis/Postgres needed)
+- Port 2024 by default
+- **Observability**: Langfuse handles tracing, not LangSmith. `LANGSMITH_API_KEY` is not needed — ignore the Studio banner about it.
+
 ## Architecture
 
 Full-stack application: React frontend + Python FastAPI backend communicating via WebSocket.
