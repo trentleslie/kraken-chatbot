@@ -64,14 +64,16 @@ async def clerk_proxy(request: Request, path: str) -> Response:
     if not settings.clerk_auth_enabled or not settings.clerk_secret_key:
         return Response(content="Clerk proxy not configured", status_code=503)
 
+    if not settings.clerk_proxy_url:
+        return Response(content="CLERK_PROXY_URL not configured", status_code=503)
+
     # Path allowlist check
     check_path = f"/{path}"
     if not any(check_path.startswith(prefix) for prefix in ALLOWED_PATH_PREFIXES):
         logger.warning(f"Clerk proxy: rejected non-allowlisted path: /{path}")
         return Response(content="Forbidden", status_code=403)
 
-    # Build the proxy URL for the Clerk-Proxy-Url header
-    proxy_url = f"{settings.clerk_proxy_url}"
+    proxy_url = settings.clerk_proxy_url
 
     # Build target URL
     target_url = f"{CLERK_FAPI_BASE}/{path}"
