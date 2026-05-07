@@ -112,15 +112,18 @@ async def clerk_proxy(request: Request, path: str) -> Response:
     # and content-length (let Starlette/nginx set correct length for the
     # decompressed body). This allows nginx gzip module to re-compress and
     # correctly set content-encoding: gzip for the browser.
-    response_headers = {}
-    for key, value in resp.headers.multi_items():
-        lower_key = key.lower()
-        if lower_key in ("transfer-encoding", "connection", "content-encoding", "content-length"):
-            continue
-        response_headers[key] = value
+    #
+    # Use Response with raw_headers to preserve multiple Set-Cookie headers.
+    # A plain dict would collapse them (Clerk sends multiple Set-Cookie per response).
+    # Use raw_headers list to preserve multiple Set-Cookie headers.
+    # A plain dict would collapse them (Clerk sends multiple Set-Cookie per response).
+    STRIP_HEADERS = {"transfer-encoding", "connection", "content-encoding", "content-length"}
+    raw_headers = [
+        (key.encode(), value.encode())
+        for key, value in resp.headers.multi_items()
+        if key.lower() not in STRIP_HEADERS
+    ]
 
-    return Response(
-        content=resp.content,
-        status_code=resp.status_code,
-        headers=response_headers,
-    )
+    response = Response(content=resp.content, status_code=resp.status_code)
+    response.raw_headers = raw_headers
+    return response
