@@ -1,11 +1,14 @@
-"""Tests for state validation contracts.
+"""Tests for state validation contracts and state models.
 
 Tests the @validate_state decorator and per-node input/output Pydantic models,
 including path-conditional field handling and OR-semantics validation.
+Also tests ModelUsageRecord and the model_usages reducer field.
 """
 
+import operator
 import pytest
 
+from kestrel_backend.graph.state import ModelUsageRecord
 from kestrel_backend.graph.state_contracts import (
     ColdStartInput,
     ColdStartOutput,
@@ -342,3 +345,78 @@ class TestValidateStateDecorator:
 
         result = await run({"raw_query": "test"})
         assert result is None
+
+
+class TestModelUsageRecord:
+    """Test ModelUsageRecord Pydantic model for cost tracking."""
+
+    def test_instantiate_with_all_fields(self):
+        record = ModelUsageRecord(
+            model_name="anthropic/claude-sonnet-4-20250514",
+            node_name="synthesis",
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=10,
+            cache_creation_tokens=5,
+        )
+        assert record.model_name == "anthropic/claude-sonnet-4-20250514"
+        assert record.node_name == "synthesis"
+        assert record.input_tokens == 100
+        assert record.output_tokens == 50
+        assert record.cache_read_tokens == 10
+        assert record.cache_creation_tokens == 5
+
+    def test_serializes_to_dict(self):
+        record = ModelUsageRecord(
+            model_name="anthropic/claude-sonnet-4-20250514",
+            node_name="triage",
+            input_tokens=200,
+            output_tokens=100,
+        )
+        d = record.model_dump()
+        assert d["model_name"] == "anthropic/claude-sonnet-4-20250514"
+        assert d["node_name"] == "triage"
+        assert d["input_tokens"] == 200
+        assert d["output_tokens"] == 100
+        assert d["cache_read_tokens"] == 0
+        assert d["cache_creation_tokens"] == 0
+
+    def test_default_token_values_are_zero(self):
+        record = ModelUsageRecord(
+            model_name="test-model",
+            node_name="test-node",
+        )
+        assert record.input_tokens == 0
+        assert record.output_tokens == 0
+        assert record.cache_read_tokens == 0
+        assert record.cache_creation_tokens == 0
+
+    def test_negative_tokens_rejected(self):
+        with pytest.raises(Exception):
+            ModelUsageRecord(
+                model_name="test-model",
+                node_name="test-node",
+                input_tokens=-1,
+            )
+
+    def test_frozen_rejects_mutation(self):
+        record = ModelUsageRecord(
+            model_name="test-model",
+            node_name="test-node",
+            input_tokens=100,
+        )
+        with pytest.raises(Exception):
+            record.input_tokens = 200
+
+    def test_operator_add_reducer_merges_lists(self):
+        """Verify that operator.add correctly merges model_usages lists."""
+        list_a = [
+            ModelUsageRecord(model_name="m", node_name="direct_kg", input_tokens=100),
+        ]
+        list_b = [
+            ModelUsageRecord(model_name="m", node_name="cold_start", input_tokens=200),
+        ]
+        merged = operator.add(list_a, list_b)
+        assert len(merged) == 2
+        assert merged[0].node_name == "direct_kg"
+        assert merged[1].node_name == "cold_start"

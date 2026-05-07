@@ -65,7 +65,7 @@ class TestEntityLimiting:
 
         # Mock analyze_cold_start_entity to avoid actual API calls
         with patch("kestrel_backend.graph.nodes.cold_start.analyze_cold_start_entity") as mock_analyze:
-            mock_analyze.return_value = ([], [], [], [])
+            mock_analyze.return_value = ([], [], [], [], None)
 
             result = await run(state)
 
@@ -90,7 +90,7 @@ class TestEntityLimiting:
         }
 
         with patch("kestrel_backend.graph.nodes.cold_start.analyze_cold_start_entity") as mock_analyze:
-            mock_analyze.return_value = ([], [], [], [])
+            mock_analyze.return_value = ([], [], [], [], None)
 
             result = await run(state)
 
@@ -116,7 +116,7 @@ class TestEntityLimiting:
         }
 
         with patch("kestrel_backend.graph.nodes.cold_start.analyze_cold_start_entity") as mock_analyze:
-            mock_analyze.return_value = ([], [], [], [])
+            mock_analyze.return_value = ([], [], [], [], None)
 
             await run(state)
 
@@ -140,14 +140,14 @@ class TestEarlyTermination:
         with patch("kestrel_backend.graph.nodes.cold_start.get_similar_entities") as mock_similar:
             mock_similar.return_value = low_quality_analogues
 
-            # Mock query to ensure it's NOT called
-            with patch("kestrel_backend.graph.nodes.cold_start.query") as mock_query:
-                analogues, inferences, findings, errors = await analyze_cold_start_entity(
+            # Mock query_with_usage to ensure it's NOT called
+            with patch("kestrel_backend.graph.nodes.cold_start.query_with_usage") as mock_qwu:
+                analogues, inferences, findings, errors, _usage = await analyze_cold_start_entity(
                     "TEST:001", "Test Entity", 5
                 )
 
                 # SDK inference should NOT have been called
-                mock_query.assert_not_called()
+                mock_qwu.assert_not_called()
 
                 # Should have returned analogues but no inferences
                 assert len(analogues) == 2
@@ -167,22 +167,19 @@ class TestEarlyTermination:
 
         with patch("kestrel_backend.graph.nodes.cold_start.get_similar_entities") as mock_similar:
             with patch("kestrel_backend.graph.nodes.cold_start.get_entity_connections") as mock_connections:
-                with patch("kestrel_backend.graph.nodes.cold_start.query") as mock_query:
+                with patch("kestrel_backend.graph.nodes.cold_start.query_with_usage") as mock_qwu:
                     mock_similar.return_value = quality_analogues
                     mock_connections.return_value = {"edges": [], "summary": "No edges"}
 
-                    # Mock SDK query to return immediately - use side_effect to create fresh generator per call
-                    async def mock_query_gen(*args, **kwargs):
-                        yield MagicMock(content=[MagicMock(text='{"inferences": []}')])
+                    # Mock query_with_usage to return text + None usage record
+                    mock_qwu.return_value = ('{"inferences": []}', None)
 
-                    mock_query.side_effect = lambda *a, **kw: mock_query_gen()
-
-                    analogues, inferences, findings, errors = await analyze_cold_start_entity(
+                    analogues, inferences, findings, errors, _usage = await analyze_cold_start_entity(
                         "TEST:001", "Test Entity", 5
                     )
 
                     # SDK inference should have been called
-                    mock_query.assert_called_once()
+                    mock_qwu.assert_called_once()
 
 
 @pytest.mark.integration

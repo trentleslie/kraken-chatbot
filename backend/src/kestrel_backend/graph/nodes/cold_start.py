@@ -30,7 +30,7 @@ from ...kestrel_client import call_kestrel_tool
 from ..state import (
     DiscoveryState, Finding, InferredAssociation, AnalogueEntity, NoveltyScore
 )
-from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, chunk
+from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, chunk, query_with_usage
 from ..pipeline_config import get_pipeline_config
 from ..state_contracts import validate_state, ColdStartInput, ColdStartOutput
 
@@ -369,7 +369,7 @@ async def analyze_cold_start_entity(
     curie: str,
     raw_name: str,
     edge_count: int
-) -> tuple[list[AnalogueEntity], list[InferredAssociation], list[Finding], list[str]]:
+) -> tuple[list[AnalogueEntity], list[InferredAssociation], list[Finding], list[str], Any | None]:
     """
     Analyze a single sparse/cold-start entity using direct HTTP API + SDK inference.
 
@@ -401,6 +401,7 @@ async def analyze_cold_start_entity(
                 logic_chain="Vector similarity search returned no results",
             )],
             [],
+            None,
         )
 
     # Convert to AnalogueEntity objects
@@ -435,6 +436,7 @@ async def analyze_cold_start_entity(
                 logic_chain=f"Found {len(analogues)} analogues but none with similarity >= 0.7 (skipped inference)",
             )],
             [],
+            None,
         )
 
     # Step 2: Get connections for each analogue via direct HTTP API
@@ -472,6 +474,7 @@ async def analyze_cold_start_entity(
                 logic_chain=f"Found {len(analogues)} analogues via vector similarity search (SDK unavailable for inference)",
             )],
             [],
+            None,
         )
 
     try:
@@ -489,26 +492,17 @@ async def analyze_cold_start_entity(
                 permission_mode="bypassPermissions",
             )
 
-            result_text_parts: list[str] = []
-            event_count = 0
-
-            async def collect_events() -> None:
-                """Collect SDK query events into result_text_parts."""
-                nonlocal event_count
-                async for event in query(
-                    prompt=inference_prompt,
-                    options=options
-                ):
-                    event_count += 1
-                    if hasattr(event, 'content'):
-                        for block in event.content:
-                            if hasattr(block, 'text'):
-                                result_text_parts.append(block.text)
-
             logger.info("Cold-start Step 3: Invoking SDK inference for '%s' (%s)...", raw_name, curie)
             try:
-                await asyncio.wait_for(collect_events(), timeout=_config.inference_timeout)
-                logger.info("Cold-start SDK inference for '%s' completed with %d events", raw_name, event_count)
+                result_text, usage_record = await asyncio.wait_for(
+                    query_with_usage(
+                        prompt=inference_prompt,
+                        options=options,
+                        node_name="cold_start",
+                    ),
+                    timeout=_config.inference_timeout,
+                )
+                logger.info("Cold-start SDK inference for '%s' completed", raw_name)
             except asyncio.TimeoutError:
                 logger.error(
                     "Cold-start SDK inference TIMED OUT for '%s' (%s) after %ds",
@@ -528,6 +522,7 @@ async def analyze_cold_start_entity(
                         logic_chain=f"Found {len(analogues)} analogues (inference timed out)",
                     )],
                     [f"SDK inference timed out for {curie} after {_config.inference_timeout}s"],
+                    None,
                 )
             except Exception as sdk_error:
                 logger.error(
@@ -549,9 +544,8 @@ async def analyze_cold_start_entity(
                         logic_chain=f"Found {len(analogues)} analogues (inference failed: {str(sdk_error)[:50]})",
                     )],
                     [f"SDK inference failed for {curie}: {str(sdk_error)}"],
+                    None,
                 )
-
-            result_text = "".join(result_text_parts)
 
             # Log successful response for diagnosis
             logger.info(
@@ -576,7 +570,7 @@ async def analyze_cold_start_entity(
                 logic_chain=f"Found {len(analogues)} analogues via vector similarity search",
             ))
 
-        return analogues, inferences, findings, errors
+        return analogues, inferences, findings, errors, usage_record
 
     except Exception as e:
         error_msg = f"Cold-start analysis failed for {curie}: {str(e)}"
@@ -594,6 +588,7 @@ async def analyze_cold_start_entity(
                 confidence="low",
             )],
             [error_msg],
+            None,
         )
 
 
@@ -726,6 +721,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     all_inferences: list[InferredAssociation] = []
     all_findings: list[Finding] = []
     errors: list[str] = []
+    all_usage_records: list = []
 
     # Process in batches for controlled parallelism
     batches = chunk(entities, _config.batch_size)
@@ -756,11 +752,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                     confidence="low",
                 ))
             else:
-                analogues, inferences, findings, errs = result
+                analogues, inferences, findings, errs, usage_rec = result
                 all_analogues.extend(analogues)
                 all_inferences.extend(inferences)
                 all_findings.extend(findings)
                 errors.extend(errs)
+                if usage_rec is not None:
+                    all_usage_records.append(usage_rec)
 
         # Progress logging
         processed_count = min((batch_idx + 1) * _config.batch_size, len(entities))
@@ -775,10 +773,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         duration, len(all_analogues), len(all_inferences), skipped_count
     )
 
-    return {
+    result: dict[str, Any] = {
         "cold_start_findings": all_findings,
         "inferred_associations": all_inferences,
         "analogues_found": all_analogues,
         "errors": errors,
         "cold_start_skipped_count": skipped_count,
     }
+    if all_usage_records:
+        result["model_usages"] = all_usage_records
+    return result

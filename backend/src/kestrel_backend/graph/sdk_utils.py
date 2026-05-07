@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # Centralized SDK availability check — single try/except for all nodes
 try:
-    from claude_agent_sdk import query, ClaudeAgentOptions  # noqa: F401
+    from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage  # noqa: F401
     from claude_agent_sdk.types import McpStdioServerConfig  # noqa: F401
     HAS_SDK = True
 except ImportError:
@@ -24,6 +24,12 @@ except ImportError:
     query = None  # type: ignore[assignment]
     ClaudeAgentOptions = None  # type: ignore[assignment,misc]
     McpStdioServerConfig = None  # type: ignore[assignment,misc]
+
+    # Sentinel class so isinstance(event, ResultMessage) returns False
+    # rather than raising TypeError when SDK is unavailable
+    class _ResultMessageStub:  # type: ignore[no-redef]
+        pass
+    ResultMessage = _ResultMessageStub  # type: ignore[assignment,misc]
 
 # Kestrel MCP server configuration constants
 KESTREL_COMMAND = "uvx"
@@ -94,3 +100,98 @@ def chunk(items: list, size: int) -> list[list]:
     Previously duplicated in entity_resolution, triage, direct_kg, and cold_start.
     """
     return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+# Default model name constant — all pipeline nodes currently use the same model
+DEFAULT_MODEL_NAME = "anthropic/claude-sonnet-4-20250514"
+
+
+async def query_with_usage(
+    prompt: str,
+    options: Any,
+    node_name: str,
+    model_name: str = DEFAULT_MODEL_NAME,
+) -> tuple[str, Any]:
+    """Stream a query() call and extract both text and usage metrics.
+
+    Replaces the common pattern of ``async for event in query(...)`` followed
+    by text block collection.  Accumulates usage from ALL events that carry a
+    ``.usage`` attribute (not just ``ResultMessage``), following the dual-path
+    pattern in ``agent.py:510-534``.  This ensures accurate token counts for
+    multi-turn nodes like pathway_enrichment (``max_turns=25``).
+
+    Does NOT handle timeouts — nodes that need ``asyncio.wait_for()`` should
+    wrap this coroutine themselves, since timeout recovery logic is
+    domain-specific.
+
+    Args:
+        prompt: The prompt to send to the SDK.
+        options: ClaudeAgentOptions instance.
+        node_name: Name of the calling graph node (for the usage record).
+        model_name: Model identifier string.
+
+    Returns:
+        A tuple of ``(text, record)`` where *text* is the joined text content
+        and *record* is a ``ModelUsageRecord`` or ``None`` if no usage data
+        was found on any event.
+
+    Raises:
+        RuntimeError: If the SDK is not available (``HAS_SDK is False``).
+    """
+    if not HAS_SDK or query is None:
+        raise RuntimeError("Claude Agent SDK is not available")
+
+    from .state import ModelUsageRecord
+
+    result_text_parts: list[str] = []
+    input_tokens = 0
+    output_tokens = 0
+    cache_creation_tokens = 0
+    cache_read_tokens = 0
+    has_usage = False
+
+    async for event in query(prompt=prompt, options=options):
+        # Collect text content
+        if hasattr(event, "content"):
+            for block in event.content:
+                if hasattr(block, "text"):
+                    result_text_parts.append(block.text)
+
+        # Accumulate usage from ResultMessage (final totals — replaces)
+        if isinstance(event, ResultMessage):
+            if event.usage:
+                usage = event.usage
+                if isinstance(usage, dict):
+                    input_tokens = usage.get("input_tokens", 0)
+                    output_tokens = usage.get("output_tokens", 0)
+                    cache_creation_tokens = usage.get("cache_creation_input_tokens", 0)
+                    cache_read_tokens = usage.get("cache_read_input_tokens", 0)
+                    has_usage = True
+        # Accumulate usage from other event types (e.g., AssistantMessage)
+        elif hasattr(event, "usage") and event.usage:
+            usage = event.usage
+            if isinstance(usage, dict):
+                input_tokens += usage.get("input_tokens", 0)
+                output_tokens += usage.get("output_tokens", 0)
+                cache_creation_tokens += usage.get("cache_creation_input_tokens", 0)
+                cache_read_tokens += usage.get("cache_read_input_tokens", 0)
+            else:
+                input_tokens += getattr(usage, "input_tokens", 0)
+                output_tokens += getattr(usage, "output_tokens", 0)
+                cache_creation_tokens += getattr(usage, "cache_creation_input_tokens", 0)
+                cache_read_tokens += getattr(usage, "cache_read_input_tokens", 0)
+            has_usage = True
+
+    text = "".join(result_text_parts)
+    record = None
+    if has_usage:
+        record = ModelUsageRecord(
+            model_name=model_name,
+            node_name=node_name,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+        )
+
+    return text, record
