@@ -311,7 +311,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             len(failed_entities)
         )
         for idx in tier1_failed_indices:
-            entity = resolved_entities[idx]
+            entity = valid_entities[idx]
             logger.info(
                 "FALLBACK_EVENT node=triage entity=%s curie=%s reason=tier1_edge_count_failed tier=2",
                 entity.raw_name if hasattr(entity, 'raw_name') else str(entity),
