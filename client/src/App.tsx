@@ -9,11 +9,8 @@ import ChatPage from "@/pages/chat";
 import SharedConversation from "@/pages/SharedConversation";
 import AccessDeniedPage from "@/pages/AccessDenied";
 
-const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
-if (!clerkPubKey) {
-  throw new Error("VITE_CLERK_PUBLISHABLE_KEY is required. Set it in your .env file.");
-}
-const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL;
+const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
+const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL as string | undefined;
 
 function LoginPage() {
   return (
@@ -106,7 +103,7 @@ function AppWithClerk() {
 
   return (
     <ClerkProvider
-      publishableKey={clerkPubKey}
+      publishableKey={clerkPubKey!}
       proxyUrl={clerkProxyUrl}
       routerPush={(to) => setLocation(to)}
       routerReplace={(to) => setLocation(to, { replace: true })}
@@ -122,7 +119,19 @@ function AppWithClerk() {
   );
 }
 
+function AppNoAuth() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Router />
+        <Toaster />
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
+}
+
 function App() {
+  if (!clerkPubKey) return <AppNoAuth />;
   return <AppWithClerk />;
 }
 

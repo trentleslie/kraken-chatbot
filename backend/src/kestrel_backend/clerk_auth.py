@@ -10,13 +10,10 @@ from functools import lru_cache
 import jwt
 from jwt import PyJWKClient
 from fastapi import HTTPException, Request
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import get_settings
 
 logger = logging.getLogger(__name__)
-
-_security = HTTPBearer(auto_error=False)
 
 # Module-level JWKS client (lazy initialized, caches keys internally)
 _jwks_client: PyJWKClient | None = None
@@ -115,7 +112,6 @@ def _check_email_allowed(payload: dict) -> str | None:
 
 async def get_current_user(
     request: Request,
-    credentials: HTTPAuthorizationCredentials | None = None,
 ) -> dict:
     """FastAPI dependency for REST endpoint auth.
 
@@ -133,8 +129,6 @@ async def get_current_user(
     auth_header = request.headers.get("authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:]
-    elif credentials:
-        token = credentials.credentials
     else:
         raise HTTPException(status_code=401, detail="Authentication required")
 

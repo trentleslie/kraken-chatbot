@@ -115,8 +115,6 @@ async def clerk_proxy(request: Request, path: str) -> Response:
     # decompressed body). This allows nginx gzip module to re-compress and
     # correctly set content-encoding: gzip for the browser.
     #
-    # Use Response with raw_headers to preserve multiple Set-Cookie headers.
-    # A plain dict would collapse them (Clerk sends multiple Set-Cookie per response).
     # Use raw_headers list to preserve multiple Set-Cookie headers.
     # A plain dict would collapse them (Clerk sends multiple Set-Cookie per response).
     STRIP_HEADERS = {"transfer-encoding", "connection", "content-encoding", "content-length"}
