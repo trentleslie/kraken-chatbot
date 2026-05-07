@@ -26,7 +26,7 @@ from ..state import (
 )
 from ...literature_utils import format_pmid_link
 from ...kestrel_client import multi_hop_query
-from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, query_with_usage, DEFAULT_MODEL_NAME
+from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
 from ..state_contracts import validate_state, SynthesisInput, SynthesisOutput
 
 logger = logging.getLogger(__name__)
@@ -1075,6 +1075,8 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 options=options,
                 node_name="synthesis",
             )
+            # NOTE: query_with_usage joins text blocks with "", not "\n" (previous behavior).
+            # All other nodes use "".join(); synthesis now matches them.
 
             report = text if text.strip() else fallback_report(state)
         except Exception as e:

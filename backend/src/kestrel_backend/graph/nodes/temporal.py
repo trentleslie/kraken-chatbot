@@ -29,7 +29,7 @@ from ..state import (
     DiscoveryState, TemporalClassification, Finding,
     DiseaseAssociation, PathwayMembership, InferredAssociation, Bridge
 )
-from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS, query_with_usage, DEFAULT_MODEL_NAME
+from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS, query_with_usage
 from ..state_contracts import validate_state, TemporalInput, TemporalOutput
 
 logger = logging.getLogger(__name__)

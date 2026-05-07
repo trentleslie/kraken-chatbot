@@ -30,7 +30,7 @@ from ...kestrel_client import call_kestrel_tool
 from ..state import (
     DiscoveryState, Finding, InferredAssociation, AnalogueEntity, NoveltyScore
 )
-from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, chunk, query_with_usage, DEFAULT_MODEL_NAME
+from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, chunk, query_with_usage
 from ..pipeline_config import get_pipeline_config
 from ..state_contracts import validate_state, ColdStartInput, ColdStartOutput
 

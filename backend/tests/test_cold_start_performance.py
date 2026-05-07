@@ -140,14 +140,14 @@ class TestEarlyTermination:
         with patch("kestrel_backend.graph.nodes.cold_start.get_similar_entities") as mock_similar:
             mock_similar.return_value = low_quality_analogues
 
-            # Mock query to ensure it's NOT called
-            with patch("kestrel_backend.graph.nodes.cold_start.query") as mock_query:
+            # Mock query_with_usage to ensure it's NOT called
+            with patch("kestrel_backend.graph.nodes.cold_start.query_with_usage") as mock_qwu:
                 analogues, inferences, findings, errors, _usage = await analyze_cold_start_entity(
                     "TEST:001", "Test Entity", 5
                 )
 
                 # SDK inference should NOT have been called
-                mock_query.assert_not_called()
+                mock_qwu.assert_not_called()
 
                 # Should have returned analogues but no inferences
                 assert len(analogues) == 2

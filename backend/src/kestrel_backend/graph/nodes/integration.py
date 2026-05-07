@@ -27,7 +27,7 @@ from ..state import (
     EntityResolution
 )
 from ...kestrel_client import multi_hop_query
-from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS, query_with_usage, DEFAULT_MODEL_NAME
+from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS, query_with_usage
 from ..state_contracts import validate_state, IntegrationInput, IntegrationOutput
 
 logger = logging.getLogger(__name__)
