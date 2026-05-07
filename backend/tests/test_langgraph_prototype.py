@@ -279,7 +279,7 @@ class TestTriageNode:
             classification="well_characterized",
         )
 
-        with patch.object(triage, 'count_edges_single', return_value=mock_score):
+        with patch.object(triage, 'count_edges_single', return_value=(mock_score, None)):
             state: DiscoveryState = {
                 "resolved_entities": [
                     EntityResolution(
@@ -788,8 +788,8 @@ class TestEndToEnd:
             classification="well_characterized",
         )
 
-        with patch.object(entity_resolution, 'resolve_single_entity', return_value=mock_resolution):
-            with patch.object(triage, 'count_edges_single', return_value=mock_score):
+        with patch.object(entity_resolution, 'resolve_single_entity', return_value=(mock_resolution, None)):
+            with patch.object(triage, 'count_edges_single', return_value=(mock_score, None)):
                 with patch.object(direct_kg, 'HAS_SDK', False):
                     with patch.object(cold_start, 'HAS_SDK', False):
                         graph = build_discovery_graph()
@@ -836,8 +836,8 @@ class TestEndToEnd:
             classification="well_characterized",
         )
 
-        with patch.object(entity_resolution, 'resolve_single_entity', return_value=mock_resolution):
-            with patch.object(triage, 'count_edges_single', return_value=mock_score):
+        with patch.object(entity_resolution, 'resolve_single_entity', return_value=(mock_resolution, None)):
+            with patch.object(triage, 'count_edges_single', return_value=(mock_score, None)):
                 with patch.object(direct_kg, 'HAS_SDK', False):
                     with patch.object(cold_start, 'HAS_SDK', False):
                         graph = build_discovery_graph()
@@ -1508,8 +1508,8 @@ class TestEndToEndPhase4b:
             classification="well_characterized",
         )
 
-        with patch.object(entity_resolution, 'resolve_single_entity', return_value=mock_resolution):
-            with patch.object(triage, 'count_edges_single', return_value=mock_score):
+        with patch.object(entity_resolution, 'resolve_single_entity', return_value=(mock_resolution, None)):
+            with patch.object(triage, 'count_edges_single', return_value=(mock_score, None)):
                 with patch.object(direct_kg, 'HAS_SDK', False):
                     with patch.object(cold_start, 'HAS_SDK', False):
                         with patch.object(pathway_enrichment, 'HAS_SDK', False):
@@ -1548,8 +1548,8 @@ class TestEndToEndPhase4b:
             classification="well_characterized",
         )
 
-        with patch.object(entity_resolution, 'resolve_single_entity', return_value=mock_resolution):
-            with patch.object(triage, 'count_edges_single', return_value=mock_score):
+        with patch.object(entity_resolution, 'resolve_single_entity', return_value=(mock_resolution, None)):
+            with patch.object(triage, 'count_edges_single', return_value=(mock_score, None)):
                 with patch.object(direct_kg, 'HAS_SDK', False):
                     with patch.object(cold_start, 'HAS_SDK', False):
                         with patch.object(pathway_enrichment, 'HAS_SDK', False):
@@ -2071,8 +2071,8 @@ class TestEndToEndPhase5:
             significance="Glucose dysregulation is a hallmark of diabetes",
         )
 
-        with patch.object(entity_resolution, 'resolve_single_entity', return_value=mock_resolution):
-            with patch.object(triage, 'count_edges_single', return_value=mock_score):
+        with patch.object(entity_resolution, 'resolve_single_entity', return_value=(mock_resolution, None)):
+            with patch.object(triage, 'count_edges_single', return_value=(mock_score, None)):
                 with patch.object(direct_kg, 'HAS_SDK', False):
                     with patch.object(cold_start, 'HAS_SDK', False):
                         with patch.object(pathway_enrichment, 'HAS_SDK', False):

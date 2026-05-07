@@ -27,7 +27,7 @@ from ..state import (
     EntityResolution
 )
 from ...kestrel_client import multi_hop_query
-from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
+from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS, query_with_usage, DEFAULT_MODEL_NAME
 from ..state_contracts import validate_state, IntegrationInput, IntegrationOutput
 
 logger = logging.getLogger(__name__)
@@ -590,15 +590,12 @@ If no gaps found, return: {{"gaps": []}}
             permission_mode="bypassPermissions",
         )
 
-        # Execute the query using async generator pattern
-        result_text_parts = []
-        async for event in query(prompt=gap_analysis_prompt, options=options):
-            if hasattr(event, 'content'):
-                for block in event.content:
-                    if hasattr(block, 'text'):
-                        result_text_parts.append(block.text)
-
-        result_text = "".join(result_text_parts)
+        # Execute the query using query_with_usage
+        result_text, usage_record = await query_with_usage(
+            prompt=gap_analysis_prompt,
+            options=options,
+            node_name="integration",
+        )
 
         # Parse only gap analysis from LLM result
         _, gaps, parse_errors = parse_integration_result(result_text)
@@ -636,12 +633,15 @@ If no gaps found, return: {{"gaps": []}}
             duration, len(bridges), len(gaps)
         )
 
-        return {
+        result_dict: dict[str, Any] = {
             "bridges": bridges,
             "gap_entities": gaps,
             "direct_findings": findings,  # Uses operator.add reducer
             "errors": parse_errors,
         }
+        if usage_record is not None:
+            result_dict["model_usages"] = [usage_record]
+        return result_dict
 
     except Exception as e:
         duration = time.time() - start

@@ -29,7 +29,7 @@ from ..state import (
     DiscoveryState, TemporalClassification, Finding,
     DiseaseAssociation, PathwayMembership, InferredAssociation, Bridge
 )
-from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
+from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS, query_with_usage, DEFAULT_MODEL_NAME
 from ..state_contracts import validate_state, TemporalInput, TemporalOutput
 
 logger = logging.getLogger(__name__)
@@ -298,15 +298,12 @@ Classify each finding by its temporal relationship to disease progression.
             permission_mode="bypassPermissions",
         )
 
-        # Execute the query using async generator pattern
-        result_text_parts = []
-        async for event in query(prompt=full_prompt, options=options):
-            if hasattr(event, 'content'):
-                for block in event.content:
-                    if hasattr(block, 'text'):
-                        result_text_parts.append(block.text)
-
-        result_text = "".join(result_text_parts)
+        # Execute the query and capture usage metrics
+        result_text, usage_record = await query_with_usage(
+            prompt=full_prompt,
+            options=options,
+            node_name="temporal",
+        )
 
         # Parse the result
         classifications, parse_errors = parse_temporal_result(result_text)
@@ -325,6 +322,7 @@ Classify each finding by its temporal relationship to disease progression.
         return {
             "temporal_classifications": classifications,
             "errors": parse_errors,
+            "model_usages": [usage_record] if usage_record else [],
         }
 
     except Exception as e:

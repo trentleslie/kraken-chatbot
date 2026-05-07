@@ -28,7 +28,7 @@ from typing import Any
 
 from ...kestrel_client import call_kestrel_tool
 from ..state import DiscoveryState, EntityResolution
-from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
+from ..sdk_utils import HAS_SDK, query, query_with_usage, DEFAULT_MODEL_NAME, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
 from ..pipeline_config import get_pipeline_config
 from ..state_contracts import validate_state, EntityResolutionInput, EntityResolutionOutput
 
@@ -256,7 +256,7 @@ def parse_resolution_result(entity: str, result_text: str) -> EntityResolution:
     )
 
 
-async def resolve_single_entity(entity: str, is_retry: bool = False) -> EntityResolution:
+async def resolve_single_entity(entity: str, is_retry: bool = False) -> tuple[EntityResolution, Any]:
     """
     Resolve a single entity name to a CURIE using Claude Agent SDK.
 
@@ -264,18 +264,19 @@ async def resolve_single_entity(entity: str, is_retry: bool = False) -> EntityRe
         entity: The entity name to resolve
         is_retry: If True, use more aggressive retry prompt
 
-    Returns EntityResolution with method="failed" on any error.
+    Returns tuple of (EntityResolution, ModelUsageRecord | None).
+    EntityResolution has method="failed" on any error.
     """
     if not HAS_SDK:
         # SDK not available - return mock for testing
-        return EntityResolution(
+        return (EntityResolution(
             raw_name=entity,
             curie=None,
             resolved_name=None,
             category=None,
             confidence=0.0,
             method="failed",
-        )
+        ), None)
 
     try:
         async with SDK_SEMAPHORE:
@@ -301,25 +302,22 @@ async def resolve_single_entity(entity: str, is_retry: bool = False) -> EntityRe
                 max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for large KG responses
             )
 
-            result_text_parts = []
-            async for event in query(prompt=f"Resolve: {entity}", options=options):
-                if hasattr(event, "content"):
-                    for block in event.content:
-                        if hasattr(block, "text"):
-                            result_text_parts.append(block.text)
-
-            result_text = "".join(result_text_parts)
-            return parse_resolution_result(entity, result_text)
+            result_text, usage_record = await query_with_usage(
+                prompt=f"Resolve: {entity}",
+                options=options,
+                node_name="entity_resolution",
+            )
+            return parse_resolution_result(entity, result_text), usage_record
 
     except Exception as e:
-        return EntityResolution(
+        return (EntityResolution(
             raw_name=entity,
             curie=None,
             resolved_name=None,
             category=None,
             confidence=0.0,
             method="failed",
-        )
+        ), None)
 
 
 
@@ -438,6 +436,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         )
 
     # ========== TIER 2: LLM Resolution ==========
+    model_usages: list = []
     if tier2_needed_indices and HAS_SDK:
         tier2_start = time.time()
         failed_entities = [entities[i] for i in tier2_needed_indices]
@@ -473,7 +472,10 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                     method="failed",
                 )
             else:
-                all_results[idx] = result
+                resolution, usage_record = result
+                all_results[idx] = resolution
+                if usage_record is not None:
+                    model_usages.append(usage_record)
 
         # Second pass: Aggressive retry for still-failed entities
         still_failed_indices = [i for i in tier2_needed_indices if all_results[i] and not all_results[i].curie]
@@ -497,8 +499,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
             # Merge successful retries back
             for idx, retry_result in zip(still_failed_indices, retry_results):
-                if isinstance(retry_result, EntityResolution) and retry_result.curie:
-                    all_results[idx] = retry_result
+                if isinstance(retry_result, Exception):
+                    continue
+                resolution, usage_record = retry_result
+                if isinstance(resolution, EntityResolution) and resolution.curie:
+                    all_results[idx] = resolution
+                if usage_record is not None:
+                    model_usages.append(usage_record)
 
         tier2_duration = time.time() - tier2_start
         tier2_resolved = sum(1 for i in tier2_needed_indices if all_results[i] and all_results[i].curie)
@@ -555,7 +562,10 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         duration, len(resolved), tier1_resolved, alias_resolved, llm_resolved, len(failed), rate
     )
 
-    return {
+    result = {
         "resolved_entities": final_results,
         "errors": errors,
     }
+    if model_usages:
+        result["model_usages"] = model_usages
+    return result
