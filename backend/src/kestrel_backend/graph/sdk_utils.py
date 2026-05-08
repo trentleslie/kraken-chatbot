@@ -166,7 +166,12 @@ async def query_with_usage(
                     output_tokens = usage.get("output_tokens", 0)
                     cache_creation_tokens = usage.get("cache_creation_input_tokens", 0)
                     cache_read_tokens = usage.get("cache_read_input_tokens", 0)
-                    has_usage = True
+                else:
+                    input_tokens = getattr(usage, "input_tokens", 0)
+                    output_tokens = getattr(usage, "output_tokens", 0)
+                    cache_creation_tokens = getattr(usage, "cache_creation_input_tokens", 0)
+                    cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0)
+                has_usage = True
         # Accumulate usage from other event types (e.g., AssistantMessage)
         elif hasattr(event, "usage") and event.usage:
             usage = event.usage
