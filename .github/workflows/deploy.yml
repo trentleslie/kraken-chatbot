@@ -32,8 +32,10 @@ jobs:
           git fetch origin main
           git reset --hard origin/main
 
-          # Rebuild frontend with production WebSocket URL
+          # Rebuild frontend — export VITE_* vars from backend .env for the build
+          # (Clerk publishable key, allowed domains, etc. are set in the server's .env)
           npm ci
+          set -a; source <(grep '^VITE_' ~/kraken-chatbot/backend/.env 2>/dev/null); set +a
           VITE_WS_URL=wss://kraken.expertintheloop.io/ws/chat npm run build
 
           # Update backend dependencies
