@@ -32,8 +32,18 @@ jobs:
           git fetch origin main
           git reset --hard origin/main
 
-          # Rebuild frontend with production WebSocket URL
+          # Rebuild frontend — export VITE_* vars from backend .env for the build
+          # (Clerk publishable key, allowed domains, etc. are set in the server's .env)
           npm ci
+          ENV_FILE=~/kraken-chatbot/backend/.env
+          if [ ! -f "$ENV_FILE" ]; then
+            echo "ERROR: $ENV_FILE not found — frontend build will lack VITE_* vars"
+            exit 1
+          fi
+          set -a; source <(grep '^VITE_' "$ENV_FILE"); set +a
+          if [ -z "$VITE_CLERK_PUBLISHABLE_KEY" ]; then
+            echo "WARNING: VITE_CLERK_PUBLISHABLE_KEY not set — app will run without Clerk auth"
+          fi
           VITE_WS_URL=wss://kraken.expertintheloop.io/ws/chat npm run build
 
           # Update backend dependencies
