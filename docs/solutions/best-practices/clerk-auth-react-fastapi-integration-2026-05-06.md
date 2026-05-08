@@ -1,6 +1,7 @@
 ---
 title: "Clerk Authentication Integration: React + FastAPI Pattern"
 date: 2026-05-06
+last_updated: 2026-05-07
 category: best-practices
 module: authentication
 problem_type: best_practice
@@ -11,6 +12,7 @@ applies_when:
   - Migrating a reference implementation from Node.js (@clerk/express) to Python
   - Deploying behind nginx with certbot on a VPS (Lightsail, DigitalOcean, etc.)
   - Backend must verify Clerk JWTs without the official SDK
+  - Activating a Clerk production instance with custom domain DNS
 tags:
   - clerk
   - react
@@ -21,6 +23,10 @@ tags:
   - nginx-proxy
   - authentication
   - vite
+  - custom-domain
+  - dns
+  - google-oauth
+  - production-setup
 ---
 
 # Clerk Authentication Integration: React + FastAPI Pattern
@@ -56,6 +62,83 @@ The deployment target is AWS Lightsail with nginx reverse proxy and certbot-mana
 - Source `VITE_` environment variables from the server's `.env` file during build: `set -a; source <(grep '^VITE_' "$DEPLOY_DIR/backend/.env"); set +a`
 - Clerk dev instances talk directly to `clerk.accounts.dev` — no proxy URL needed in development.
 - Add `access_log off;` to nginx `/ws/chat` location block to prevent JWT tokens from appearing in access logs.
+
+### Production Activation (Custom Domain)
+
+Setting up Clerk for production requires a distinct production instance with its own keys and DNS configuration. This was completed for `kraken.expertintheloop.io` on 2026-05-07.
+
+**1. Create a production Clerk instance** — Do not reuse dev keys (`pk_test_*`/`sk_test_*`) in production. Use the Clerk CLI to retrieve production keys:
+
+```bash
+npx clerk apps list                              # Find your app
+npx clerk env pull --instance prod --app <app_id> # Get pk_live/sk_live keys
+```
+
+The publishable key encodes the Clerk FAPI domain. Decode it to derive JWKS/issuer URLs:
+
+```bash
+echo "<pk_live_base64_portion>" | base64 -d
+# → clerk.<your-domain>
+```
+
+**2. Configure five DNS CNAME records** — In the Clerk dashboard, enable the custom domain. Add these records in your DNS provider (Google Cloud DNS for expertintheloop.io):
+
+| Hostname | Target |
+|---|---|
+| `accounts.<your-domain>` | `accounts.clerk.services` |
+| `clerk.<your-domain>` | `frontend-api.clerk.services` |
+| `clk._domainkey.<your-domain>` | `dkim1.<instance-id>.clerk.services` |
+| `clk2._domainkey.<your-domain>` | `dkim2.<instance-id>.clerk.services` |
+| `clkmail.<your-domain>` | `mail.<instance-id>.clerk.services` |
+
+Wait for Clerk dashboard to confirm DNS verification before proceeding.
+
+**3. Remove the FAPI proxy for production** — With custom domain DNS active, Clerk loads directly from `clerk.<your-domain>`. The `/api/__clerk` proxy (`clerk_proxy.py`) is unnecessary and conflicts with custom domain routing. Remove from the server `.env`:
+
+- `VITE_CLERK_PROXY_URL` — do not pass to `npm run build`
+- `CLERK_PROXY_URL` — remove from backend config
+
+Keeping `VITE_CLERK_PROXY_URL` set while custom domain DNS is active causes "Failed to load Clerk JS" — the SDK tries to bootstrap through the proxy instead of the custom domain CDN. (session history)
+
+**4. Configure backend JWT verification against the custom domain** — The JWKS endpoint and JWT issuer use the custom domain:
+
+```bash
+# Server backend/.env (production)
+CLERK_AUTH_ENABLED=true
+CLERK_SECRET_KEY=sk_live_...
+CLERK_JWKS_URL=https://clerk.<your-domain>/.well-known/jwks.json
+CLERK_ISSUER=https://clerk.<your-domain>
+ALLOWED_EMAIL_DOMAINS=yourdomain.com
+ALLOWED_EMAILS=specific@user.com
+
+# Frontend vars sourced at build time
+VITE_CLERK_PUBLISHABLE_KEY=pk_live_...
+VITE_ALLOWED_EMAIL_DOMAINS=yourdomain.com
+VITE_ALLOWED_EMAILS=specific@user.com
+```
+
+**5. Add the deploy workflow guard** — The production `deploy.yml` must source VITE_* vars from the server `.env` and fail fast if the file is missing:
+
+```bash
+ENV_FILE=~/kraken-chatbot/backend/.env
+if [ ! -f "$ENV_FILE" ]; then
+  echo "ERROR: $ENV_FILE not found — frontend build will lack VITE_* vars"
+  exit 1
+fi
+set -a; source <(grep '^VITE_' "$ENV_FILE"); set +a
+if [ -z "$VITE_CLERK_PUBLISHABLE_KEY" ]; then
+  echo "WARNING: VITE_CLERK_PUBLISHABLE_KEY not set — app will run without Clerk auth"
+fi
+VITE_WS_URL=wss://<your-domain>/ws/chat npm run build
+```
+
+**6. Configure Google OAuth redirect URI** — In Google Cloud Console > APIs & Services > Credentials > OAuth 2.0 Client ID, add:
+
+```
+https://clerk.<your-domain>/v1/oauth_callback
+```
+
+Without this, Google returns "Error 400: invalid_request" when users attempt sign-in.
 
 ## Why This Matters
 
@@ -141,6 +224,9 @@ VITE_WS_URL=wss://dev-kraken.expertintheloop.io/ws/chat npm run build
 | Hardcoded VITE_ vars in CI workflow | Keys in repo, inflexible per-environment | Source from server `.env` at build time |
 | Missing `/npm/` in proxy allowlist | Clerk JS bundle returns 403 | Add `/npm/` to allowed path prefixes |
 | `CLERK_AUTH_ENABLED` inferred from key presence | Env var typo silently disables all auth | Use explicit boolean flag with startup validation |
+| Custom domain DNS active + `VITE_CLERK_PROXY_URL` set | "Failed to load Clerk JS" — SDK bootstraps through proxy instead of custom domain | Remove `VITE_CLERK_PROXY_URL` and `CLERK_PROXY_URL` from production `.env` |
+| Production deploy missing VITE_* vars | `VITE_CLERK_PUBLISHABLE_KEY` is undefined at build time; app renders without ClerkProvider | Source from server `.env` with fail-fast guard (see Production Activation section) |
+| Google OAuth redirect URI not configured for custom domain | "Error 400: invalid_request" on Google sign-in | Add `https://clerk.<domain>/v1/oauth_callback` in Google Cloud Console |
 
 ## Related
 
@@ -149,5 +235,7 @@ VITE_WS_URL=wss://dev-kraken.expertintheloop.io/ws/chat npm run build
 - **GitHub Issue #33**: "feat: implement Google OAuth authentication" — superseded by Clerk (handles OAuth providers internally)
 - **Plan**: `docs/plans/2026-05-06-003-feat-clerk-auth-integration-plan.md`
 - **PR #52**: feat/clerk-auth → dev (Greptile reviewed, feedback addressed)
+- **PR #55**: fix(deploy): source VITE_* vars from .env during production build
 - **Clerk docs**: https://clerk.com/docs/react/getting-started/quickstart
 - **Clerk JWT verification**: https://clerk.com/docs/guides/sessions/manual-jwt-verification
+- **Clerk custom domains**: https://clerk.com/docs/deployments/overview
