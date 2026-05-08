@@ -31,7 +31,7 @@ from ...kestrel_client import call_kestrel_tool
 from ..state import (
     DiscoveryState, Finding, DiseaseAssociation, PathwayMembership, NoveltyScore
 )
-from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
+from ..sdk_utils import HAS_SDK, query_with_usage, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
 from ..pipeline_config import get_pipeline_config
 from ..state_contracts import validate_state, DirectKGInput, DirectKGOutput
 
@@ -530,14 +530,14 @@ def parse_direct_kg_result(
 async def analyze_single_entity(
     curie: str,
     raw_name: str
-) -> tuple[list[DiseaseAssociation], list[PathwayMembership], list[Finding], list[str], list[str]]:
+) -> tuple[list[DiseaseAssociation], list[PathwayMembership], list[Finding], list[str], list[str], Any]:
     """
     Tier 2: Analyze a single entity using Claude Agent SDK with LLM reasoning.
 
     This is the fallback path when Tier 1 API calls fail.
 
     Returns:
-        tuple of (diseases, pathways, findings, hub_flags, errors)
+        tuple of (diseases, pathways, findings, hub_flags, errors, ModelUsageRecord | None)
     """
     if not HAS_SDK:
         return (
@@ -552,6 +552,7 @@ async def analyze_single_entity(
             )],
             [],
             [],
+            None,
         )
 
     try:
@@ -571,14 +572,11 @@ async def analyze_single_entity(
                 max_buffer_size=10 * 1024 * 1024,
             )
 
-            result_text_parts = []
-            async for event in query(prompt=f"Analyze entity: {raw_name} ({curie})", options=options):
-                if hasattr(event, 'content'):
-                    for block in event.content:
-                        if hasattr(block, 'text'):
-                            result_text_parts.append(block.text)
-
-            result_text = "".join(result_text_parts)
+            result_text, usage_record = await query_with_usage(
+                prompt=f"Analyze entity: {raw_name} ({curie})",
+                options=options,
+                node_name="direct_kg",
+            )
         diseases, pathways, findings, hub_flags = parse_direct_kg_result(curie, raw_name, result_text)
 
         logger.info(
@@ -586,7 +584,7 @@ async def analyze_single_entity(
             curie, len(diseases), len(pathways), len(findings)
         )
 
-        return diseases, pathways, findings, hub_flags, []
+        return diseases, pathways, findings, hub_flags, [], usage_record
 
     except Exception as e:
         error_msg = f"Tier 2 direct_kg failed for {curie}: {str(e)}"
@@ -603,6 +601,7 @@ async def analyze_single_entity(
             )],
             [],
             [error_msg],
+            None,
         )
 
 
@@ -709,6 +708,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 tier1_success, len(unique_curies), tier1_duration)
 
     # ========== TIER 2: LLM Fallback ==========
+    model_usages = []
     if tier2_needed_curies and HAS_SDK:
         tier2_start = time.time()
         logger.info("Tier 2 (LLM): Processing %d unique entities that failed Tier 1",
@@ -732,8 +732,14 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 if isinstance(result, Exception):
                     errors.append(f"Tier 2 failed for {curie}: {str(result)}")
                 elif result is not None:
+                    # Extract usage record from the 6th element of the tuple
+                    usage_record = result[5] if len(result) > 5 else None
+                    # Pass the 5-element tuple (without usage) to all_results
+                    result_without_usage = result[:5]
                     for idx in indices:
-                        all_results[idx] = result
+                        all_results[idx] = result_without_usage
+                    if usage_record is not None:
+                        model_usages.append(usage_record)
 
         tier2_duration = time.time() - tier2_start
         logger.info("Tier 2 (LLM) completed in %.1fs", tier2_duration)
@@ -771,10 +777,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         len(all_diseases), len(all_pathways)
     )
 
-    return {
+    result = {
         "direct_findings": all_findings,
         "disease_associations": all_diseases,
         "pathway_memberships": all_pathways,
         "hub_flags": all_hub_flags,
         "errors": errors,
     }
+    if model_usages:
+        result["model_usages"] = model_usages
+    return result

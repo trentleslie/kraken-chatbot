@@ -258,6 +258,23 @@ class Hypothesis(BaseModel):
     )
 
 
+class ModelUsageRecord(BaseModel):
+    """Record of a single model API call for cost tracking.
+
+    Enables AstaBench per-node cost tracking. The solver repo converts
+    these records to Inspect AI's ModelUsage format.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    model_name: str = Field(..., description="Model identifier (e.g., 'anthropic/claude-sonnet-4-20250514')")
+    node_name: str = Field(..., description="Which graph node made this call")
+    input_tokens: int = Field(0, ge=0)
+    output_tokens: int = Field(0, ge=0)
+    cache_read_tokens: int = Field(0, ge=0, description="Prompt cache read tokens")
+    cache_creation_tokens: int = Field(0, ge=0, description="Prompt cache creation tokens")
+
+
 class DiscoveryState(TypedDict, total=False):
     """
     State schema for the KRAKEN discovery workflow.
@@ -333,6 +350,10 @@ class DiscoveryState(TypedDict, total=False):
 
     # === Phase 5b: Literature Grounding ===
     literature_errors: Annotated[list[str], operator.add]
+
+    # === Cost Tracking ===
+    # Uses operator.add reducer for parallel writes from concurrent branches
+    model_usages: Annotated[list[ModelUsageRecord], operator.add]
 
     # === Metadata ===
     # Uses operator.add reducer to accumulate errors from all nodes

@@ -30,7 +30,7 @@ from typing import Any
 
 from ...kestrel_client import call_kestrel_tool
 from ..state import DiscoveryState, NoveltyScore, EntityResolution
-from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
+from ..sdk_utils import HAS_SDK, query_with_usage, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
 from ..pipeline_config import get_pipeline_config
 from ..state_contracts import validate_state, TriageInput, TriageOutput
 
@@ -164,32 +164,33 @@ def parse_edge_count_result(curie: str, raw_name: str, result_text: str) -> Nove
     )
 
 
-async def count_edges_single(entity: EntityResolution) -> NoveltyScore:
+async def count_edges_single(entity: EntityResolution) -> tuple[NoveltyScore, Any]:
     """
     Count edges for a single resolved entity using Claude Agent SDK.
 
-    Returns NoveltyScore with edge_count=0 (cold_start) on any error.
+    Returns tuple of (NoveltyScore, ModelUsageRecord | None).
+    NoveltyScore has edge_count=0 (cold_start) on any error.
     """
     curie = entity.curie
     raw_name = entity.raw_name
 
     # Skip entities that failed resolution
     if not curie or entity.method == "failed":
-        return NoveltyScore(
+        return (NoveltyScore(
             curie=curie or raw_name,
             raw_name=raw_name,
             edge_count=0,
             classification="cold_start",
-        )
+        ), None)
 
     if not HAS_SDK:
         # SDK not available - return mock for testing
-        return NoveltyScore(
+        return (NoveltyScore(
             curie=curie,
             raw_name=raw_name,
             edge_count=0,
             classification="cold_start",
-        )
+        ), None)
 
     try:
         async with SDK_SEMAPHORE:
@@ -207,14 +208,11 @@ async def count_edges_single(entity: EntityResolution) -> NoveltyScore:
                 max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for large KG responses
             )
 
-            result_text_parts = []
-            async for event in query(prompt=f"Count edges for: {curie}", options=options):
-                if hasattr(event, 'content'):
-                    for block in event.content:
-                        if hasattr(block, 'text'):
-                            result_text_parts.append(block.text)
-
-            result_text = "".join(result_text_parts)
+            result_text, usage_record = await query_with_usage(
+                prompt=f"Count edges for: {curie}",
+                options=options,
+                node_name="triage",
+            )
 
         # Debug logging for triage edge counting
         if not result_text:
@@ -222,16 +220,16 @@ async def count_edges_single(entity: EntityResolution) -> NoveltyScore:
         else:
             logger.debug("Triage result for %s: %s", curie, result_text[:200] if len(result_text) > 200 else result_text)
 
-        return parse_edge_count_result(curie, raw_name, result_text)
+        return parse_edge_count_result(curie, raw_name, result_text), usage_record
 
     except Exception as e:
         logger.warning("Edge counting failed for %s: %s", curie, str(e))
-        return NoveltyScore(
+        return (NoveltyScore(
             curie=curie,
             raw_name=raw_name,
             edge_count=0,
             classification="cold_start",
-        )
+        ), None)
 
 
 
@@ -303,6 +301,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     )
 
     # ========== TIER 2: LLM Edge Counting ==========
+    model_usages: list = []
     if tier1_failed_indices and HAS_SDK:
         tier2_start = time.time()
         failed_entities = [valid_entities[i] for i in tier1_failed_indices]
@@ -311,7 +310,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             len(failed_entities)
         )
         for idx in tier1_failed_indices:
-            entity = resolved_entities[idx]
+            entity = valid_entities[idx]
             logger.info(
                 "FALLBACK_EVENT node=triage entity=%s curie=%s reason=tier1_edge_count_failed tier=2",
                 entity.raw_name if hasattr(entity, 'raw_name') else str(entity),
@@ -337,7 +336,10 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                     classification="cold_start",
                 )
             else:
-                all_scores[idx] = result
+                score, usage_record = result
+                all_scores[idx] = score
+                if usage_record is not None:
+                    model_usages.append(usage_record)
 
         tier2_duration = time.time() - tier2_start
         tier2_success = sum(1 for i in tier1_failed_indices if all_scores[i] and all_scores[i].edge_count > 0)
@@ -385,7 +387,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         tier1_success, len(valid_entities) - tier1_success
     )
 
-    return {
+    result = {
         "novelty_scores": final_scores,
         "well_characterized_curies": well_characterized,
         "moderate_curies": moderate,
@@ -393,3 +395,6 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         "cold_start_curies": cold_start,
         "errors": errors,
     }
+    if model_usages:
+        result["model_usages"] = model_usages
+    return result

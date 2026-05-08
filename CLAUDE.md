@@ -19,6 +19,30 @@ uv run uvicorn src.kestrel_backend.main:app --reload --host 127.0.0.1 --port 800
 cd backend && uv run pytest tests/ -v -m "not integration"
 ```
 
+## LangGraph Studio (Local Development)
+
+Visual debugger for the KRAKEN discovery pipeline.
+
+### Setup
+
+1. Ensure `backend/.env` exists: `cp backend/.env.example backend/.env` and fill in API keys
+2. `cd backend && uv run langgraph dev`
+3. Open the Studio URL printed in the terminal (requires a free [LangSmith](https://smith.langchain.com) account)
+4. Graph topology renders automatically; invoke with a test query to see node execution
+
+### Configuration
+
+- `backend/langgraph.json` — graph entry point (`kestrel_backend.graph.builder:build_discovery_graph`) and env reference
+- `backend/.env` — API keys (not committed)
+
+### Notes
+
+- Studio is a dev tool only — does not affect production deployment
+- Hot-reloads on code changes
+- Runs in-memory (no Docker/Redis/Postgres needed)
+- Port 2024 by default
+- **Observability**: Langfuse handles tracing, not LangSmith. `LANGSMITH_API_KEY` is not needed — ignore the Studio banner about it.
+
 ## Architecture
 
 Full-stack application: React frontend + Python FastAPI backend communicating via WebSocket.
@@ -175,6 +199,109 @@ claude login  # Opens browser for OAuth
 ```
 
 If authentication expires, the backend returns `AUTH_ERROR` to the frontend.
+
+## Dev Branch Workflow
+
+### Overview
+
+| Property | Value |
+|----------|-------|
+| Branch | `dev` (long-lived integration branch) |
+| URL | `https://dev-kraken.expertintheloop.io` |
+| Backend Port | 8006 |
+| Service | `kraken-backend-dev` |
+| Database | `kraken_dev` (separate from prod `kraken_db`) |
+| Deploy Dir | `/home/ubuntu/kraken-chatbot-dev` |
+
+### How It Works
+
+Pushing to the `dev` branch triggers `.github/workflows/deploy-dev.yml`:
+1. SSH into Lightsail
+2. Pull latest code for the target branch
+3. Rebuild frontend with `VITE_WS_URL=wss://dev-kraken.expertintheloop.io/ws/chat`
+4. Sync backend dependencies with uv
+5. Run Alembic migrations against `kraken_dev` database
+6. Restart `kraken-backend-dev` service
+7. Readiness check on port 8006
+
+Manual dispatch: use `workflow_dispatch` to deploy any branch to the dev environment.
+
+### Feature Branch Flow
+
+1. Create feature branch from `dev`: `git checkout -b feat/my-feature`
+2. Develop and push to feature branch
+3. Merge into `dev` to test at `dev-kraken.expertintheloop.io`
+4. Once verified, create PR from feature branch to `main` for production
+
+### Dev Service Management
+
+```bash
+sudo systemctl status kraken-backend-dev
+sudo journalctl -u kraken-backend-dev -f
+sudo systemctl restart kraken-backend-dev
+```
+
+### Important Notes
+
+- **Separate database**: Dev uses `kraken_dev`, prod uses `kraken_db`. Alembic migrations are independent.
+- **Shared Claude OAuth tokens**: Prod and dev share `~/.claude/` on the server. If OAuth expires, both environments lose Claude access simultaneously. Run `claude login` on the server to refresh.
+- **Concurrency group**: Dev deploys use `lightsail-deploy-kraken`. A separate PR to `main` should add the same group to `deploy.yml` for full dev-prod serialization. Until then, concurrent dev+prod deploys are possible but unlikely.
+- **`origin/dev_main` branch**: Stale, superseded by `dev`. Do not use.
+
+### Server-Side Setup (for new dev environment)
+
+1. `git clone` the repo to `/home/ubuntu/kraken-chatbot-dev`, checkout `dev`
+2. `createdb kraken_dev`
+3. Copy `deploy/dev/.env.example` to `backend/.env`, fill in secrets, `chmod 600`
+4. `sudo cp deploy/dev/kraken-backend-dev.service /etc/systemd/system/`
+5. `sudo cp deploy/dev/nginx-kraken-dev.conf /etc/nginx/sites-available/`, symlink to `sites-enabled`
+6. `sudo certbot --nginx -d dev-kraken.expertintheloop.io`
+7. `sudo nginx -t && sudo systemctl reload nginx`
+8. `sudo systemctl daemon-reload && sudo systemctl enable kraken-backend-dev`
+9. Push any change to `dev` to trigger the first deploy
+
+## Clerk Authentication
+
+### How It Works
+
+Users sign in via [Clerk](https://clerk.com). The frontend uses `@clerk/react` with a proxy URL. The backend verifies Clerk JWT tokens using PyJWT + JWKS.
+
+```
+Browser → ClerkProvider (proxyUrl → /api/__clerk) → Clerk FAPI
+         → useAuth().getToken() → WebSocket ?token=<jwt>
+         → FastAPI verifies JWT via PyJWKClient (RS256, JWKS)
+         → Email domain whitelist check
+```
+
+### Environment Variables
+
+| Variable | Where | Purpose |
+|----------|-------|---------|
+| `CLERK_AUTH_ENABLED` | Backend | `true` to enable auth. Fails to start if `true` without `CLERK_SECRET_KEY` |
+| `CLERK_SECRET_KEY` | Backend | Clerk server secret for proxy and JWKS |
+| `CLERK_JWKS_URL` | Backend | Clerk JWKS endpoint for token verification |
+| `CLERK_ISSUER` | Backend | Expected JWT `iss` claim |
+| `CLERK_PROXY_URL` | Backend | Full URL of the Clerk proxy (e.g., `https://dev-kraken.../api/__clerk`) |
+| `ALLOWED_EMAIL_DOMAINS` | Backend | Comma-separated email domains (authoritative) |
+| `ALLOWED_EMAILS` | Backend | Comma-separated email overrides |
+| `VITE_CLERK_PUBLISHABLE_KEY` | Frontend | Clerk public key (baked at build time) |
+| `VITE_CLERK_PROXY_URL` | Frontend | Clerk proxy URL (baked at build time) |
+| `VITE_ALLOWED_EMAIL_DOMAINS` | Frontend | UX-level domain gate (not authoritative) |
+| `VITE_ALLOWED_EMAILS` | Frontend | UX-level email overrides |
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `backend/src/kestrel_backend/clerk_auth.py` | JWT verification, FastAPI dependencies |
+| `backend/src/kestrel_backend/clerk_proxy.py` | Clerk FAPI proxy at `/api/__clerk` |
+| `client/src/components/ProtectedRoute.tsx` | Frontend auth gate + email domain check |
+| `client/src/pages/Login.tsx` | Clerk SignIn page |
+| `client/src/pages/AccessDenied.tsx` | Unauthorized email domain page |
+
+### Local Development
+
+Set `CLERK_AUTH_ENABLED=false` in `backend/.env` to disable auth entirely for local development. The frontend also skips Clerk when `VITE_CLERK_PUBLISHABLE_KEY` is not set.
 
 ## Recent Bug Fixes (Reference)
 

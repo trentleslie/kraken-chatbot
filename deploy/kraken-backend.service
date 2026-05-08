@@ -1,0 +1,17 @@
+[Unit]
+Description=Kraken Backend (Production)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/kraken-chatbot/backend
+EnvironmentFile=/home/ubuntu/kraken-chatbot/backend/.env
+ExecStart=/home/ubuntu/.local/bin/uv run uvicorn src.kestrel_backend.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+SyslogIdentifier=kraken-backend
+
+[Install]
+WantedBy=multi-user.target

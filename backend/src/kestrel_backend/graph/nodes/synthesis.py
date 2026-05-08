@@ -26,7 +26,7 @@ from ..state import (
 )
 from ...literature_utils import format_pmid_link
 from ...kestrel_client import multi_hop_query
-from ..sdk_utils import HAS_SDK, query, ClaudeAgentOptions
+from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
 from ..state_contracts import validate_state, SynthesisInput, SynthesisOutput
 
 logger = logging.getLogger(__name__)
@@ -1060,6 +1060,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     context = assemble_synthesis_context(state_with_validated)
 
     # Phase C: LLM synthesis or fallback
+    usage_record = None
     if HAS_SDK:
         try:
             options = ClaudeAgentOptions(
@@ -1068,15 +1069,16 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 max_turns=1,
                 permission_mode="bypassPermissions",
             )
-            
-            result_text = []
-            async for event in query(prompt=context, options=options):
-                if hasattr(event, 'content'):
-                    for block in event.content:
-                        if hasattr(block, 'text'):
-                            result_text.append(block.text)
-            
-            report = "\n".join(result_text) if result_text else fallback_report(state)
+
+            text, usage_record = await query_with_usage(
+                prompt=context,
+                options=options,
+                node_name="synthesis",
+            )
+            # NOTE: query_with_usage joins text blocks with "", not "\n" (previous behavior).
+            # All other nodes use "".join(); synthesis now matches them.
+
+            report = text if text.strip() else fallback_report(state)
         except Exception as e:
             # Fallback on any SDK error
             report = fallback_report(state)
@@ -1098,4 +1100,5 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         "synthesis_report": report,
         "hypotheses": hypotheses,
         "bridges": validated_bridges,  # Return validated bridges
+        "model_usages": [usage_record] if usage_record else [],
     }

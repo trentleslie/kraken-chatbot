@@ -46,11 +46,13 @@ def test_settings():
         allowed_origins=["http://test"],
         rate_limit_per_minute=100,
         model="test-model",
-        auth_enabled=False,
-        jwt_secret_key="test-secret-key-for-testing",
-        jwt_algorithm="HS256",
-        jwt_expire_minutes=60,
-        api_keys=[],
+        clerk_auth_enabled=False,
+        clerk_secret_key=None,
+        clerk_jwks_url=None,
+        clerk_issuer=None,
+        clerk_proxy_url=None,
+        clerk_allowed_email_domains=[],
+        clerk_allowed_emails=[],
         langfuse_enabled=False,
         langfuse_public_key=None,
         langfuse_secret_key=None,
@@ -62,8 +64,11 @@ def test_settings():
 
 @pytest.fixture
 def auth_enabled_settings(test_settings):
-    """Settings with authentication enabled."""
-    test_settings.auth_enabled = True
+    """Settings with Clerk authentication enabled."""
+    test_settings.clerk_auth_enabled = True
+    test_settings.clerk_secret_key = "sk_test_fake"
+    test_settings.clerk_jwks_url = "https://fake.clerk.accounts.dev/.well-known/jwks.json"
+    test_settings.clerk_issuer = "https://fake.clerk.accounts.dev"
     return test_settings
 
 
@@ -477,25 +482,6 @@ def mock_database_pool():
 # JWT Token Fixtures
 # ============================================================================
 
-@pytest.fixture
-def valid_jwt_token(test_settings):
-    """Generate a valid JWT token for testing authentication."""
-    from kestrel_backend.auth import create_access_token
-
-    with patch("kestrel_backend.auth.get_settings", return_value=test_settings):
-        token = create_access_token({"sub": str(uuid4())})
-    return token
-
-
-@pytest.fixture
-def expired_jwt_token(test_settings):
-    """Generate an expired JWT token for testing authentication failures."""
-    from datetime import timedelta
-    from kestrel_backend.auth import create_access_token
-
-    with patch("kestrel_backend.auth.get_settings", return_value=test_settings):
-        token = create_access_token({"sub": str(uuid4())}, expires_delta=timedelta(seconds=-1))
-    return token
 
 
 # ============================================================================

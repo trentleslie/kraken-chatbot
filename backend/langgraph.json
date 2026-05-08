@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "kraken_discovery": "kestrel_backend.graph.builder:build_discovery_graph"
+  },
+  "env": ".env"
+}

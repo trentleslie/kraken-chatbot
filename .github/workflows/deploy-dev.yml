@@ -1,0 +1,125 @@
+name: Deploy to Lightsail (Dev)
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - 'client/**'
+      - 'backend/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'deploy/**'
+      - '.github/workflows/deploy-dev.yml'
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to deploy (defaults to dev)'
+        required: false
+        default: 'dev'
+
+concurrency:
+  group: lightsail-deploy-kraken
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - name: Setup SSH
+        env:
+          SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          HOST: ${{ secrets.LIGHTSAIL_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" | base64 -d > ~/.ssh/key
+          chmod 600 ~/.ssh/key
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy
+        env:
+          HOST: ${{ secrets.LIGHTSAIL_HOST }}
+          USER: ${{ secrets.LIGHTSAIL_USER }}
+          INPUT_BRANCH: ${{ github.event.inputs.branch || 'dev' }}
+        run: |
+          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -i ~/.ssh/key \
+            "${USER}@${HOST}" << EOF
+          set -e
+
+          DEPLOY_DIR=/home/ubuntu/kraken-chatbot-dev
+          BRANCH="${INPUT_BRANCH}"
+
+          # Guard: check if server-side setup has been completed
+          if [ ! -d "\$DEPLOY_DIR" ]; then
+            echo "ERROR: \$DEPLOY_DIR does not exist."
+            echo "Server-side setup has not been completed."
+            echo "See docs/plans/ or CLAUDE.md for the setup checklist."
+            exit 1
+          fi
+
+          cd \$DEPLOY_DIR
+
+          # Validate branch exists on remote
+          if ! git ls-remote --exit-code origin "refs/heads/\$BRANCH" > /dev/null 2>&1; then
+            echo "ERROR: Branch '\$BRANCH' does not exist on origin"
+            exit 1
+          fi
+
+          # Capture current state for rollback reference
+          PREV_SHA=\$(git rev-parse HEAD)
+          PREV_BRANCH=\$(git branch --show-current || echo "detached")
+          echo "Previous commit: \$PREV_SHA (branch: \$PREV_BRANCH)"
+
+          # Pull latest code
+          git fetch origin "\$BRANCH"
+          git reset --hard "origin/\$BRANCH"
+          echo "Deployed commit: \$(git rev-parse HEAD)"
+
+          # Rebuild frontend — export VITE_* vars from backend .env for the build
+          # (Clerk publishable key, allowed domains, etc. are set in the server's .env)
+          npm ci
+          set -a; source <(grep '^VITE_' "\$DEPLOY_DIR/backend/.env" 2>/dev/null); set +a
+          VITE_WS_URL=wss://dev-kraken.expertintheloop.io/ws/chat npm run build
+
+          # Update backend dependencies
+          cd backend
+          ~/.local/bin/uv sync
+
+          # Run database migrations
+          set -a && source .env && set +a
+          nohup ~/.local/bin/uv run alembic upgrade head > /tmp/alembic-dev.log 2>&1 &
+          ALEMBIC_PID=\$!
+          wait \$ALEMBIC_PID
+          ALEMBIC_EXIT=\$?
+          cat /tmp/alembic-dev.log
+          if [ \$ALEMBIC_EXIT -ne 0 ]; then
+            echo "Migration failed with exit code \$ALEMBIC_EXIT"
+            echo "ROLLBACK INFO: previous commit was \$PREV_SHA (branch: \$PREV_BRANCH)"
+            exit 1
+          fi
+
+          # Restart backend service
+          sudo systemctl restart kraken-backend-dev
+
+          # Readiness check with retries (wait up to 30 seconds)
+          attempt=1
+          max_attempts=10
+          until curl -sf http://localhost:8006/ready > /dev/null 2>&1; do
+            if [ \$attempt -ge \$max_attempts ]; then
+              echo "Readiness check failed after \$max_attempts attempts"
+              echo "Checking endpoint status..."
+              curl -v http://localhost:8006/ready || true
+              echo "ROLLBACK INFO: previous commit was \$PREV_SHA (branch: \$PREV_BRANCH)"
+              exit 1
+            fi
+            echo "Readiness check attempt \$attempt failed, retrying in 3s..."
+            attempt=\$((attempt + 1))
+            sleep 3
+          done
+          echo "Dev deployment successful - all dependencies ready!"
+          EOF
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Dev deployment failed! Check the Deploy step logs above."

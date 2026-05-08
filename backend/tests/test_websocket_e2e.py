@@ -581,8 +581,8 @@ class TestWebSocketAuthentication:
             with patch("kestrel_backend.main.get_settings", return_value=auth_enabled_settings):
                 with patch("kestrel_backend.main.init_db", new_callable=AsyncMock):
                     with patch("kestrel_backend.main.close_db", new_callable=AsyncMock):
-                        # Mock validate_ws_token to raise ValueError (auth failure)
-                        with patch("kestrel_backend.main.validate_ws_token") as mock_validate:
+                        # Mock validate_ws_clerk_token to raise ValueError (auth failure)
+                        with patch("kestrel_backend.main.validate_ws_clerk_token") as mock_validate:
                             mock_validate.side_effect = ValueError("Invalid token")
 
                             client = TestClient(app)
@@ -601,7 +601,7 @@ class TestWebSocketAuthentication:
                                     # Connection was closed, which is expected
                                     pass
 
-                            # Verify validate_ws_token was called
+                            # Verify validate_ws_clerk_token was called
                             mock_validate.assert_called_once()
 
     def test_auth_success_with_valid_token(self, auth_enabled_settings, clean_connection_state):
@@ -613,8 +613,8 @@ class TestWebSocketAuthentication:
             with patch("kestrel_backend.main.get_settings", return_value=auth_enabled_settings):
                 with patch("kestrel_backend.main.init_db", new_callable=AsyncMock):
                     with patch("kestrel_backend.main.close_db", new_callable=AsyncMock):
-                        # Mock validate_ws_token to return user info
-                        with patch("kestrel_backend.main.validate_ws_token") as mock_validate:
+                        # Mock validate_ws_clerk_token to return user info
+                        with patch("kestrel_backend.main.validate_ws_clerk_token") as mock_validate:
                             mock_validate.return_value = {"user_id": str(uuid4())}
 
                             with patch("kestrel_backend.main.create_conversation", new_callable=AsyncMock) as mock_create:
