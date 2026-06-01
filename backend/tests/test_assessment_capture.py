@@ -74,6 +74,8 @@ class TestSerializeState:
         not the str() fallback like "{'a', 'b'}"."""
         assert _serialize_value({"b", "a", "c"}) == ["a", "b", "c"]
         assert _serialize_value(frozenset({3, 1, 2})) == [1, 2, 3]
+        # integers must sort numerically, not lexicographically ([1, 10, 2]) — Greptile #58
+        assert _serialize_value({1, 10, 2}) == [1, 2, 10]
 
 
 class TestQueryHash:
