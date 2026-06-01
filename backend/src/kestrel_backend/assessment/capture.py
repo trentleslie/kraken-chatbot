@@ -49,6 +49,9 @@ def _serialize_value(value: Any) -> Any:
         return {k: _serialize_value(v) for k, v in value.items()}
     if isinstance(value, tuple):
         return [_serialize_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        # Sort for deterministic JSON output; key=str tolerates heterogeneous members (issue #46)
+        return sorted((_serialize_value(item) for item in value), key=str)
     # Fallback: convert to string
     return str(value)
 
