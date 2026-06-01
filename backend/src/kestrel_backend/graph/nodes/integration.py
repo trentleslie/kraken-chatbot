@@ -396,10 +396,11 @@ def _parse_subgraph_bridges(
             predicates.append(e[1])
     uniq_preds = sorted(set(predicates))
     label = ", ".join(names.get(c, c) for c in present)
+    all_entities = present + intermediates[:8]
     return [Bridge(
         path_description=f"Connecting subgraph among {label}",
-        entities=present + intermediates[:8],
-        entity_names=[names.get(c, c) for c in present],
+        entities=all_entities,
+        entity_names=[names.get(c, c) for c in all_entities],  # parallel to entities
         predicates=uniq_preds[:8],
         tier=2,
         novelty="known",

@@ -51,8 +51,9 @@ SDK_SEMAPHORE = asyncio.Semaphore(_config.sdk_semaphore)
 
 # Semaphore bounding the new multi-hop fan-out against the shared Kestrel server
 # (Tier-1 one-hop calls use a bare gather with no cap; the demo-slice multi-hop calls
-# must not saturate the connection pool — see plan RC6).
-MULTI_HOP_SEMAPHORE = asyncio.Semaphore(_config.batch_size)
+# must not saturate the connection pool — see plan RC6). Uses a dedicated config value so
+# it stays independent of batch_size (which controls Tier-2 SDK batching).
+MULTI_HOP_SEMAPHORE = asyncio.Semaphore(_config.multi_hop_semaphore)
 
 # System prompt for direct KG analysis (Tier 2 LLM fallback)
 DIRECT_KG_PROMPT = """You are a biomedical knowledge graph analyst. For the given entity (CURIE),

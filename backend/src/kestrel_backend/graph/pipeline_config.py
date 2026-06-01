@@ -50,6 +50,12 @@ class DirectKGConfig(BaseModel):
         default=10,
         description="Max paths returned per multi-hop query.",
     )
+    multi_hop_semaphore: int = Field(
+        default=6,
+        description="Concurrent multi-hop API calls against the shared Kestrel server. "
+        "Kept independent of batch_size (Tier-2 SDK batching) so tuning one does not "
+        "silently change the other.",
+    )
 
 
 class PathwayEnrichmentConfig(BaseModel):

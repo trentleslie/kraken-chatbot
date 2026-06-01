@@ -140,6 +140,9 @@ def test_parse_subgraph_bridges_builds_bridge():
     assert "MONDO:0005148" in b.entities and "NCBIGene:5468" in b.entities
     assert "CHEBI:9753" in b.entities  # intermediate included
     assert "biolink:treats" in b.predicates and "biolink:related_to" in b.predicates
+    # entity_names must stay parallel to entities (incl. intermediates) — Greptile P1
+    assert len(b.entity_names) == len(b.entities)
+    assert "CHEBI:9753" in b.entity_names  # intermediate without a known name falls back to CURIE
 
 
 def test_parse_subgraph_bridges_empty_without_edges():
