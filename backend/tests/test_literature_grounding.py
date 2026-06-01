@@ -17,10 +17,18 @@ spec.loader.exec_module(state_module)
 LiteratureSupport = state_module.LiteratureSupport
 Hypothesis = state_module.Hypothesis
 
-# Set up package hierarchy for literature_grounding relative imports
+# Set up package hierarchy for literature_grounding relative imports.
+# NOTE (issue #40): give each stub a real __path__ so submodules this file does NOT
+# explicitly fake (e.g. kestrel_backend.logging_config, imported by test_logging.py)
+# still resolve to the real source instead of failing with "'kestrel_backend' is not a
+# package" during collection. The explicitly-faked submodules below remain authoritative
+# because a direct sys.modules entry is consulted before __path__-based resolution.
 kestrel_backend = types.ModuleType("kestrel_backend")
+kestrel_backend.__path__ = ["src/kestrel_backend"]
 kestrel_backend_graph = types.ModuleType("kestrel_backend.graph")
+kestrel_backend_graph.__path__ = ["src/kestrel_backend/graph"]
 kestrel_backend_graph_nodes = types.ModuleType("kestrel_backend.graph.nodes")
+kestrel_backend_graph_nodes.__path__ = ["src/kestrel_backend/graph/nodes"]
 
 sys.modules["kestrel_backend"] = kestrel_backend
 sys.modules["kestrel_backend.graph"] = kestrel_backend_graph
@@ -44,6 +52,7 @@ mock_semantic_scholar = types.ModuleType("kestrel_backend.semantic_scholar")
 mock_semantic_scholar.search_papers = None
 mock_semantic_scholar.score_relevance = None
 mock_semantic_scholar.classify_relationship = None
+mock_semantic_scholar.classify_relationship_llm = None  # issue #40: real node imports this (R14)
 mock_semantic_scholar.extract_key_passage = None
 mock_semantic_scholar.format_authors = None
 mock_semantic_scholar.extract_doi = None
