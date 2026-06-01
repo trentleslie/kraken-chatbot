@@ -26,11 +26,17 @@ from ..state import (
     DiseaseAssociation, PathwayMembership, InferredAssociation, BiologicalTheme,
     EntityResolution
 )
-from ...kestrel_client import multi_hop_query
+from ...kestrel_client import multi_hop_query, call_kestrel_tool
 from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS, query_with_usage
 from ..state_contracts import validate_state, IntegrationInput, IntegrationOutput
+from ..pipeline_config import get_pipeline_config
 
 logger = logging.getLogger(__name__)
+
+_config = get_pipeline_config().integration
+
+# Bounds the demo-slice subgraph fan-out against the shared Kestrel server (plan RC6).
+SUBGRAPH_SEMAPHORE = asyncio.Semaphore(2)
 
 
 INTEGRATION_PROMPT = """You are a biomedical knowledge graph integration analyst.
@@ -362,6 +368,90 @@ def parse_multi_hop_result(
     return bridges
 
 
+# =============================================================================
+# Demo slice: subgraph_query connecting structure between resolved entities
+# (flag-gated via IntegrationConfig.subgraph_enabled; hub-filtered in-query)
+# Plan: docs/plans/2026-05-30-001-feat-discovery-depth-demo-slice-plan.md
+# =============================================================================
+
+def _parse_subgraph_bridges(
+    input_curies: list[str], names: dict[str, str], body: dict[str, Any]
+) -> list[Bridge]:
+    """Convert a subgraph_query response (nodes + edges dicts, NOT enumerated paths) into a
+    summary Bridge describing the connecting structure among the input entities.
+
+    Returns [] when the subgraph has no edges or fewer than two input entities present.
+    """
+    nodes = body.get("nodes", {})
+    edges = body.get("edges", {})
+    if not isinstance(nodes, dict) or not isinstance(edges, dict) or not edges:
+        return []
+    present = [c for c in input_curies if c in nodes]
+    if len(present) < 2:
+        return []
+    intermediates = [c for c in nodes if c not in input_curies]
+    predicates: list[str] = []
+    for e in edges.values():
+        if isinstance(e, list) and len(e) > 1 and isinstance(e[1], str):
+            predicates.append(e[1])
+    uniq_preds = sorted(set(predicates))
+    label = ", ".join(names.get(c, c) for c in present)
+    all_entities = present + intermediates[:8]
+    return [Bridge(
+        path_description=f"Connecting subgraph among {label}",
+        entities=all_entities,
+        entity_names=[names.get(c, c) for c in all_entities],  # parallel to entities
+        predicates=uniq_preds[:8],
+        tier=2,
+        novelty="known",
+        significance=(
+            f"{len(intermediates)} intermediate node(s) and {len(edges)} edges connect "
+            f"{label} in the knowledge graph"
+        ),
+    )]
+
+
+async def detect_subgraphs_via_api(
+    resolved_entities: list[EntityResolution],
+) -> tuple[list[Bridge], list[str]]:
+    """Demo slice: run a single hub-filtered subgraph_query over the top resolved entities
+    and summarize the connecting structure as a Bridge.
+
+    Inert unless IntegrationConfig.subgraph_enabled is True. Degrades to ([], []) on error.
+    """
+    if not _config.subgraph_enabled:
+        return [], []
+    curies = [e.curie for e in resolved_entities if e.curie][: _config.max_subgraph_nodes]
+    if len(curies) < 2:
+        return [], []
+    names = {e.curie: (e.resolved_name or e.raw_name) for e in resolved_entities if e.curie}
+    constraints = [{"field": "degree", "operator": "lt", "value": _config.hub_threshold}]
+    try:
+        async with SUBGRAPH_SEMAPHORE:
+            response = await call_kestrel_tool("subgraph_query", {
+                "node_ids": curies,
+                "max_path_length": 2,
+                "limit": 25,
+                "constraints": constraints,
+                "mode": "slim",
+            })
+    except Exception as e:
+        return [], [f"subgraph_query failed: {str(e)}"]
+    if not isinstance(response, dict) or response.get("isError"):
+        text = ""
+        if isinstance(response, dict) and response.get("content"):
+            text = str(response["content"][0].get("text", ""))[:200]
+        return [], [f"subgraph_query error: {text}"]
+    content = response.get("content") or []
+    if not content:
+        return [], []
+    try:
+        body = json.loads(content[0].get("text", ""))
+    except (json.JSONDecodeError, KeyError, IndexError, AttributeError):
+        return [], ["subgraph_query: unparseable response"]
+    return _parse_subgraph_bridges(curies, names, body), []
+
+
 def parse_integration_result(
     result_text: str
 ) -> tuple[list[Bridge], list[GapEntity], list[str]]:
@@ -529,6 +619,14 @@ Analyze these findings to identify cross-type bridges and expected-but-absent en
             max_hops=3,
             max_paths_per_pair=5,
         )
+
+        # Phase A.2 (demo slice, flag-gated): connecting-subgraph detection
+        subgraph_bridges, subgraph_errors = await detect_subgraphs_via_api(resolved)
+        if subgraph_bridges:
+            logger.info("Subgraph detection added %d connecting-structure bridge(s)",
+                        len(subgraph_bridges))
+        api_bridges = api_bridges + subgraph_bridges
+        api_errors = api_errors + subgraph_errors
 
         # Phase B: Gap analysis using LLM (reasoning-intensive)
         logger.info("Starting LLM-based gap analysis...")
