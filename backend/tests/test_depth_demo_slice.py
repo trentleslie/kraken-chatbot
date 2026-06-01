@@ -107,3 +107,81 @@ async def test_analyze_multi_hop_handles_api_error(monkeypatch):
 
     monkeypatch.setattr(direct_kg, "multi_hop_query", _err)
     assert await direct_kg.analyze_multi_hop("MONDO:0005148", "type 2 diabetes") == []
+
+
+# ---------------------------------------------------------------------------
+# Unit 2: subgraph_query connecting structure in integration
+# ---------------------------------------------------------------------------
+from kestrel_backend.graph.nodes import integration
+from kestrel_backend.graph.state import Bridge, EntityResolution
+
+_SUBGRAPH_BODY = {
+    "nodes": {
+        "MONDO:0005148": {"name": "type 2 diabetes"},
+        "NCBIGene:5468": {"name": "PPARG"},
+        "CHEBI:9753": {"name": "troglitazone"},  # intermediate
+    },
+    "edges": {
+        "e1": ["CHEBI:9753", "biolink:treats", "MONDO:0005148"],
+        "e2": ["NCBIGene:5468", "biolink:related_to", "MONDO:0005148"],
+    },
+}
+_NAMES = {"MONDO:0005148": "type 2 diabetes", "NCBIGene:5468": "PPARG"}
+
+
+def test_parse_subgraph_bridges_builds_bridge():
+    bridges = integration._parse_subgraph_bridges(
+        ["MONDO:0005148", "NCBIGene:5468"], _NAMES, _SUBGRAPH_BODY
+    )
+    assert len(bridges) == 1
+    b = bridges[0]
+    assert isinstance(b, Bridge)
+    assert b.tier == 2 and b.novelty == "known"
+    assert "MONDO:0005148" in b.entities and "NCBIGene:5468" in b.entities
+    assert "CHEBI:9753" in b.entities  # intermediate included
+    assert "biolink:treats" in b.predicates and "biolink:related_to" in b.predicates
+
+
+def test_parse_subgraph_bridges_empty_without_edges():
+    body = {"nodes": _SUBGRAPH_BODY["nodes"], "edges": {}}
+    assert integration._parse_subgraph_bridges(["MONDO:0005148", "NCBIGene:5468"], _NAMES, body) == []
+
+
+def test_parse_subgraph_bridges_needs_two_inputs_present():
+    body = {"nodes": {"MONDO:0005148": {}, "CHEBI:9753": {}}, "edges": {"e1": ["CHEBI:9753", "biolink:treats", "MONDO:0005148"]}}
+    # only one input CURIE present in nodes
+    assert integration._parse_subgraph_bridges(["MONDO:0005148", "NCBIGene:5468"], _NAMES, body) == []
+
+
+async def test_detect_subgraphs_disabled_is_inert(monkeypatch):
+    monkeypatch.setattr(integration._config, "subgraph_enabled", False)
+
+    async def _boom(*a, **k):
+        raise AssertionError("subgraph_query called while disabled")
+
+    monkeypatch.setattr(integration, "call_kestrel_tool", _boom)
+    entities = [EntityResolution(raw_name="x", curie="MONDO:0005148"),
+                EntityResolution(raw_name="y", curie="NCBIGene:5468")]
+    assert await integration.detect_subgraphs_via_api(entities) == ([], [])
+
+
+async def test_detect_subgraphs_enabled_passes_degree_constraint(monkeypatch):
+    import json
+    monkeypatch.setattr(integration._config, "subgraph_enabled", True)
+    captured = {}
+
+    async def _fake(name, args):
+        captured["name"] = name
+        captured["args"] = args
+        return {"content": [{"type": "text", "text": json.dumps(_SUBGRAPH_BODY)}], "isError": False}
+
+    monkeypatch.setattr(integration, "call_kestrel_tool", _fake)
+    entities = [EntityResolution(raw_name="type 2 diabetes", curie="MONDO:0005148", resolved_name="type 2 diabetes"),
+                EntityResolution(raw_name="PPARG", curie="NCBIGene:5468", resolved_name="PPARG")]
+    bridges, errors = await integration.detect_subgraphs_via_api(entities)
+
+    assert captured["name"] == "subgraph_query"
+    assert captured["args"]["node_ids"] == ["MONDO:0005148", "NCBIGene:5468"]
+    assert any(c.get("field") == "degree" for c in captured["args"].get("constraints", [])), \
+        "the degree hub-guard constraint must be passed in-query"
+    assert len(bridges) == 1 and bridges[0].tier == 2

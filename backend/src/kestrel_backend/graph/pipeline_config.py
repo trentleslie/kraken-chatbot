@@ -143,6 +143,27 @@ class LiteratureGroundingConfig(BaseModel):
     )
 
 
+class IntegrationConfig(BaseModel):
+    """Configuration for the integration node."""
+
+    hub_threshold: int = Field(
+        default=5000,
+        description="Subgraph traversal is constrained to nodes below this degree "
+        "(in-query hub guard), matching direct_kg's threshold.",
+    )
+    subgraph_enabled: bool = Field(
+        default=False,
+        description="Demo-slice flag: when True, integration also runs a subgraph_query "
+        "to surface connecting structure between resolved entities. Default False keeps "
+        "the pipeline inert until the demo run flips it "
+        "(docs/plans/2026-05-30-001-feat-discovery-depth-demo-slice-plan.md).",
+    )
+    max_subgraph_nodes: int = Field(
+        default=5,
+        description="Max resolved-entity CURIEs passed as node_ids to a subgraph_query.",
+    )
+
+
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration with per-node sub-models.
 
@@ -157,6 +178,7 @@ class PipelineConfig(BaseModel):
     triage: TriageConfig = Field(default_factory=TriageConfig)
     cold_start: ColdStartConfig = Field(default_factory=ColdStartConfig)
     literature_grounding: LiteratureGroundingConfig = Field(default_factory=LiteratureGroundingConfig)
+    integration: IntegrationConfig = Field(default_factory=IntegrationConfig)
 
 
 @lru_cache(maxsize=1)
