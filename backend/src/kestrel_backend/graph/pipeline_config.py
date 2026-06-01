@@ -36,6 +36,20 @@ class DirectKGConfig(BaseModel):
         default=25,
         description="Maximum edges per preset per category in KG queries.",
     )
+    multi_hop_enabled: bool = Field(
+        default=False,
+        description="Demo-slice flag: when True, well-characterized entities also get a "
+        "multi_hop_query for mechanistic chains. Default False keeps the pipeline inert "
+        "until the demo run flips it (docs/plans/2026-05-30-001-feat-discovery-depth-demo-slice-plan.md).",
+    )
+    multi_hop_max_hops: int = Field(
+        default=2,
+        description="Max path length for direct_kg multi-hop queries.",
+    )
+    multi_hop_limit: int = Field(
+        default=10,
+        description="Max paths returned per multi-hop query.",
+    )
 
 
 class PathwayEnrichmentConfig(BaseModel):

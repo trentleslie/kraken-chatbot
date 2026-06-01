@@ -27,7 +27,7 @@ import re
 import time
 from typing import Any
 
-from ...kestrel_client import call_kestrel_tool
+from ...kestrel_client import call_kestrel_tool, multi_hop_query
 from ..state import (
     DiscoveryState, Finding, DiseaseAssociation, PathwayMembership, NoveltyScore
 )
@@ -48,6 +48,11 @@ PRESETS = ["established", "hidden_gems"]
 
 # Semaphore to limit concurrent SDK calls (Tier 2 only)
 SDK_SEMAPHORE = asyncio.Semaphore(_config.sdk_semaphore)
+
+# Semaphore bounding the new multi-hop fan-out against the shared Kestrel server
+# (Tier-1 one-hop calls use a bare gather with no cap; the demo-slice multi-hop calls
+# must not saturate the connection pool — see plan RC6).
+MULTI_HOP_SEMAPHORE = asyncio.Semaphore(_config.batch_size)
 
 # System prompt for direct KG analysis (Tier 2 LLM fallback)
 DIRECT_KG_PROMPT = """You are a biomedical knowledge graph analyst. For the given entity (CURIE),
@@ -624,6 +629,98 @@ def get_raw_name_for_curie(curie: str, novelty_scores: list[NoveltyScore], resol
 
 
 # =============================================================================
+# Demo slice: multi-hop mechanistic chains for well-characterized entities
+# (flag-gated via DirectKGConfig.multi_hop_enabled; hub-filtered in-query)
+# Plan: docs/plans/2026-05-30-001-feat-discovery-depth-demo-slice-plan.md
+# =============================================================================
+
+def _multi_hop_constraints(hub_threshold: int) -> list[dict[str, Any]]:
+    """In-query hub guard (D3): restrict traversal to nodes below the hub degree threshold.
+
+    The Kestrel multi_hop_query / subgraph_query tools accept `degree` (scope=node) as a
+    constraint, so hubs are suppressed server-side rather than after the fact.
+    """
+    return [{"field": "degree", "operator": "lt", "value": hub_threshold}]
+
+
+def _select_chain(paths: list[Any]) -> list[str]:
+    """Pick a representative path for the logic chain: the shortest multi-hop path
+    (>=1 intermediate node) if any, else the shortest available path."""
+    multi = [p for p in paths if isinstance(p, list) and len(p) >= 3]
+    if multi:
+        return min(multi, key=len)
+    valid = [p for p in paths if isinstance(p, list) and len(p) >= 2]
+    return min(valid, key=len) if valid else []
+
+
+def _parse_multi_hop_findings(
+    curie: str, raw_name: str, body: dict[str, Any], hub_threshold: int
+) -> list[Finding]:
+    """Convert a multi_hop_query response into mechanistic-chain Findings.
+
+    Defensive hub guard (D3): drop any result whose end-node degree meets or exceeds the
+    hub threshold, complementing the in-query degree constraint so a misbehaving server
+    response can never resurface a hub as a finding.
+    """
+    findings: list[Finding] = []
+    for result in body.get("results", []) or []:
+        if not isinstance(result, dict):
+            continue
+        if result.get("degree", 0) >= hub_threshold:
+            continue  # hub suppression
+        end = result.get("end_node_id")
+        if not end:
+            continue
+        chain = _select_chain(result.get("paths", []) or [])
+        if len(chain) < 2:
+            continue
+        hops = len(chain) - 1
+        score = result.get("score", 0.0) or 0.0
+        findings.append(Finding(
+            entity=curie,
+            claim=f"{raw_name} connects to {end} via a {hops}-hop mechanistic chain",
+            tier=1,
+            source="direct_kg_multi_hop",
+            confidence="high" if score >= 0.7 else "moderate",
+            logic_chain=" → ".join(chain),
+        ))
+    return findings
+
+
+async def analyze_multi_hop(curie: str, raw_name: str) -> list[Finding]:
+    """Run a singly-pinned, hub-filtered multi-hop query for a well-characterized entity
+    and parse it into mechanistic-chain Findings.
+
+    Inert unless DirectKGConfig.multi_hop_enabled is True. Degrades to [] on any error so
+    it can never break the node's existing one-hop output.
+    """
+    if not _config.multi_hop_enabled:
+        return []
+    try:
+        async with MULTI_HOP_SEMAPHORE:
+            response = await multi_hop_query(
+                start_node_ids=[curie],
+                max_hops=_config.multi_hop_max_hops,
+                limit=_config.multi_hop_limit,
+                constraints=_multi_hop_constraints(_config.hub_threshold),
+                mode="slim",
+            )
+    except Exception as e:
+        logger.warning("Multi-hop query failed for %s: %s", curie, str(e))
+        return []
+    if not isinstance(response, dict) or response.get("isError"):
+        return []
+    content = response.get("content") or []
+    if not content:
+        return []
+    try:
+        body = json.loads(content[0].get("text", ""))
+    except (json.JSONDecodeError, KeyError, IndexError, AttributeError):
+        return []
+    return _parse_multi_hop_findings(curie, raw_name, body, _config.hub_threshold)
+
+
+# =============================================================================
 # Main Run Function
 # =============================================================================
 
@@ -766,6 +863,26 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 all_hub_flags.append(score.curie)
                 logger.info("Flagged hub entity: %s (edges=%d)", score.curie, score.edge_count)
 
+    # Multi-hop mechanistic chains for well-characterized entities (demo slice, flag-gated).
+    # Hub-filtered in-query; degrades to no extra findings on failure. Only well_char (not
+    # moderate) entities get multi-hop, per the demo-slice plan (D1).
+    if _config.multi_hop_enabled and well_char:
+        unique_well_char = list(dict.fromkeys(well_char))
+        mh_tasks = [
+            analyze_multi_hop(c, get_raw_name_for_curie(c, novelty_scores, resolved_entities))
+            for c in unique_well_char
+        ]
+        mh_results = await asyncio.gather(*mh_tasks, return_exceptions=True)
+        mh_count = 0
+        for c, r in zip(unique_well_char, mh_results):
+            if isinstance(r, Exception):
+                errors.append(f"Multi-hop failed for {c}: {str(r)}")
+            elif r:
+                all_findings.extend(r)
+                mh_count += len(r)
+        logger.info("Multi-hop added %d mechanistic-chain findings across %d entities",
+                    mh_count, len(unique_well_char))
+
     # Count findings by preset for logging
     established_findings = sum(1 for f in all_findings if "established" in (f.source or ""))
     hidden_gems_findings = sum(1 for f in all_findings if "hidden_gems" in (f.source or ""))
@@ -787,3 +904,4 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     if model_usages:
         result["model_usages"] = model_usages
     return result
+
