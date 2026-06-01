@@ -210,7 +210,8 @@ def build_references_table(hypotheses: list[Hypothesis]) -> str:
         relevance = re.sub(r'\[.*?\]\(.*?\)', '', relevance)  # Strip markdown links
         relevance = re.sub(r'<[^>]+>', '', relevance)  # Strip HTML tags
         relevance = re.sub(r'[#*>`~]', '', relevance)  # Strip markdown formatting chars
-        relevance = re.sub(r'[âÂ€™""—–]+', '', relevance)  # Strip UTF-8 mojibake artifacts
+        # Mojibake is repaired at LiteratureSupport construction now (issue #39); the old
+        # char-class strip here also deleted legitimate em-dashes/quotes, so it's removed.
         relevance = re.sub(r'\s+', ' ', relevance).strip()  # Collapse whitespace
         if not relevance:
             relevance = "—"

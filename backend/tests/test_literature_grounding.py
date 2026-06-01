@@ -247,6 +247,27 @@ class TestLiteratureSupportModel:
         assert lit.relationship == "supporting"
         assert lit.doi is None  # Optional field
 
+    def test_repairs_mojibake_in_text_fields(self):
+        """Issue #39: UTF-8 mojibake in citation text is repaired; legit text preserved."""
+        moj_em = "—".encode("utf-8").decode("latin-1")    # em-dash mojibake
+        moj_apos = "’".encode("utf-8").decode("latin-1")  # apostrophe mojibake
+        lit = LiteratureSupport(
+            paper_id="p", year=2021, authors=f"Rabbani{moj_apos}s group",
+            title=f"Lipid{moj_em}diabetes link",
+            key_passage="real em-dash — and café",
+        )
+        assert lit.title == "Lipid—diabetes link"  # single-encoding mojibake repaired
+        assert moj_em not in lit.title
+        assert "Rabbani" in lit.authors and moj_apos not in lit.authors
+        assert "café" in lit.key_passage  # legitimate accented text preserved
+        assert "—" in lit.key_passage     # legitimate em-dash preserved (not stripped)
+
+        # deeply double-encoded sequence from the issue (Rabbani 2021)
+        lit2 = LiteratureSupport(paper_id="p2", year=2021, authors="A",
+                                 title='dose Ã¢Â€Â" response curve')
+        assert "Ã¢" not in lit2.title  # double-mojibake lead bytes removed
+        assert "—" in lit2.title       # replaced with the correct em-dash
+
     def test_literature_support_with_doi(self):
         """Test LiteratureSupport with DOI."""
         lit = LiteratureSupport(
