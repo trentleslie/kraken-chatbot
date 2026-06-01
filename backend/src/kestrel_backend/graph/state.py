@@ -8,6 +8,7 @@ The Annotated[list[X], operator.add] pattern enables parallel writes to list fie
 from typing import TypedDict, Literal, Annotated, Any
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 import operator
+import ftfy
 
 
 # Deeply double-encoded UTF-8 mojibake sequences that ftfy cannot fully resolve on its
@@ -250,7 +251,6 @@ class LiteratureSupport(BaseModel):
         """
         if not isinstance(v, str) or not v:
             return v
-        import ftfy
         for bad, good in _MOJIBAKE_REPLACEMENTS.items():
             v = v.replace(bad, good)
         return ftfy.fix_text(v)

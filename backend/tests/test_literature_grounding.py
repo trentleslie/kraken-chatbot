@@ -266,6 +266,7 @@ class TestLiteratureSupportModel:
         lit2 = LiteratureSupport(paper_id="p2", year=2021, authors="A",
                                  title='dose Ã¢Â€Â" response curve')
         assert "Ã¢" not in lit2.title  # double-mojibake lead bytes removed
+        assert "—" in lit2.title       # replaced with the correct em-dash
 
     def test_literature_support_with_doi(self):
         """Test LiteratureSupport with DOI."""
