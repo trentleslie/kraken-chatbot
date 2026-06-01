@@ -222,23 +222,21 @@ def compute_all_tolerance_bands(
         query_text = q["query"]
         qh = qhash(query_text)
 
-        # Find all output files for this query
+        # Find all output files for this query via glob, so a missing middle run
+        # (e.g. run 3 of 5 failed to write) does not silently truncate later runs.
+        # Run order is irrelevant to the variance stats; sorted() only makes iteration
+        # deterministic. (issue #47)
         run_outputs = []
         run_metrics = []
-        run_num = 1
 
-        while True:
-            output_path = output_dir / "outputs" / f"{qh}_run{run_num}.json"
-            if not output_path.exists():
-                break
+        for output_path in sorted((output_dir / "outputs").glob(f"{qh}_run*.json")):
             output_data = json.loads(output_path.read_text())
             if "error" not in output_data or output_data.get("error") is None:
                 metrics = extract_metrics(output_data)
                 run_metrics.append(metrics)
                 run_outputs.append(output_data)
             else:
-                logger.warning("Skipping failed run %d for query '%s'", run_num, query_text[:50])
-            run_num += 1
+                logger.warning("Skipping failed run %s for query '%s'", output_path.name, query_text[:50])
 
         if not run_metrics:
             logger.warning("No successful runs for query '%s'", query_text[:50])

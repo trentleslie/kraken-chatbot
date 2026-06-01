@@ -49,6 +49,14 @@ def _serialize_value(value: Any) -> Any:
         return {k: _serialize_value(v) for k, v in value.items()}
     if isinstance(value, tuple):
         return [_serialize_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        # Deterministic JSON output: numbers sort numerically, everything else by str,
+        # grouped by type name so heterogeneous members never compare across types
+        # (issue #46; key avoids lexicographic int ordering like [1, 10, 2]).
+        return sorted(
+            (_serialize_value(item) for item in value),
+            key=lambda x: (type(x).__name__, x if isinstance(x, (int, float)) else str(x)),
+        )
     # Fallback: convert to string
     return str(value)
 
