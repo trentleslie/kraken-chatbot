@@ -9,6 +9,7 @@ Semaphore definitions and fallback orchestration logic remain per-node
 """
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,66 @@ def get_kestrel_mcp_config() -> Any:
         command=KESTREL_COMMAND,
         args=KESTREL_ARGS,
     )
+
+
+@dataclass(frozen=True)
+class McpDegradationVerdict:
+    """Result of classify_mcp_degradation (issue #44)."""
+
+    degraded: bool
+    reason: str
+    confidence: str  # "definitive" | "high" | "structural" | "none"
+
+
+# Fallback phrases the SDK model emits when MCP tools failed to register. These are a
+# CORROBORATOR only — never the sole trigger (model wording is brittle). Issue #44.
+_MCP_FALLBACK_PHRASES = (
+    "not available in my current tool set",
+    "tools are not available",
+    "are not available in my",
+)
+
+
+def classify_mcp_degradation(
+    expected_tools: list[str],
+    mcp_tool_calls: int,
+    result_text: str = "",
+    available_tools: list[str] | None = None,
+) -> McpDegradationVerdict:
+    """Detect the "MCP tools unavailable -> hallucinated output" condition (issue #44).
+
+    Structural signals are authoritative; the fallback phrase only raises confidence.
+    A node that expects no MCP tools (``expected_tools == []``, e.g. data-in-prompt
+    inference) can never be MCP-degraded.
+
+    NOTE: the bare ``mcp_tool_calls == 0`` signal is only safe for nodes whose prompt
+    *mandates* tool use (e.g. pathway_enrichment requires a one_hop_query per entity).
+    A node where zero tool calls is a legitimate model choice must require the init-list
+    signal or the corroborating phrase instead of the bare count.
+    """
+    if not expected_tools:
+        return McpDegradationVerdict(False, "no_tools_expected", "none")
+
+    # Definitive: the SDK init tool list is known and is missing an expected tool.
+    if available_tools is not None:
+        missing = [t for t in expected_tools if t not in available_tools]
+        if missing:
+            return McpDegradationVerdict(
+                True, f"tools_missing_from_init:{','.join(missing)}", "definitive"
+            )
+
+    phrase_hit = bool(result_text) and any(
+        p in result_text.lower() for p in _MCP_FALLBACK_PHRASES
+    )
+
+    # Structural: tools were expected but the model made zero MCP tool calls.
+    if mcp_tool_calls == 0:
+        if phrase_hit:
+            return McpDegradationVerdict(True, "zero_mcp_tool_calls+phrase", "high")
+        return McpDegradationVerdict(True, "zero_mcp_tool_calls", "structural")
+
+    # Tools were used -> healthy, even if the analysis found nothing.
+    return McpDegradationVerdict(False, "tools_used", "none")
 
 
 # NOTE: create_agent_options is not yet used by existing nodes (they call

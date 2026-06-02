@@ -12,6 +12,7 @@ from kestrel_backend.graph.sdk_utils import (
     SystemMessage,
     ToolUseBlock,
     chunk,
+    classify_mcp_degradation,
     create_agent_options,
     get_kestrel_mcp_config,
     query_with_usage,
@@ -322,3 +323,60 @@ class TestQueryWithUsageDiagnostics:
         assert record is not None
         assert record.mcp_tool_calls == 1
         assert record.available_tools is None
+
+
+_KESTREL_EXPECTED = ["mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"]
+
+
+class TestClassifyMcpDegradation:
+    """Unit 2 (issue #44): structural MCP-degradation classifier."""
+
+    def test_zero_calls_with_phrase_high_confidence(self):
+        v = classify_mcp_degradation(
+            _KESTREL_EXPECTED, mcp_tool_calls=0,
+            result_text="The Kestrel MCP tools are not available in my current tool set.",
+        )
+        assert v.degraded is True
+        assert v.confidence == "high"  # phrase corroborates the structural signal
+
+    def test_zero_calls_no_phrase_structural(self):
+        v = classify_mcp_degradation(
+            _KESTREL_EXPECTED, mcp_tool_calls=0, result_text="Here are some shared pathways.",
+        )
+        assert v.degraded is True
+
+    def test_tools_used_not_degraded(self):
+        # Healthy run: at least one mcp call, even with no shared neighbors found.
+        v = classify_mcp_degradation(_KESTREL_EXPECTED, mcp_tool_calls=3, result_text="")
+        assert v.degraded is False
+
+    def test_empty_expected_never_degraded(self):
+        # Data-in-prompt nodes (allowed_tools=[]) must never be flagged, even with the phrase.
+        v = classify_mcp_degradation(
+            [], mcp_tool_calls=0, result_text="not available in my current tool set",
+        )
+        assert v.degraded is False
+
+    def test_phrase_alone_does_not_trigger(self):
+        # Tools were used but the text contains the phrase → not degraded (phrase is corroborator only).
+        v = classify_mcp_degradation(
+            _KESTREL_EXPECTED, mcp_tool_calls=2,
+            result_text="those tools are not available for everything",
+        )
+        assert v.degraded is False
+
+    def test_definitive_missing_from_init(self):
+        # init tool list lacks an expected tool → definitive degraded, even if a call happened.
+        v = classify_mcp_degradation(
+            _KESTREL_EXPECTED, mcp_tool_calls=1, result_text="",
+            available_tools=["mcp__kestrel__one_hop_query", "Bash"],  # get_nodes missing
+        )
+        assert v.degraded is True
+        assert v.confidence == "definitive"
+
+    def test_all_expected_present_and_used_not_degraded(self):
+        v = classify_mcp_degradation(
+            _KESTREL_EXPECTED, mcp_tool_calls=2, result_text="",
+            available_tools=["mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"],
+        )
+        assert v.degraded is False
