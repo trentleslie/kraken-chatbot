@@ -24,7 +24,7 @@ from ..state import (
     DiscoveryState, SharedNeighbor, BiologicalTheme, Finding
 )
 from ...kestrel_client import multi_hop_query
-from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS, query_with_usage
+from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS, query_with_usage, classify_mcp_degradation
 from ..pipeline_config import get_pipeline_config
 from ..state_contracts import validate_state, PathwayEnrichmentInput, PathwayEnrichmentOutput
 
@@ -256,6 +256,57 @@ async def find_two_hop_shared_neighbors(
     return shared_neighbors, errors
 
 
+# Expected MCP tools for Phase B; used by the degradation guard (issue #44).
+_PHASE_B_EXPECTED_TOOLS = ["mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"]
+
+
+def _build_two_hop_findings(two_hop_neighbors: dict[str, int]) -> list[Finding]:
+    """Build Phase A two-hop Finding objects.
+
+    Computed independently of Phase B so they survive a Phase B degradation or
+    exception (issue #44, R5).
+    """
+    if not two_hop_neighbors:
+        return []
+    top_two_hop = sorted(two_hop_neighbors.items(), key=lambda x: x[1], reverse=True)[:3]
+    two_hop_summary = ", ".join([f"{curie} ({count} inputs)" for curie, count in top_two_hop])
+    return [Finding(
+        entity=", ".join([c for c, _ in top_two_hop]),
+        claim=f"Two-hop connectivity: {two_hop_summary}",
+        tier=2,
+        source="pathway_enrichment_two_hop",
+        confidence="moderate",
+    )]
+
+
+def _degraded_phase_b_result(
+    two_hop_findings: list[Finding],
+    base_errors: list[str],
+    usage_record: Any,
+    reason: str,
+) -> dict[str, Any]:
+    """Shared degraded-result builder (issue #44).
+
+    Drops the unreliable SDK Phase B findings, keeps the real Phase A two-hop
+    findings, and flags the run as degraded. Used for both the MCP-unavailable
+    path (Unit 3) and the HTTP-prefetch-no-data path (Unit 5).
+    """
+    logger.warning(
+        "pathway_enrichment degraded (reason=%s) — dropping SDK shared neighbors, keeping two-hop",
+        reason,
+    )
+    result: dict[str, Any] = {
+        "shared_neighbors": [],
+        "biological_themes": [],
+        "direct_findings": two_hop_findings,
+        "pathway_enrichment_degraded": True,
+        "errors": base_errors + [f"pathway_enrichment Phase B degraded: {reason}"],
+    }
+    if usage_record is not None:
+        result["model_usages"] = [usage_record]
+    return result
+
+
 @validate_state(PathwayEnrichmentInput, PathwayEnrichmentOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
@@ -355,6 +406,10 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             list(two_hop_neighbors.items())[:5]
         )
 
+    # Stage Phase A two-hop findings OUTSIDE the Phase B try so they survive a
+    # Phase B degradation or exception (issue #44, R5).
+    two_hop_findings = _build_two_hop_findings(two_hop_neighbors)
+
     # User prompt with entity count to help LLM budget tool calls
     user_prompt = f"""Analyze these {len(selected_entities)} entities and find shared neighbors:
 
@@ -399,6 +454,7 @@ NOTE: Two-hop analysis already completed separately. Focus on ONE-HOP neighbors 
             return {
                 "shared_neighbors": [],
                 "biological_themes": [],
+                "direct_findings": two_hop_findings,  # preserve Phase A on timeout (issue #44, R5)
                 "errors": [f"SDK query timed out after {SDK_QUERY_TIMEOUT}s"],
             }
 
@@ -415,16 +471,37 @@ NOTE: Two-hop analysis already completed separately. Focus on ONE-HOP neighbors 
         if parse_errors:
             logger.warning("pathway_enrichment parse errors: %s", parse_errors)
 
-        # Create findings from top themes
-        findings: list[Finding] = []
+        # Issue #44: detect MCP-tool degradation. If Phase B ran tool-less and
+        # hallucinated, drop its findings rather than feed fabricated KG claims
+        # downstream. Phase A two-hop findings (HTTP-derived) are preserved.
+        verdict = classify_mcp_degradation(
+            expected_tools=_PHASE_B_EXPECTED_TOOLS,
+            mcp_tool_calls=usage_record.mcp_tool_calls if usage_record else 0,
+            result_text=result_text,
+            available_tools=usage_record.available_tools if usage_record else None,
+        )
+        phase_b_degraded = False
+        if verdict.degraded:
+            if _config.drop_findings_on_degraded:
+                return _degraded_phase_b_result(
+                    two_hop_findings, two_hop_errors, usage_record, f"mcp_{verdict.reason}"
+                )
+            phase_b_degraded = True  # flag for disclosure even though output is kept
+            logger.warning(
+                "pathway_enrichment degraded (reason=%s) but drop_findings_on_degraded=False — keeping output",
+                verdict.reason,
+            )
+
+        # Create findings from top themes (SDK-derived — dropped on degradation)
+        sdk_findings: list[Finding] = []
         for theme in themes[:5]:  # Top 5 themes
             if theme.input_coverage >= 2:
                 non_hub_count = sum(
-                    1 for sn in shared_neighbors 
+                    1 for sn in shared_neighbors
                     if sn.curie in theme.members and not sn.is_hub
                 )
                 category_name = theme.category.replace("biolink:", "")
-                findings.append(Finding(
+                sdk_findings.append(Finding(
                     entity=", ".join(theme.members[:3]),
                     claim=f"Shared {category_name} context: {', '.join(theme.member_names[:3])} connects {theme.input_coverage} input entities",
                     tier=2,
@@ -432,18 +509,8 @@ NOTE: Two-hop analysis already completed separately. Focus on ONE-HOP neighbors 
                     confidence="high" if non_hub_count > 0 else "moderate",
                 ))
 
-        # Add two-hop findings
-        if two_hop_neighbors:
-            # Add finding about two-hop connectivity
-            top_two_hop = sorted(two_hop_neighbors.items(), key=lambda x: x[1], reverse=True)[:3]
-            two_hop_summary = ", ".join([f"{curie} ({count} inputs)" for curie, count in top_two_hop])
-            findings.append(Finding(
-                entity=", ".join([c for c, _ in top_two_hop]),
-                claim=f"Two-hop connectivity: {two_hop_summary}",
-                tier=2,
-                source="pathway_enrichment_two_hop",
-                confidence="moderate",
-            ))
+        # Combine SDK theme findings with the staged Phase A two-hop findings.
+        findings = sdk_findings + two_hop_findings
 
         duration = time.time() - start
         logger.info(
@@ -458,6 +525,7 @@ NOTE: Two-hop analysis already completed separately. Focus on ONE-HOP neighbors 
             "shared_neighbors": shared_neighbors,
             "biological_themes": themes,
             "direct_findings": findings,  # Add to direct_findings via reducer
+            "pathway_enrichment_degraded": phase_b_degraded,
             "errors": all_errors,
         }
         if usage_record is not None:
@@ -467,8 +535,11 @@ NOTE: Two-hop analysis already completed separately. Focus on ONE-HOP neighbors 
     except Exception as e:
         duration = time.time() - start
         logger.error("Pathway enrichment failed after %.1fs: %s", duration, str(e))
+        # Preserve the staged Phase A two-hop findings even on a Phase B exception
+        # (issue #44, R5): emit direct_findings so the operator.add reducer receives them.
         return {
             "shared_neighbors": [],
             "biological_themes": [],
+            "direct_findings": two_hop_findings,
             "errors": [f"Pathway enrichment failed: {str(e)}"],
         }

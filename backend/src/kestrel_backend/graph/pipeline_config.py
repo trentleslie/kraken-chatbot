@@ -67,6 +67,12 @@ class PathwayEnrichmentConfig(BaseModel):
         "shared-neighbor filtering. Lower than direct_kg (5000) because this "
         "filters neighbors, not entities — a different purpose.",
     )
+    drop_findings_on_degraded: bool = Field(
+        default=True,
+        description="When Phase B is detected as degraded (MCP tools unavailable or "
+        "HTTP prefetch returned no data), drop the unreliable SDK shared-neighbor "
+        "findings instead of letting hallucinated output reach synthesis (issue #44).",
+    )
 
 
 class EntityResolutionConfig(BaseModel):

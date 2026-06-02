@@ -362,6 +362,9 @@ class DiscoveryState(TypedDict, total=False):
     # === Phase 4a: Pathway Enrichment ===
     shared_neighbors: Annotated[list[SharedNeighbor], operator.add]
     biological_themes: list[BiologicalTheme]
+    # Set True when Phase B (one-hop SDK/HTTP) was dropped as unreliable (issue #44).
+    # Plain single-writer boolean — pathway_enrichment is serial, so no reducer needed.
+    pathway_enrichment_degraded: bool
 
     # === Phase 4b: Integration (Bridges + Gap Analysis) ===
     bridges: Annotated[list[Bridge], operator.add]
