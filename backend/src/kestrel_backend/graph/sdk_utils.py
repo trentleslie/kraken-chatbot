@@ -15,7 +15,13 @@ logger = logging.getLogger(__name__)
 
 # Centralized SDK availability check — single try/except for all nodes
 try:
-    from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage  # noqa: F401
+    from claude_agent_sdk import (  # noqa: F401
+        query,
+        ClaudeAgentOptions,
+        ResultMessage,
+        SystemMessage,
+        ToolUseBlock,
+    )
     from claude_agent_sdk.types import McpStdioServerConfig  # noqa: F401
     HAS_SDK = True
 except ImportError:
@@ -25,11 +31,19 @@ except ImportError:
     ClaudeAgentOptions = None  # type: ignore[assignment,misc]
     McpStdioServerConfig = None  # type: ignore[assignment,misc]
 
-    # Sentinel class so isinstance(event, ResultMessage) returns False
-    # rather than raising TypeError when SDK is unavailable
+    # Sentinel classes so isinstance(event, X) returns False rather than raising
+    # TypeError when the SDK is unavailable (issue #44 instrumentation).
     class _ResultMessageStub:  # type: ignore[no-redef]
         pass
     ResultMessage = _ResultMessageStub  # type: ignore[assignment,misc]
+
+    class _SystemMessageStub:  # type: ignore[no-redef]
+        pass
+    SystemMessage = _SystemMessageStub  # type: ignore[assignment,misc]
+
+    class _ToolUseBlockStub:  # type: ignore[no-redef]
+        pass
+    ToolUseBlock = _ToolUseBlockStub  # type: ignore[assignment,misc]
 
 # Kestrel MCP server configuration constants
 KESTREL_COMMAND = "uvx"
@@ -149,13 +163,25 @@ async def query_with_usage(
     cache_creation_tokens = 0
     cache_read_tokens = 0
     has_usage = False
+    mcp_tool_calls = 0  # count of mcp__* tool-use blocks (issue #44 degradation signal)
+    available_tools: list[str] | None = None  # tool names from the SDK init event, if exposed
 
     async for event in query(prompt=prompt, options=options):
-        # Collect text content
-        if hasattr(event, "content"):
+        # Capture the available-tool list from the SDK init event (best-effort;
+        # stays None if this SDK version/stream doesn't expose it). Issue #44.
+        if isinstance(event, SystemMessage) and getattr(event, "subtype", None) == "init":
+            data = getattr(event, "data", None)
+            tools = data.get("tools") if isinstance(data, dict) else None
+            if isinstance(tools, list):
+                available_tools = [t for t in tools if isinstance(t, str)]
+
+        # Collect text content; count MCP tool-use blocks (issue #44).
+        if hasattr(event, "content") and event.content:
             for block in event.content:
                 if hasattr(block, "text"):
                     result_text_parts.append(block.text)
+                elif isinstance(block, ToolUseBlock) and getattr(block, "name", "").startswith("mcp__"):
+                    mcp_tool_calls += 1
 
         # Accumulate usage from ResultMessage (final totals — replaces)
         if isinstance(event, ResultMessage):
@@ -188,8 +214,17 @@ async def query_with_usage(
             has_usage = True
 
     text = "".join(result_text_parts)
+
+    # Diagnostic line so degraded MCP runs are observable across SDK nodes (issue #44).
+    logger.info(
+        "%s SDK call: mcp_tool_calls=%d, available_tools=%s",
+        node_name,
+        mcp_tool_calls,
+        "unknown" if available_tools is None else f"{len(available_tools)} registered",
+    )
+
     record = None
-    if has_usage:
+    if has_usage or mcp_tool_calls or available_tools is not None:
         record = ModelUsageRecord(
             model_name=model_name,
             node_name=node_name,
@@ -197,6 +232,8 @@ async def query_with_usage(
             output_tokens=output_tokens,
             cache_read_tokens=cache_read_tokens,
             cache_creation_tokens=cache_creation_tokens,
+            mcp_tool_calls=mcp_tool_calls,
+            available_tools=available_tools,
         )
 
     return text, record

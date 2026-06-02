@@ -9,6 +9,8 @@ from kestrel_backend.graph.sdk_utils import (
     KESTREL_ARGS,
     KESTREL_COMMAND,
     ResultMessage,
+    SystemMessage,
+    ToolUseBlock,
     chunk,
     create_agent_options,
     get_kestrel_mcp_config,
@@ -245,3 +247,78 @@ class TestQueryWithUsage:
 
         with pytest.raises(RuntimeError, match="SDK is not available"):
             await query_with_usage("p", MagicMock(), "test")
+
+
+# --- Helper factories for MCP-diagnostics events (Unit 1, issue #44) ---
+
+def _make_tool_use_event(name: str):
+    """Create a mock event carrying a single ToolUseBlock content block."""
+    block = MagicMock(spec=ToolUseBlock)  # spec => isinstance True, no .text attr
+    block.name = name
+    event = MagicMock(spec=[])  # no .usage
+    event.content = [block]
+    return event
+
+
+def _make_init_event(tools):
+    """Create a mock SystemMessage(subtype='init', data={'tools': [...]})."""
+    event = MagicMock(spec=SystemMessage)
+    event.subtype = "init"
+    event.data = {"tools": tools}
+    return event
+
+
+class TestQueryWithUsageDiagnostics:
+    """Unit 1 (issue #44): MCP tool-availability diagnostics on ModelUsageRecord."""
+
+    async def test_counts_mcp_tool_calls(self, monkeypatch):
+        """Only mcp__* tool-use blocks are counted; non-mcp tools are ignored."""
+        events = [
+            _make_init_event(["Bash", "mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"]),
+            _make_tool_use_event("mcp__kestrel__one_hop_query"),
+            _make_tool_use_event("Bash"),  # not counted
+            _make_tool_use_event("mcp__kestrel__get_nodes"),
+            _make_text_event("done"),
+            _make_result_message({"input_tokens": 1, "output_tokens": 1,
+                                  "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}),
+        ]
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.query", lambda **kw: _mock_query_gen(events))
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.HAS_SDK", True)
+
+        text, record = await query_with_usage("p", MagicMock(), "pathway_enrichment")
+
+        assert text == "done"
+        assert record is not None
+        assert record.mcp_tool_calls == 2
+        assert record.available_tools == ["Bash", "mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"]
+
+    async def test_zero_mcp_tool_calls(self, monkeypatch):
+        """A run with no tool-use blocks reports mcp_tool_calls == 0 (the degraded signal)."""
+        events = [
+            _make_text_event("I cannot use those tools"),
+            _make_result_message({"input_tokens": 1, "output_tokens": 1,
+                                  "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}),
+        ]
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.query", lambda **kw: _mock_query_gen(events))
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.HAS_SDK", True)
+
+        _, record = await query_with_usage("p", MagicMock(), "pathway_enrichment")
+
+        assert record is not None
+        assert record.mcp_tool_calls == 0
+
+    async def test_available_tools_none_without_init_event(self, monkeypatch):
+        """When no SystemMessage init event is present, available_tools degrades to None."""
+        events = [
+            _make_tool_use_event("mcp__kestrel__one_hop_query"),
+            _make_result_message({"input_tokens": 1, "output_tokens": 1,
+                                  "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}),
+        ]
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.query", lambda **kw: _mock_query_gen(events))
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.HAS_SDK", True)
+
+        _, record = await query_with_usage("p", MagicMock(), "pathway_enrichment")
+
+        assert record is not None
+        assert record.mcp_tool_calls == 1
+        assert record.available_tools is None
