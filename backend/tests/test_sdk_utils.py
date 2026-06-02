@@ -380,3 +380,21 @@ class TestClassifyMcpDegradation:
             available_tools=["mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"],
         )
         assert v.degraded is False
+
+    def test_tools_registered_zero_calls_no_phrase_not_degraded(self):
+        # init list confirms all expected tools present; zero calls + no phrase → not degraded
+        # (the model may legitimately skip tools — avoids a false positive for non-mandating nodes)
+        v = classify_mcp_degradation(
+            _KESTREL_EXPECTED, mcp_tool_calls=0, result_text="No shared neighbors found.",
+            available_tools=["mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"],
+        )
+        assert v.degraded is False
+
+    def test_tools_registered_zero_calls_with_phrase_still_degraded(self):
+        # the phrase corroborator still trips even when the init list confirms tools present
+        v = classify_mcp_degradation(
+            _KESTREL_EXPECTED, mcp_tool_calls=0,
+            result_text="those tools are not available in my current tool set",
+            available_tools=["mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"],
+        )
+        assert v.degraded is True

@@ -205,9 +205,40 @@ class TestRunMigratedPhaseB:
         assert out["pathway_enrichment_degraded"] is False
 
     async def test_exception_preserves_two_hop_findings(self, patched):
-        # A Phase B exception must not lose the staged Phase A two-hop findings (R5).
+        # A Phase B exception must not lose the staged Phase A two-hop findings (R5),
+        # and must flag the run degraded so synthesis can disclose it (Greptile P1).
         patched.setattr(pe, "query_with_usage", AsyncMock(side_effect=ValueError("boom")))
         out = await pe.run(_state())
 
         assert out["shared_neighbors"] == []
+        assert out["pathway_enrichment_degraded"] is True
         assert [f.source for f in out["direct_findings"]] == ["pathway_enrichment_two_hop"]
+
+    async def test_timeout_flags_degraded_and_preserves_two_hop(self, patched):
+        import asyncio
+        patched.setattr(pe, "query_with_usage", AsyncMock(side_effect=asyncio.TimeoutError()))
+        out = await pe.run(_state())
+
+        assert out["pathway_enrichment_degraded"] is True
+        assert out["shared_neighbors"] == []
+        assert [f.source for f in out["direct_findings"]] == ["pathway_enrichment_two_hop"]
+
+
+class TestInferencePromptBuilder:
+    def test_skips_errored_entities(self):
+        # Greptile P2: errored-prefetch entities must not leak their exception text into
+        # the inference prompt as a "Predicate summary".
+        per_entity = {
+            "CHEBI:1": {"summary": "Error: boom", "edges": [], "errored": True},
+            "CHEBI:2": {
+                "summary": "related_to: 1",
+                "edges": [{"object": {"id": "NCBIGene:9"}, "predicate": "biolink:related_to"}],
+                "errored": False,
+            },
+        }
+        prompt = pe._build_inference_user_prompt(
+            [_entity("CHEBI:1"), _entity("CHEBI:2")], per_entity)
+
+        assert "Error: boom" not in prompt
+        assert "CHEBI:1" not in prompt          # errored block skipped entirely
+        assert "CHEBI:2" in prompt and "NCBIGene:9" in prompt

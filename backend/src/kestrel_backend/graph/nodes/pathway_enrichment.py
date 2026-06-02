@@ -101,6 +101,8 @@ def _build_inference_user_prompt(selected_entities: list, per_entity: dict[str, 
     blocks = []
     for e in selected_entities:
         data = per_entity.get(e.curie, {})
+        if data.get("errored"):
+            continue  # skip entities whose HTTP prefetch failed — no useful data to embed
         neighbors = []
         for edge in data.get("edges", []):
             if isinstance(edge, dict):
@@ -516,6 +518,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 "shared_neighbors": [],
                 "biological_themes": [],
                 "direct_findings": two_hop_findings,  # preserve Phase A on timeout (issue #44, R5)
+                "pathway_enrichment_degraded": True,  # disclose: Phase B produced nothing
                 "errors": [f"SDK query timed out after {SDK_QUERY_TIMEOUT}s"],
             }
 
@@ -603,5 +606,6 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             "shared_neighbors": [],
             "biological_themes": [],
             "direct_findings": two_hop_findings,
+            "pathway_enrichment_degraded": True,  # disclose: Phase B produced nothing
             "errors": [f"Pathway enrichment failed: {str(e)}"],
         }

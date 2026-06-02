@@ -103,6 +103,10 @@ def classify_mcp_degradation(
     if not expected_tools:
         return McpDegradationVerdict(False, "no_tools_expected", "none")
 
+    phrase_hit = bool(result_text) and any(
+        p in result_text.lower() for p in _MCP_FALLBACK_PHRASES
+    )
+
     # Definitive: the SDK init tool list is known and is missing an expected tool.
     if available_tools is not None:
         missing = [t for t in expected_tools if t not in available_tools]
@@ -110,10 +114,12 @@ def classify_mcp_degradation(
             return McpDegradationVerdict(
                 True, f"tools_missing_from_init:{','.join(missing)}", "definitive"
             )
-
-    phrase_hit = bool(result_text) and any(
-        p in result_text.lower() for p in _MCP_FALLBACK_PHRASES
-    )
+        # All expected tools confirmed present in the init list. Zero calls WITHOUT the
+        # fallback phrase is not structural proof of degradation (the model may have
+        # legitimately skipped tools) — avoid a false positive for non-mandating nodes.
+        # The phrase still trips the structural check below.
+        if mcp_tool_calls == 0 and not phrase_hit:
+            return McpDegradationVerdict(False, "tools_registered_zero_calls", "none")
 
     # Structural: tools were expected but the model made zero MCP tool calls.
     if mcp_tool_calls == 0:
