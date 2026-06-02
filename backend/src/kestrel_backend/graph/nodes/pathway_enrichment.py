@@ -24,6 +24,7 @@ from ..state import (
     DiscoveryState, SharedNeighbor, BiologicalTheme, Finding
 )
 from ...kestrel_client import multi_hop_query
+from .cold_start import get_entity_connections
 from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS, query_with_usage, classify_mcp_degradation
 from ..pipeline_config import get_pipeline_config
 from ..state_contracts import validate_state, PathwayEnrichmentInput, PathwayEnrichmentOutput
@@ -305,6 +306,48 @@ def _degraded_phase_b_result(
     if usage_record is not None:
         result["model_usages"] = [usage_record]
     return result
+
+
+async def prefetch_one_hop_neighbors(entities: list) -> tuple[dict[str, dict], bool]:
+    """Fetch one-hop neighbor data per entity via the HTTP Kestrel client (issue #44, Stage 2).
+
+    Mirrors cold_start's ``get_entity_connections`` (which collapses every failure mode into
+    an empty ``{"edges": []}`` with no ``total_count`` key — so absence of ``total_count``
+    is our per-entity ``errored`` discriminator).
+
+    Returns ``(per_entity, no_data)`` where ``per_entity`` maps curie -> ``{summary, edges,
+    errored}`` and ``no_data`` is True when fewer than 2 entities returned real (non-errored,
+    non-empty) neighbor data. ``no_data`` is the post-migration emptiness signal that keeps
+    the in-prompt inference from running on a sparse, hallucination-prone prompt.
+    """
+    curies = [e.curie for e in entities if e.curie]
+    results = await asyncio.gather(
+        *[get_entity_connections(c) for c in curies], return_exceptions=True
+    )
+    per_entity: dict[str, dict] = {}
+    populated = 0
+    for curie, result in zip(curies, results):
+        if isinstance(result, Exception):
+            logger.warning("prefetch one_hop_query raised for %s: %s", curie, result)
+            per_entity[curie] = {"summary": f"Error: {result}", "edges": [], "errored": True}
+            continue
+        errored = "total_count" not in result  # get_entity_connections drops it on every failure
+        edges = result.get("edges", [])
+        per_entity[curie] = {
+            "summary": result.get("summary", ""),
+            "edges": edges,
+            "errored": errored,
+        }
+        if not errored and edges:
+            populated += 1
+
+    no_data = populated < 2  # shared-neighbor analysis is meaningless below 2 populated entities
+    if no_data:
+        logger.warning(
+            "pathway_enrichment prefetch: only %d/%d entities returned real neighbor data (no-data signal)",
+            populated, len(curies),
+        )
+    return per_entity, no_data
 
 
 @validate_state(PathwayEnrichmentInput, PathwayEnrichmentOutput)

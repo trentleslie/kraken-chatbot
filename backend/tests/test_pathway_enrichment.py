@@ -86,6 +86,64 @@ class TestDegradedResultBuilder:
 
 # --- run() integration tests ---
 
+def _conns(mapping):
+    """Build an async get_entity_connections stub returning per-curie results."""
+    async def _f(curie):
+        result = mapping[curie]
+        if isinstance(result, Exception):
+            raise result
+        return result
+    return _f
+
+
+def _ok(n_edges: int):
+    """A successful one_hop result (includes total_count, the non-errored marker)."""
+    return {"edges": [{"predicate": "biolink:related_to"}] * n_edges,
+            "summary": f"{n_edges} edges", "total_count": n_edges}
+
+
+def _errored():
+    """A failed one_hop result (no total_count key, like get_entity_connections failures)."""
+    return {"edges": [], "summary": "Query failed"}
+
+
+class TestPrefetchOneHopNeighbors:
+    async def test_two_populated_not_no_data(self, monkeypatch):
+        monkeypatch.setattr(pe, "get_entity_connections",
+                            _conns({"CHEBI:1": _ok(3), "CHEBI:2": _ok(2)}))
+        per_entity, no_data = await pe.prefetch_one_hop_neighbors(
+            [_entity("CHEBI:1"), _entity("CHEBI:2")])
+        assert no_data is False
+        assert per_entity["CHEBI:1"]["errored"] is False
+        assert per_entity["CHEBI:2"]["errored"] is False
+
+    async def test_one_errored_triggers_no_data(self, monkeypatch):
+        monkeypatch.setattr(pe, "get_entity_connections",
+                            _conns({"CHEBI:1": _ok(3), "CHEBI:2": _errored()}))
+        per_entity, no_data = await pe.prefetch_one_hop_neighbors(
+            [_entity("CHEBI:1"), _entity("CHEBI:2")])
+        assert no_data is True  # only 1 of 2 populated
+        assert per_entity["CHEBI:1"]["errored"] is False
+        assert per_entity["CHEBI:2"]["errored"] is True
+
+    async def test_genuine_empty_counts_as_unpopulated(self, monkeypatch):
+        # Non-errored but zero edges → not "real neighbor data" → no_data.
+        monkeypatch.setattr(pe, "get_entity_connections",
+                            _conns({"CHEBI:1": _ok(0), "CHEBI:2": _ok(0)}))
+        per_entity, no_data = await pe.prefetch_one_hop_neighbors(
+            [_entity("CHEBI:1"), _entity("CHEBI:2")])
+        assert no_data is True
+        assert per_entity["CHEBI:1"]["errored"] is False  # not an error, just empty
+
+    async def test_exception_marks_errored(self, monkeypatch):
+        monkeypatch.setattr(pe, "get_entity_connections",
+                            _conns({"CHEBI:1": _ok(3), "CHEBI:2": RuntimeError("boom")}))
+        per_entity, no_data = await pe.prefetch_one_hop_neighbors(
+            [_entity("CHEBI:1"), _entity("CHEBI:2")])
+        assert per_entity["CHEBI:2"]["errored"] is True
+        assert no_data is True
+
+
 class TestRunDegradation:
     async def test_degraded_drops_sdk_keeps_two_hop(self, patched):
         patched.setattr(
