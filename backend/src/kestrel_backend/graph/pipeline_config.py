@@ -73,6 +73,11 @@ class PathwayEnrichmentConfig(BaseModel):
         "HTTP prefetch returned no data), drop the unreliable SDK shared-neighbor "
         "findings instead of letting hallucinated output reach synthesis (issue #44).",
     )
+    sdk_semaphore: int = Field(
+        default=4,
+        description="Max concurrent SDK calls for the Phase B data-in-prompt inference "
+        "(issue #44 Stage 2). Mirrors the other SDK nodes' per-node semaphore.",
+    )
 
 
 class EntityResolutionConfig(BaseModel):

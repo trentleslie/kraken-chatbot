@@ -9,7 +9,6 @@ from kestrel_backend.graph.nodes import pathway_enrichment as pe
 from kestrel_backend.graph.state import (
     BiologicalTheme,
     ModelUsageRecord,
-    SharedNeighbor,
 )
 
 
@@ -48,6 +47,17 @@ def _theme():
     )
 
 
+def _populated_prefetch():
+    edge = {"object": {"id": "NCBIGene:9"}, "predicate": "biolink:related_to"}
+    return (
+        {
+            "CHEBI:1": {"summary": "related_to: 1", "edges": [edge], "errored": False},
+            "CHEBI:2": {"summary": "related_to: 1", "edges": [edge], "errored": False},
+        },
+        False,  # no_data
+    )
+
+
 @pytest.fixture
 def patched(monkeypatch):
     """Patch the always-present collaborators; individual tests patch query_with_usage/parse."""
@@ -55,6 +65,11 @@ def patched(monkeypatch):
     monkeypatch.setattr(
         pe, "find_two_hop_shared_neighbors",
         AsyncMock(return_value=({"NCBIGene:9": 2}, [])),
+    )
+    # Stage 2: Phase B prefetches one-hop data via HTTP; default to a populated result.
+    monkeypatch.setattr(
+        pe, "prefetch_one_hop_neighbors",
+        AsyncMock(return_value=_populated_prefetch()),
     )
     return monkeypatch
 
@@ -144,37 +159,28 @@ class TestPrefetchOneHopNeighbors:
         assert no_data is True
 
 
-class TestRunDegradation:
-    async def test_degraded_drops_sdk_keeps_two_hop(self, patched):
-        patched.setattr(
-            pe, "query_with_usage",
-            AsyncMock(return_value=(
-                "The Kestrel MCP tools are not available in my current tool set.",
-                _record(0),  # zero mcp tool calls
-            )),
-        )
-        # parse would yield SDK neighbors/themes, but degradation must discard them
-        patched.setattr(
-            pe, "parse_enrichment_result",
-            lambda text: (
-                [SharedNeighbor(curie="NCBIGene:9", name="G", category="biolink:Gene",
-                                degree=10, connected_inputs=["CHEBI:1", "CHEBI:2"])],
-                [_theme()],
-                [],
-            ),
-        )
+class TestRunMigratedPhaseB:
+    """Stage 2 (issue #44): Phase B prefetches via HTTP and reasons in-prompt (no MCP)."""
+
+    async def test_no_data_degrades_and_keeps_two_hop(self, patched):
+        # Prefetch found <2 populated entities → degrade without running inference.
+        patched.setattr(pe, "prefetch_one_hop_neighbors", AsyncMock(return_value=({}, True)))
+        sdk = AsyncMock()
+        patched.setattr(pe, "query_with_usage", sdk)
         out = await pe.run(_state())
 
         assert out["pathway_enrichment_degraded"] is True
         assert out["shared_neighbors"] == []
         assert out["biological_themes"] == []
-        # only the HTTP-derived two-hop finding survives
         assert [f.source for f in out["direct_findings"]] == ["pathway_enrichment_two_hop"]
+        assert any("prefetch_no_data" in e for e in out["errors"])
+        sdk.assert_not_awaited()  # inference is skipped on the no-data path
 
-    async def test_healthy_keeps_sdk_findings(self, patched):
+    async def test_healthy_inference_keeps_sdk_findings(self, patched):
+        # Populated prefetch (default) + parseable inference output → findings kept.
         patched.setattr(
             pe, "query_with_usage",
-            AsyncMock(return_value=('{"ok": true}', _record(2))),  # tools were used
+            AsyncMock(return_value=('{"shared_neighbors": [], "themes": []}', _record(0))),
         )
         patched.setattr(pe, "parse_enrichment_result", lambda text: ([], [_theme()], []))
         out = await pe.run(_state())
@@ -185,19 +191,18 @@ class TestRunDegradation:
         assert "pathway_enrichment" in sources           # SDK theme finding kept
         assert "pathway_enrichment_two_hop" in sources    # two-hop also present
 
-    async def test_drop_disabled_keeps_output_but_flags_degraded(self, patched):
-        patched.setattr(pe._config, "drop_findings_on_degraded", False)
+    async def test_inert_mcp_classifier_does_not_flag_migrated_path(self, patched):
+        # Even if the inference text echoes the fallback phrase, allowed_tools=[] means
+        # the MCP classifier is inert — the run must NOT be flagged degraded.
         patched.setattr(
             pe, "query_with_usage",
-            AsyncMock(return_value=("not available in my current tool set", _record(0))),
+            AsyncMock(return_value=("those tools are not available in my current tool set",
+                                    _record(0))),
         )
         patched.setattr(pe, "parse_enrichment_result", lambda text: ([], [_theme()], []))
         out = await pe.run(_state())
 
-        # output retained ...
-        assert len(out["biological_themes"]) == 1
-        # ... but the run is still flagged degraded for disclosure
-        assert out["pathway_enrichment_degraded"] is True
+        assert out["pathway_enrichment_degraded"] is False
 
     async def test_exception_preserves_two_hop_findings(self, patched):
         # A Phase B exception must not lose the staged Phase A two-hop findings (R5).
