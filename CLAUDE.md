@@ -16,7 +16,11 @@ uv sync              # Install/update Python dependencies
 uv run uvicorn src.kestrel_backend.main:app --reload --host 127.0.0.1 --port 8000
 
 # Testing
-cd backend && uv run pytest tests/ -v -m "not integration"
+# Use `python -m pytest` (not bare `uv run pytest`): the venv path contains
+# spaces, which breaks the console-script shebang and silently falls back to
+# system Python → misleading ModuleNotFoundError. See
+# docs/solutions/developer-experience/pytest-venv-path-spaces-module-invocation-2026-06-01.md
+cd backend && uv run python -m pytest tests/ -v -m "not integration"
 ```
 
 ## LangGraph Studio (Local Development)

@@ -9,13 +9,20 @@ Semaphore definitions and fallback orchestration logic remain per-node
 """
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 # Centralized SDK availability check — single try/except for all nodes
 try:
-    from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage  # noqa: F401
+    from claude_agent_sdk import (  # noqa: F401
+        query,
+        ClaudeAgentOptions,
+        ResultMessage,
+        SystemMessage,
+        ToolUseBlock,
+    )
     from claude_agent_sdk.types import McpStdioServerConfig  # noqa: F401
     HAS_SDK = True
 except ImportError:
@@ -25,11 +32,19 @@ except ImportError:
     ClaudeAgentOptions = None  # type: ignore[assignment,misc]
     McpStdioServerConfig = None  # type: ignore[assignment,misc]
 
-    # Sentinel class so isinstance(event, ResultMessage) returns False
-    # rather than raising TypeError when SDK is unavailable
+    # Sentinel classes so isinstance(event, X) returns False rather than raising
+    # TypeError when the SDK is unavailable (issue #44 instrumentation).
     class _ResultMessageStub:  # type: ignore[no-redef]
         pass
     ResultMessage = _ResultMessageStub  # type: ignore[assignment,misc]
+
+    class _SystemMessageStub:  # type: ignore[no-redef]
+        pass
+    SystemMessage = _SystemMessageStub  # type: ignore[assignment,misc]
+
+    class _ToolUseBlockStub:  # type: ignore[no-redef]
+        pass
+    ToolUseBlock = _ToolUseBlockStub  # type: ignore[assignment,misc]
 
 # Kestrel MCP server configuration constants
 KESTREL_COMMAND = "uvx"
@@ -48,6 +63,72 @@ def get_kestrel_mcp_config() -> Any:
         command=KESTREL_COMMAND,
         args=KESTREL_ARGS,
     )
+
+
+@dataclass(frozen=True)
+class McpDegradationVerdict:
+    """Result of classify_mcp_degradation (issue #44)."""
+
+    degraded: bool
+    reason: str
+    confidence: str  # "definitive" | "high" | "structural" | "none"
+
+
+# Fallback phrases the SDK model emits when MCP tools failed to register. These are a
+# CORROBORATOR only — never the sole trigger (model wording is brittle). Issue #44.
+_MCP_FALLBACK_PHRASES = (
+    "not available in my current tool set",
+    "tools are not available",
+    "are not available in my",
+)
+
+
+def classify_mcp_degradation(
+    expected_tools: list[str],
+    mcp_tool_calls: int,
+    result_text: str = "",
+    available_tools: list[str] | None = None,
+) -> McpDegradationVerdict:
+    """Detect the "MCP tools unavailable -> hallucinated output" condition (issue #44).
+
+    Structural signals are authoritative; the fallback phrase only raises confidence.
+    A node that expects no MCP tools (``expected_tools == []``, e.g. data-in-prompt
+    inference) can never be MCP-degraded.
+
+    NOTE: the bare ``mcp_tool_calls == 0`` signal is only safe for nodes whose prompt
+    *mandates* tool use (e.g. pathway_enrichment requires a one_hop_query per entity).
+    A node where zero tool calls is a legitimate model choice must require the init-list
+    signal or the corroborating phrase instead of the bare count.
+    """
+    if not expected_tools:
+        return McpDegradationVerdict(False, "no_tools_expected", "none")
+
+    phrase_hit = bool(result_text) and any(
+        p in result_text.lower() for p in _MCP_FALLBACK_PHRASES
+    )
+
+    # Definitive: the SDK init tool list is known and is missing an expected tool.
+    if available_tools is not None:
+        missing = [t for t in expected_tools if t not in available_tools]
+        if missing:
+            return McpDegradationVerdict(
+                True, f"tools_missing_from_init:{','.join(missing)}", "definitive"
+            )
+        # All expected tools confirmed present in the init list. Zero calls WITHOUT the
+        # fallback phrase is not structural proof of degradation (the model may have
+        # legitimately skipped tools) — avoid a false positive for non-mandating nodes.
+        # The phrase still trips the structural check below.
+        if mcp_tool_calls == 0 and not phrase_hit:
+            return McpDegradationVerdict(False, "tools_registered_zero_calls", "none")
+
+    # Structural: tools were expected but the model made zero MCP tool calls.
+    if mcp_tool_calls == 0:
+        if phrase_hit:
+            return McpDegradationVerdict(True, "zero_mcp_tool_calls+phrase", "high")
+        return McpDegradationVerdict(True, "zero_mcp_tool_calls", "structural")
+
+    # Tools were used -> healthy, even if the analysis found nothing.
+    return McpDegradationVerdict(False, "tools_used", "none")
 
 
 # NOTE: create_agent_options is not yet used by existing nodes (they call
@@ -149,13 +230,25 @@ async def query_with_usage(
     cache_creation_tokens = 0
     cache_read_tokens = 0
     has_usage = False
+    mcp_tool_calls = 0  # count of mcp__* tool-use blocks (issue #44 degradation signal)
+    available_tools: list[str] | None = None  # tool names from the SDK init event, if exposed
 
     async for event in query(prompt=prompt, options=options):
-        # Collect text content
-        if hasattr(event, "content"):
+        # Capture the available-tool list from the SDK init event (best-effort;
+        # stays None if this SDK version/stream doesn't expose it). Issue #44.
+        if isinstance(event, SystemMessage) and getattr(event, "subtype", None) == "init":
+            data = getattr(event, "data", None)
+            tools = data.get("tools") if isinstance(data, dict) else None
+            if isinstance(tools, list):
+                available_tools = [t for t in tools if isinstance(t, str)]
+
+        # Collect text content; count MCP tool-use blocks (issue #44).
+        if hasattr(event, "content") and event.content:
             for block in event.content:
                 if hasattr(block, "text"):
                     result_text_parts.append(block.text)
+                elif isinstance(block, ToolUseBlock) and getattr(block, "name", "").startswith("mcp__"):
+                    mcp_tool_calls += 1
 
         # Accumulate usage from ResultMessage (final totals — replaces)
         if isinstance(event, ResultMessage):
@@ -188,8 +281,17 @@ async def query_with_usage(
             has_usage = True
 
     text = "".join(result_text_parts)
+
+    # Diagnostic line so degraded MCP runs are observable across SDK nodes (issue #44).
+    logger.info(
+        "%s SDK call: mcp_tool_calls=%d, available_tools=%s",
+        node_name,
+        mcp_tool_calls,
+        "unknown" if available_tools is None else f"{len(available_tools)} registered",
+    )
+
     record = None
-    if has_usage:
+    if has_usage or mcp_tool_calls or available_tools is not None:
         record = ModelUsageRecord(
             model_name=model_name,
             node_name=node_name,
@@ -197,6 +299,8 @@ async def query_with_usage(
             output_tokens=output_tokens,
             cache_read_tokens=cache_read_tokens,
             cache_creation_tokens=cache_creation_tokens,
+            mcp_tool_calls=mcp_tool_calls,
+            available_tools=available_tools,
         )
 
     return text, record

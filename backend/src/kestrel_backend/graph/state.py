@@ -299,6 +299,10 @@ class ModelUsageRecord(BaseModel):
     output_tokens: int = Field(0, ge=0)
     cache_read_tokens: int = Field(0, ge=0, description="Prompt cache read tokens")
     cache_creation_tokens: int = Field(0, ge=0, description="Prompt cache creation tokens")
+    # MCP tool-availability diagnostics (issue #44). mcp_tool_calls counts mcp__* tool-use
+    # blocks observed; available_tools is the SDK init tool list when exposed (else None).
+    mcp_tool_calls: int = Field(0, ge=0, description="Count of mcp__* tool-use blocks in this call")
+    available_tools: list[str] | None = Field(None, description="Tool names from SDK init event, if exposed")
 
 
 class DiscoveryState(TypedDict, total=False):
@@ -358,6 +362,9 @@ class DiscoveryState(TypedDict, total=False):
     # === Phase 4a: Pathway Enrichment ===
     shared_neighbors: Annotated[list[SharedNeighbor], operator.add]
     biological_themes: list[BiologicalTheme]
+    # Set True when Phase B (one-hop SDK/HTTP) was dropped as unreliable (issue #44).
+    # Plain single-writer boolean — pathway_enrichment is serial, so no reducer needed.
+    pathway_enrichment_degraded: bool
 
     # === Phase 4b: Integration (Bridges + Gap Analysis) ===
     bridges: Annotated[list[Bridge], operator.add]
