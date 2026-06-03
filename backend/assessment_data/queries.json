@@ -2,61 +2,129 @@
   {
     "query": "What is the relationship between NAD+ metabolism and cellular aging?",
     "path_type": "well-characterized",
-    "expected_entities": ["NAD+", "aging"],
+    "expected_entities": [
+      "NAD+",
+      "aging"
+    ],
     "notes": "Well-studied metabolite with extensive KG coverage"
   },
   {
     "query": "How does the SIRT1 protein influence longevity pathways?",
     "path_type": "well-characterized",
-    "expected_entities": ["SIRT1", "longevity"],
+    "expected_entities": [
+      "SIRT1",
+      "longevity"
+    ],
     "notes": "Well-characterized sirtuin with many known associations"
   },
   {
     "query": "What are the metabolic effects of berberine on glucose homeostasis?",
     "path_type": "sparse",
-    "expected_entities": ["berberine", "glucose"],
+    "expected_entities": [
+      "berberine",
+      "glucose"
+    ],
     "notes": "Natural compound with moderate KG coverage"
   },
   {
     "query": "How does urolithin A affect mitochondrial function?",
     "path_type": "sparse",
-    "expected_entities": ["urolithin A", "mitochondria"],
+    "expected_entities": [
+      "urolithin A",
+      "mitochondria"
+    ],
     "notes": "Emerging metabolite with sparse KG edges"
   },
   {
     "query": "What is the mechanism of action of pterostilbene in neuroprotection?",
     "path_type": "cold-start",
-    "expected_entities": ["pterostilbene", "neuroprotection"],
-    "notes": "Resveratrol analogue — may trigger cold-start path"
+    "expected_entities": [
+      "pterostilbene",
+      "neuroprotection"
+    ],
+    "notes": "Resveratrol analogue \u2014 may trigger cold-start path"
   },
   {
     "query": "How does ergothioneine protect against oxidative stress?",
     "path_type": "cold-start",
-    "expected_entities": ["ergothioneine", "oxidative stress"],
-    "notes": "Rare amino acid — likely cold-start with analogue inference"
+    "expected_entities": [
+      "ergothioneine",
+      "oxidative stress"
+    ],
+    "notes": "Rare amino acid \u2014 likely cold-start with analogue inference"
   },
   {
     "query": "How do NAD+ levels change with age and what interventions restore them? Include longitudinal data.",
     "path_type": "longitudinal",
-    "expected_entities": ["NAD+", "aging"],
+    "expected_entities": [
+      "NAD+",
+      "aging"
+    ],
     "notes": "Explicit longitudinal framing should trigger temporal node"
   },
   {
     "query": "Track the progression of insulin resistance markers over time in metabolic syndrome. Longitudinal analysis.",
     "path_type": "longitudinal",
-    "expected_entities": ["insulin resistance", "metabolic syndrome"],
+    "expected_entities": [
+      "insulin resistance",
+      "metabolic syndrome"
+    ],
     "notes": "Longitudinal query with clinical context"
   },
   {
     "query": "What are the shared pathways between NMN supplementation, AMPK activation, and autophagy regulation?",
     "path_type": "multi-entity",
-    "expected_entities": ["NMN", "AMPK", "autophagy"],
-    "notes": "Three entities — exercises integration node's cross-type bridging"
+    "expected_entities": [
+      "NMN",
+      "AMPK",
+      "autophagy"
+    ],
+    "notes": "Three entities \u2014 exercises integration node's cross-type bridging"
   },
   {
     "query": "How do resveratrol, quercetin, and fisetin interact in senolytic therapy?",
     "path_type": "multi-entity",
-    "expected_entities": ["resveratrol", "quercetin", "fisetin"],
-    "notes": "Multiple polyphenols — tests pathway enrichment across entities"
+    "expected_entities": [
+      "resveratrol",
+      "quercetin",
+      "fisetin"
+    ],
+    "notes": "Multiple polyphenols \u2014 tests pathway enrichment across entities"
+  },
+  {
+    "query": "The following analytes are co-expressed in the \"Brown\" module from a multiomic WGCNA analysis of frailty. Analyze their collective biological significance \u2014 the mechanisms they implicate and any actionable hypotheses.\n\nProteins:\nPON3\nIL1RN\nIGFBP1\nIGFBP2\nLDLR\nHGF\nPRSS8\nFABP4\nIL6\nIL6\nFGF21\n\nMetabolites:\n1-(1-enyl-palmitoyl)-2-oleoyl-GPC (P-16:0/18:1)\n1-(1-enyl-palmitoyl)-2-linoleoyl-GPC (P-16:0/18:2)\n1-palmityl-2-oleoyl-GPC (O-16:0/18:1)\n1-(1-enyl-stearoyl)-2-linoleoyl-GPC (P-18:0/18:2)\npalmitoyl-oleoyl-glycerol (16:0/18:1) [2]\n1-carboxyethylphenylalanine\nglutamate\npalmitoyl-oleoyl-glycerol (16:0/18:1) [1]\ndiacylglycerol (16:1/18:2 [2]; 16:0/18:3 [1])\ncortolone glucuronide (1)\n1-carboxyethylleucine\ndiacylglycerol (14:0/18:1; 16:0/16:1) [2]\n1-carboxyethylisoleucine\nN-acetylglycine\n",
+    "path_type": "multiomic-module",
+    "expected_curies": [],
+    "notes": "Frailty WGCNA module 'Brown', top-25 by intramodular connectivity (11 proteins, 14 metabolites; Chemistry excluded)."
+  },
+  {
+    "query": "The following analytes are co-expressed in the \"Blue\" module from a multiomic WGCNA analysis of frailty. Analyze their collective biological significance \u2014 the mechanisms they implicate and any actionable hypotheses.\n\nProteins:\nTNFRSF1A\nTNFRSF1B\nIL18BP\nTNFRSF10B\nHSPG2\nEPHB4\nLTBR\nIL10RB\nTNFRSF11A\nTNFRSF9\nPGF\n\nMetabolites:\nhydroxyasparagine\n2;3-dihydroxy-5-methylthio-4-pentenoate (DMTPA)\npseudouridine\norotidine\n5;6-dihydrouridine\n3-(3-amino-3-carboxypropyl)uridine\nN6-carbamoylthreonyladenosine\nN-acetylalanine\nN2;N2-dimethylguanosine\nN1-methylinosine\nN-acetylserine\nerythronate\nC-glycosyltryptophan\nkynurenine\n",
+    "path_type": "multiomic-module",
+    "expected_curies": [],
+    "notes": "Frailty WGCNA module 'Blue', top-25 by intramodular connectivity (11 proteins, 14 metabolites; Chemistry excluded)."
+  },
+  {
+    "query": "The following analytes are co-expressed in the \"Turquoise\" module from a multiomic WGCNA analysis of frailty. Analyze their collective biological significance \u2014 the mechanisms they implicate and any actionable hypotheses.\n\nProteins:\nSIRT2\nHBEGF\nDKK1\nPDGFA\nIL7\nCD84\nITGB1BP2\nF2R\nCD40LG\nSTAMBP\nTNFSF14\nSERPINE1\nSORT1\nPDGFB\nEIF4EBP1\nTNFRSF14\n\nMetabolites:\nmaltose\nadenosine 5'-monophosphate (AMP)\ntaurine\nsphingosine\nphosphoethanolamine\nnicotinamide\n1-stearoyl-2-oleoyl-GPS (18:0/18:1)\nsphinganine\n1-(1-enyl-palmitoyl)-GPE (P-16:0)\n",
+    "path_type": "multiomic-module",
+    "expected_curies": [],
+    "notes": "Frailty WGCNA module 'Turquoise', top-25 by intramodular connectivity (16 proteins, 9 metabolites; Chemistry excluded)."
+  },
+  {
+    "query": "The following analytes are co-expressed in the \"Black\" module from a multiomic WGCNA analysis of frailty. Analyze their collective biological significance \u2014 the mechanisms they implicate and any actionable hypotheses.\n\nMetabolites:\n3-hydroxydecanoate\n3-hydroxylaurate\neicosenoate (20:1)\npalmitate (16:0)\n10-nonadecenoate (19:1n9)\nlinoleate (18:2n6)\npalmitoleate (16:1n7)\ndihomo-linoleate (20:2n6)\nbranched-chain; straight-chain; or cyclopropyl 12:1 fatty acid\n10-heptadecenoate (17:1n7)\noleate/vaccenate (18:1)\npalmitoleoylcarnitine (C16:1)\n3-hydroxymyristate\nmargarate (17:0)\ndocosadienoate (22:2n6)\n5-dodecenoate (12:1n7)\nmyristoleate (14:1n5)\n3-hydroxyoctanoate\nmyristate (14:0)\n3-hydroxyhexanoate\nacetylcarnitine (C2)\n(R)-3-hydroxybutyrylcarnitine\n3-hydroxysebacate\npentadecanoate (15:0)\nlinolenate [alpha or gamma; (18:3n3 or 6)]\n",
+    "path_type": "multiomic-module",
+    "expected_curies": [],
+    "notes": "Frailty WGCNA module 'Black', top-25 by intramodular connectivity (0 proteins, 25 metabolites; Chemistry excluded)."
+  },
+  {
+    "query": "The following analytes are co-expressed in the \"Green\" module from a multiomic WGCNA analysis of frailty. Analyze their collective biological significance \u2014 the mechanisms they implicate and any actionable hypotheses.\n\nMetabolites:\nsphingomyelin (d18:2/23:0; d18:1/23:1; d17:1/24:1)\nsphingomyelin (d18:1/19:0; d19:1/18:0)\ntricosanoyl sphingomyelin (d18:1/23:0)\nsphingomyelin (d18:1/17:0; d17:1/18:0; d19:1/16:0)\ncholesterol\nsphingomyelin (d18:1/24:1; d18:2/24:0)\nsphingomyelin (d18:2/23:1)\nsphingomyelin (d18:2/21:0; d16:2/23:0)\nsphingomyelin (d18:1/21:0; d17:1/22:0; d16:1/23:0)\npalmitoyl sphingomyelin (d18:1/16:0)\nsphingomyelin (d18:1/14:0; d16:1/16:0)\nsphingomyelin (d17:1/16:0; d18:1/15:0; d16:1/17:0)\nsphingomyelin (d17:2/16:0; d18:2/15:0)\nsphingomyelin (d18:1/22:1; d18:2/22:0; d16:1/24:1)\n1-palmityl-2-stearoyl-GPC (O-16:0/18:0)\nbehenoyl sphingomyelin (d18:1/22:0)\nsphingomyelin (d18:1/20:0; d16:1/22:0)\nceramide (d18:1/17:0; d17:1/18:0)\nstearoyl sphingomyelin (d18:1/18:0)\npalmitoyl dihydrosphingomyelin (d18:0/16:0)\nsphingomyelin (d18:2/16:0; d18:1/16:1)\nN-stearoyl-sphingosine (d18:1/18:0)\nlignoceroyl sphingomyelin (d18:1/24:0)\n1-margaroyl-2-oleoyl-GPC (17:0/18:1)\nsphingomyelin (d18:2/14:0; d18:1/14:1)\n",
+    "path_type": "multiomic-module",
+    "expected_curies": [],
+    "notes": "Frailty WGCNA module 'Green', top-25 by intramodular connectivity (0 proteins, 25 metabolites; Chemistry excluded)."
+  },
+  {
+    "query": "The following analytes are co-expressed in the \"Midnightblue\" module from a multiomic WGCNA analysis of frailty. Analyze their collective biological significance \u2014 the mechanisms they implicate and any actionable hypotheses.\n\nMetabolites:\nN2;N5-diacetylornithine\n6-hydroxyindole sulfate\nisobutyrylcarnitine (C4)\nurea\n1-methylhistidine\nN-acetyl-3-methylhistidine\narabitol/xylitol\nN-acetyl-1-methylhistidine\n3-indoxyl sulfate\nN-acetylcitrulline\n4-hydroxyphenylacetylglutamine\n1-methyl-5-imidazoleacetate\nphenylacetylglutamine\ntiglylcarnitine (C5:1-DC)\np-cresol sulfate\nN-acetylarginine\nN6;N6;N6-trimethyllysine\nN-acetyl-2-aminooctanoate\nN-acetylphenylalanine\nN1-Methyl-2-pyridone-5-carboxamide\nphenylacetylcarnitine\nN-acetylglutamine\n3-methylhistidine\np-cresol glucuronide\nphenylacetylglutamate\n",
+    "path_type": "multiomic-module",
+    "expected_curies": [],
+    "notes": "Frailty WGCNA module 'Midnightblue', top-25 by intramodular connectivity (0 proteins, 25 metabolites; Chemistry excluded)."
   }
 ]
