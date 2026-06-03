@@ -13,6 +13,7 @@ Run with: uv run pytest tests/test_langgraph_prototype.py -v
 
 import pytest
 import asyncio
+import json
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from src.kestrel_backend.graph.builder import (
@@ -128,6 +129,102 @@ class TestEntityResolutionNode:
         assert len(chunks[0]) == 6
         assert len(chunks[1]) == 6
         assert len(chunks[2]) == 3
+
+    # ----- #61: Tier-2 HTTP prefetch + SDK select + R1a membership -----
+
+    @pytest.mark.asyncio
+    async def test_prefetch_dedups_candidates_by_canonical_curie(self):
+        """Prefetch issues variant x {hybrid,text} searches and dedups by canonical
+        CURIE, keeping the highest score."""
+        async def fake_call(tool, params):
+            st = params["search_text"]
+            # Same node surfaces from every variant/tool, with varying score + casing.
+            score = 1.5 if tool == "hybrid_search" else 0.9
+            return {"isError": False, "content": [{"text": json.dumps({
+                st: [{"id": "chebi:17234", "name": "D-glucose",
+                      "categories": ["biolink:ChemicalEntity"], "score": score}]
+            })}]}
+
+        with patch.object(entity_resolution, "call_kestrel_tool", side_effect=fake_call):
+            cands = await entity_resolution.prefetch_resolution_candidates("glucose")
+
+        assert len(cands) == 1                      # deduped despite multiple calls
+        assert cands[0]["curie"] == "chebi:17234"
+        assert cands[0]["score"] == 1.5             # best score kept
+
+    @pytest.mark.asyncio
+    async def test_resolve_selects_from_candidates_and_surfaces_candidate_fields(self):
+        """Happy path: SDK selects a candidate CURIE; we surface the CANDIDATE's
+        curie/name/category (not the model's emitted strings)."""
+        candidates = [{"curie": "CHEBI:17234", "name": "D-glucose",
+                       "category": "biolink:ChemicalEntity", "score": 1.4}]
+
+        async def fake_query(prompt, options, node_name):
+            # Model echoes a slightly different-cased curie + no name/category.
+            return ('{"curie": "chebi:17234", "confidence": 0.95}', None)
+
+        with patch.object(entity_resolution, "prefetch_resolution_candidates",
+                          return_value=candidates), \
+                patch.object(entity_resolution, "HAS_SDK", True), \
+                patch.object(entity_resolution, "query_with_usage", fake_query):
+            resolution, _ = await entity_resolution.resolve_single_entity("glucose")
+
+        assert resolution.curie == "CHEBI:17234"          # candidate's canonical-cased curie
+        assert resolution.resolved_name == "D-glucose"    # candidate's name, not model's
+        assert resolution.method == "exact"
+
+    @pytest.mark.asyncio
+    async def test_resolve_no_candidates_fails_without_sdk_call(self):
+        """Empty candidate set → method='failed' and the SDK is never invoked."""
+        sdk_called = {"n": 0}
+
+        async def spy_query(prompt, options, node_name):
+            sdk_called["n"] += 1
+            return ("{}", None)
+
+        with patch.object(entity_resolution, "prefetch_resolution_candidates",
+                          return_value=[]), \
+                patch.object(entity_resolution, "HAS_SDK", True), \
+                patch.object(entity_resolution, "query_with_usage", spy_query):
+            resolution, _ = await entity_resolution.resolve_single_entity("nonsense")
+
+        assert resolution.method == "failed"
+        assert resolution.curie is None
+        assert sdk_called["n"] == 0
+
+    @pytest.mark.asyncio
+    async def test_resolve_rejects_out_of_candidate_curie_r1a(self):
+        """R1a: a model-emitted CURIE NOT in the candidate set is rejected → failed,
+        never surfaced as a resolved fact."""
+        candidates = [{"curie": "CHEBI:17234", "name": "D-glucose",
+                       "category": "biolink:ChemicalEntity", "score": 1.4}]
+
+        async def fake_query(prompt, options, node_name):
+            # Plausible training-data CURIE that was never a candidate.
+            return ('{"curie": "CHEBI:99999", "confidence": 0.97}', None)
+
+        with patch.object(entity_resolution, "prefetch_resolution_candidates",
+                          return_value=candidates), \
+                patch.object(entity_resolution, "HAS_SDK", True), \
+                patch.object(entity_resolution, "query_with_usage", fake_query):
+            resolution, _ = await entity_resolution.resolve_single_entity("glucose")
+
+        assert resolution.method == "failed"
+        assert resolution.curie is None  # hallucinated CURIE rejected
+
+    @pytest.mark.asyncio
+    async def test_resolve_transport_failure_fails(self):
+        """Prefetch transport failure (all variant queries error) → no candidates →
+        method='failed', never a false resolution."""
+        async def boom(tool, params):
+            raise RuntimeError("connection refused")
+
+        with patch.object(entity_resolution, "call_kestrel_tool", side_effect=boom), \
+                patch.object(entity_resolution, "HAS_SDK", True):
+            resolution, _ = await entity_resolution.resolve_single_entity("glucose")
+
+        assert resolution.method == "failed"
+        assert resolution.curie is None
 
 
 # =============================================================================

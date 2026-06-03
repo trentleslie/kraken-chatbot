@@ -28,7 +28,7 @@ from typing import Any
 
 from ...kestrel_client import call_kestrel_tool
 from ..state import DiscoveryState, EntityResolution
-from ..sdk_utils import HAS_SDK, query_with_usage, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
+from ..sdk_utils import HAS_SDK, query_with_usage, ClaudeAgentOptions, chunk
 from ..pipeline_config import get_pipeline_config
 from ..state_contracts import validate_state, EntityResolutionInput, EntityResolutionOutput
 
@@ -39,57 +39,53 @@ _config = get_pipeline_config().entity_resolution
 # Semaphore to serialize SDK calls and prevent concurrent CLI spawn issues
 SDK_SEMAPHORE = asyncio.Semaphore(_config.sdk_semaphore)
 
-# Enhanced prompt for entity resolution with retry strategies
+# Selection prompt (#61): the broken stdio MCP search tools are gone. We now do the
+# variant searches over HTTP ourselves and hand the model a CANDIDATE list to SELECT
+# from — it no longer searches the KG.
 RESOLUTION_PROMPT = """You are an expert biomedical entity resolver for the Kestrel knowledge graph.
 
 ## Your Task
-Resolve the given entity name to its canonical CURIE (Compact URI) identifier.
+You are given an entity name and a list of CANDIDATE nodes already retrieved from the
+knowledge graph. SELECT the single best candidate CURIE for the entity, or return null
+if none of the candidates actually refer to the entity.
 
-## Resolution Strategy (try in order)
-1. **Exact match**: Use hybrid_search with the exact entity name first
-2. **Synonym search**: If no result, try common synonyms:
-   - Chemical abbreviations: "BHBA" → "beta-hydroxybutyrate" → "3-hydroxybutyric acid"
-   - Gene aliases: Many genes have multiple symbols
-3. **Gene symbol handling**: For all-caps 2-6 character names (like KIF6, NLGN1, TP53):
-   - These are likely gene symbols → search directly, expect NCBIGene CURIEs
-4. **Metabolite variants**: Try without prefixes/suffixes:
-   - "N-lactoyl phenylalanine" → also try "lactoylphenylalanine"
-   - "16-hydroxypalmitate" → also try "hydroxypalmitate"
-5. **Partial matching**: Use text_search for fuzzy matches if hybrid_search fails
+## Matching guidance
+- Match on meaning, not just string equality: synonyms, spelling/hyphenation variants,
+  gene symbols, and chemical-name variants all count.
+  - "N-lactoyl phenylalanine" matches a "lactoylphenylalanine" node
+  - "16-hydroxypalmitate" matches "16-hydroxypalmitic acid"
+  - A gene symbol (all caps, 2-6 chars, e.g. KIF6) matches its NCBIGene node
+- Prefer the most specific, highest-scoring candidate that genuinely refers to the entity.
 
-## Important
-- Always try at least 2-3 search variations before giving up
-- Gene symbols (all caps, 2-6 chars) are common - search as-is
-- Metabolites may need chemical name variations
+## Hard rules
+- You MUST pick a `curie` value from the provided candidates verbatim, or return null.
+- Do NOT invent, complete, or correct a CURIE. If nothing fits, return null — never guess.
 
 ## Output Format
 Return ONLY valid JSON (no other text):
-{"curie": "PREFIX:ID", "name": "Canonical Name", "category": "biolink:Category", "confidence": 0.95}
+{"curie": "PREFIX:ID", "confidence": 0.95}
 
-If truly not found after trying all strategies:
-{"curie": null, "name": null, "category": null, "confidence": 0.0}"""
+If no candidate fits:
+{"curie": null, "confidence": 0.0}"""
 
-# More aggressive retry prompt for failed entities
-RETRY_PROMPT = """You are an expert biomedical entity resolver. This entity FAILED initial resolution - try harder!
+# Retry uses the same selection task with a more permissive matching posture (the entity
+# already failed the score threshold, so accept good synonym/variant matches).
+RETRY_PROMPT = """You are an expert biomedical entity resolver. This entity was hard to resolve.
 
-## Aggressive Search Strategies
-1. **Alternative spellings**: Try with/without hyphens, spaces, prefixes (N-, 16-, etc.)
-2. **Chemical synonyms**: Search IUPAC names, common names, and abbreviations
-3. **Partial matches**: Use text_search with key substrings
-4. **Category hints**: If it looks like a gene (all caps, 2-6 chars), search gene databases
-5. **Metabolite variations**: Strip numeric prefixes, try base compound names
+You are given an entity name and a list of CANDIDATE nodes retrieved from the knowledge
+graph via several spelling/synonym variant searches. SELECT the single best candidate, being
+generous about synonym, hyphenation, numeric-prefix, IUPAC/common-name, and gene-symbol
+variants — but only if the candidate genuinely refers to the same entity.
 
-## Examples of successful resolutions
-- "N-lactoyl phenylalanine" → try "lactoylphenylalanine", "lactoyl-phenylalanine"
-- "16-hydroxypalmitate" → try "hydroxypalmitate", "hydroxypalmitic acid"
-- "hexadecanedioate" → try "hexadecanedioic acid", "C16-DC"
-- "KIF6" → search as gene symbol directly (NCBIGene)
+## Hard rules
+- You MUST pick a `curie` value from the provided candidates verbatim, or return null.
+- Do NOT invent, complete, or correct a CURIE. If nothing genuinely matches, return null.
 
 ## Output
 Return ONLY valid JSON:
-{"curie": "PREFIX:ID", "name": "Canonical Name", "category": "biolink:Category", "confidence": 0.95}
+{"curie": "PREFIX:ID", "confidence": 0.95}
 
-If truly not found: {"curie": null, "name": null, "category": null, "confidence": 0.0}"""
+If no candidate fits: {"curie": null, "confidence": 0.0}"""
 
 
 
@@ -256,68 +252,191 @@ def parse_resolution_result(entity: str, result_text: str) -> EntityResolution:
     )
 
 
+# Max candidates shown to the selector (bounds prompt size; membership is checked
+# against exactly this shown set).
+_CANDIDATE_CAP = 25
+
+
+def _resolution_variants(entity: str) -> list[str]:
+    """Spelling/synonym variants to broaden the candidate search.
+
+    Approximates (server-side) the variant reformulation the old max_turns=5 SDK loop
+    did: raw + de-hyphenated + hyphen-removed + numeric/short-prefix-stripped +
+    gene-symbol form. NOTE: this is a fixed, finite list — a strict subset of the live
+    loop's open-ended reformulation — so recall must be gated against a hand-labeled
+    fixture before merge (see plan #61).
+    """
+    variants: list[str] = []
+
+    def add(v: str) -> None:
+        v = v.strip()
+        if v and v not in variants:
+            variants.append(v)
+
+    add(entity)
+    add(entity.replace("-", " "))   # de-hyphenated
+    add(entity.replace("-", ""))    # hyphen-removed
+    add(re.sub(r"^[0-9A-Za-z]{1,3}-", "", entity))  # strip a leading "N-"/"16-"/"3-" prefix
+    if 2 <= len(entity) <= 6 and entity.isalnum():
+        add(entity.upper())         # gene-symbol form
+    return variants
+
+
+def _canonical_curie(curie: str | None) -> str | None:
+    """Canonical form for the R1a membership check: uppercase prefix + trim.
+
+    Fuzzy/equivalent-namespace matching is intentionally NOT done — a lenient match
+    could admit a different node that merely normalizes alike.
+    """
+    if not curie:
+        return None
+    c = curie.strip()
+    if ":" in c:
+        prefix, _, local = c.partition(":")
+        return f"{prefix.upper()}:{local}"
+    return c.upper()
+
+
+def _extract_search_results(data: Any, search_text: str) -> list:
+    """Pull the results list out of a Kestrel ``{search_text: [results]}`` envelope.
+
+    Same envelope hybrid_search and text_search return (both route through
+    call_kestrel_tool; see resolve_via_api).
+    """
+    if isinstance(data, dict):
+        results = data.get(search_text) or data.get(search_text.lower()) or []
+        if not results and len(data) == 1:
+            results = list(data.values())[0]
+        return results or []
+    return data or []
+
+
+async def prefetch_resolution_candidates(entity: str, limit: int = 10) -> list[dict]:
+    """Tier-2 prefetch (#61): issue multiple HTTP variant searches and dedup into a
+    candidate set. Replaces the broken MCP variant-search loop.
+
+    Each variant is searched via BOTH hybrid_search and text_search (``limit > 1``);
+    results are deduped by canonical CURIE, keeping the highest-scoring instance.
+    Returns ``[{curie, name, category, score}]`` sorted best-score first.
+    """
+    candidates: dict[str, dict] = {}  # canonical curie -> candidate
+    for variant in _resolution_variants(entity):
+        for tool in ("hybrid_search", "text_search"):
+            try:
+                result = await call_kestrel_tool(tool, {"search_text": variant, "limit": limit})
+            except Exception as e:
+                logger.debug("Prefetch '%s' via %s failed: %s", variant, tool, e)
+                continue
+            if result.get("isError"):
+                continue
+            content = result.get("content", [])
+            if not content:
+                continue
+            text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            for row in _extract_search_results(data, variant):
+                if not isinstance(row, dict):
+                    continue
+                curie = row.get("id") or row.get("curie")
+                canon = _canonical_curie(curie)
+                if not canon:
+                    continue
+                score = float(row.get("score", 0) or 0)
+                cats = row.get("categories", [])
+                existing = candidates.get(canon)
+                if existing is None or score > existing["score"]:
+                    candidates[canon] = {
+                        "curie": curie,
+                        "name": row.get("name") or row.get("label"),
+                        "category": cats[0] if cats else row.get("category"),
+                        "score": score,
+                    }
+    return sorted(candidates.values(), key=lambda c: c["score"], reverse=True)
+
+
 async def resolve_single_entity(entity: str, is_retry: bool = False) -> tuple[EntityResolution, Any]:
     """
-    Resolve a single entity name to a CURIE using Claude Agent SDK.
+    Tier 2 (#61): resolve via HTTP candidate prefetch + SDK selection.
 
-    Args:
-        entity: The entity name to resolve
-        is_retry: If True, use more aggressive retry prompt
+    Replaces the broken stdio-MCP variant-search loop: we issue the variant searches
+    over HTTP ourselves (``prefetch_resolution_candidates``), then ask the SDK — with
+    NO tools — to SELECT the best candidate.
+
+    Correctness (R1a): the returned CURIE is validated against the prefetched candidate
+    set (exact canonical match); a CURIE not in the set → method="failed" (never a
+    fabricated CURIE). Empty candidate set or transport failure → method="failed"
+    WITHOUT invoking the SDK. On a valid selection we surface the CANDIDATE's own
+    curie/name/category — never the model's emitted strings.
 
     Returns tuple of (EntityResolution, ModelUsageRecord | None).
-    EntityResolution has method="failed" on any error.
     """
+    failed = EntityResolution(
+        raw_name=entity, curie=None, resolved_name=None,
+        category=None, confidence=0.0, method="failed",
+    )
+
+    # HTTP prefetch — variant searches build the candidate set.
+    candidates = await prefetch_resolution_candidates(entity)
+    if not candidates:
+        # No real data → honest failure (no fabrication, no SDK call).
+        return (failed, None)
+
     if not HAS_SDK:
-        # SDK not available - return mock for testing
-        return (EntityResolution(
-            raw_name=entity,
-            curie=None,
-            resolved_name=None,
-            category=None,
-            confidence=0.0,
-            method="failed",
-        ), None)
+        return (failed, None)
+
+    shown = candidates[:_CANDIDATE_CAP]
+    by_canon = {_canonical_curie(c["curie"]): c for c in shown}
+    candidate_lines = "\n".join(
+        f'- curie={c["curie"]} | name={c["name"]!r} | category={c["category"]}'
+        for c in shown
+    )
+    select_prompt = (
+        f"Entity to resolve: {entity}\n\n"
+        f"Candidates (choose the best `curie` verbatim, or null):\n{candidate_lines}"
+    )
 
     try:
         async with SDK_SEMAPHORE:
-            kestrel_config = get_kestrel_mcp_config()
-
-            # Use more aggressive prompt for retry attempts
-            prompt_to_use = RESOLUTION_PROMPT
-            if is_retry:
-                prompt_to_use = RETRY_PROMPT
-
             options = ClaudeAgentOptions(
-                system_prompt=prompt_to_use,
-                allowed_tools=[
-                    "mcp__kestrel__hybrid_search",
-                    "mcp__kestrel__text_search",
-                    "mcp__kestrel__get_nodes",
-                    "mcp__kestrel__get_node_info",
-                    "mcp__kestrel__get_neighbors",
-                ],
-                mcp_servers={"kestrel": kestrel_config},
-                max_turns=5,  # Increased from 2 to allow iterative search refinement
+                system_prompt=RETRY_PROMPT if is_retry else RESOLUTION_PROMPT,
+                allowed_tools=[],  # data-in-prompt selection; no KG tools
+                max_turns=1,
                 permission_mode="bypassPermissions",
-                max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for large KG responses
+                max_buffer_size=10 * 1024 * 1024,
             )
-
             result_text, usage_record = await query_with_usage(
-                prompt=f"Resolve: {entity}",
+                prompt=select_prompt,
                 options=options,
                 node_name="entity_resolution",
             )
-            return parse_resolution_result(entity, result_text), usage_record
-
     except Exception as e:
-        return (EntityResolution(
-            raw_name=entity,
-            curie=None,
-            resolved_name=None,
-            category=None,
-            confidence=0.0,
-            method="failed",
-        ), None)
+        logger.warning("Tier 2 select for '%s' failed: %s", entity, str(e))
+        return (failed, None)
+
+    # Parse the model's selection (curie + confidence → method).
+    parsed = parse_resolution_result(entity, result_text)
+    chosen = by_canon.get(_canonical_curie(parsed.curie)) if parsed.curie else None
+    if chosen is None:
+        # R1a: model returned null OR a CURIE not in the candidate set → honest failure.
+        if parsed.curie:
+            logger.warning(
+                "Tier 2 '%s': model selected out-of-candidate CURIE %s — rejected (R1a)",
+                entity, parsed.curie,
+            )
+        return (failed, usage_record)
+
+    # Surface the CANDIDATE's own fields (never the model's emitted strings).
+    return (EntityResolution(
+        raw_name=entity,
+        curie=chosen["curie"],
+        resolved_name=chosen["name"],
+        category=chosen["category"],
+        confidence=parsed.confidence,
+        method=parsed.method,
+    ), usage_record)
 
 
 
