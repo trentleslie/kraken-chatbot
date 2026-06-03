@@ -440,17 +440,30 @@ class TestDirectKGNode:
         assert findings == []
 
     @pytest.mark.asyncio
-    async def test_direct_kg_with_sdk_unavailable(self):
-        """Test graceful handling when SDK is not available."""
-        with patch.object(direct_kg, 'HAS_SDK', False):
-            state: DiscoveryState = {
-                "well_characterized_curies": ["CHEBI:17234"],
-                "moderate_curies": [],
-                "novelty_scores": [NoveltyScore(curie="CHEBI:17234", raw_name="glucose", edge_count=300, classification="well_characterized")],
-            }
+    async def test_tier1_failure_yields_no_findings(self):
+        """#61: when Tier-1 HTTP fails (returns None), the entity yields NO direct_kg
+        findings — honest no-findings, not a fabricated SDK fallback.
+
+        Replaces the old SDK-unavailable 'pending stub' behavior: the broken stdio
+        MCP Tier-2 fallback has been removed. analyze_via_api returns None only on
+        total failure, so there is nothing honest left to do but contribute no
+        findings for that entity.
+        """
+        async def fake_analyze_via_api(curie, raw_name):
+            return None  # simulate total Tier-1 failure
+
+        state: DiscoveryState = {
+            "well_characterized_curies": ["CHEBI:17234"],
+            "moderate_curies": [],
+            "novelty_scores": [NoveltyScore(curie="CHEBI:17234", raw_name="glucose", edge_count=300, classification="well_characterized")],
+        }
+        with patch.object(direct_kg, "analyze_via_api", fake_analyze_via_api):
             result = await direct_kg.run(state)
-            assert len(result["direct_findings"]) == 1
-            assert "SDK unavailable" in result["direct_findings"][0].claim
+
+        # No fabricated associations for the failed entity
+        assert result["direct_findings"] == []
+        assert result["disease_associations"] == []
+        assert result["pathway_memberships"] == []
 
 
 # =============================================================================
@@ -1659,10 +1672,7 @@ class TestIntegration:
     @pytest.mark.asyncio
     async def test_direct_kg_with_real_api(self):
         """Test direct_kg with actual Kestrel API calls."""
-        # Skip if SDK not available
-        if not direct_kg.HAS_SDK:
-            pytest.skip("Claude Agent SDK not available")
-
+        # direct_kg is HTTP-only (Tier-1 Kestrel API); no SDK dependency (#61)
         state: DiscoveryState = {
             "well_characterized_curies": ["CHEBI:17234"],  # glucose
             "moderate_curies": [],
