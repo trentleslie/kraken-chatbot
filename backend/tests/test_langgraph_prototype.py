@@ -13,6 +13,7 @@ Run with: uv run pytest tests/test_langgraph_prototype.py -v
 
 import pytest
 import asyncio
+import json
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from src.kestrel_backend.graph.builder import (
@@ -129,6 +130,102 @@ class TestEntityResolutionNode:
         assert len(chunks[1]) == 6
         assert len(chunks[2]) == 3
 
+    # ----- #61: Tier-2 HTTP prefetch + SDK select + R1a membership -----
+
+    @pytest.mark.asyncio
+    async def test_prefetch_dedups_candidates_by_canonical_curie(self):
+        """Prefetch issues variant x {hybrid,text} searches and dedups by canonical
+        CURIE, keeping the highest score."""
+        async def fake_call(tool, params):
+            st = params["search_text"]
+            # Same node surfaces from every variant/tool, with varying score + casing.
+            score = 1.5 if tool == "hybrid_search" else 0.9
+            return {"isError": False, "content": [{"text": json.dumps({
+                st: [{"id": "chebi:17234", "name": "D-glucose",
+                      "categories": ["biolink:ChemicalEntity"], "score": score}]
+            })}]}
+
+        with patch.object(entity_resolution, "call_kestrel_tool", side_effect=fake_call):
+            cands = await entity_resolution.prefetch_resolution_candidates("glucose")
+
+        assert len(cands) == 1                      # deduped despite multiple calls
+        assert cands[0]["curie"] == "chebi:17234"
+        assert cands[0]["score"] == 1.5             # best score kept
+
+    @pytest.mark.asyncio
+    async def test_resolve_selects_from_candidates_and_surfaces_candidate_fields(self):
+        """Happy path: SDK selects a candidate CURIE; we surface the CANDIDATE's
+        curie/name/category (not the model's emitted strings)."""
+        candidates = [{"curie": "CHEBI:17234", "name": "D-glucose",
+                       "category": "biolink:ChemicalEntity", "score": 1.4}]
+
+        async def fake_query(prompt, options, node_name):
+            # Model echoes a slightly different-cased curie + no name/category.
+            return ('{"curie": "chebi:17234", "confidence": 0.95}', None)
+
+        with patch.object(entity_resolution, "prefetch_resolution_candidates",
+                          return_value=candidates), \
+                patch.object(entity_resolution, "HAS_SDK", True), \
+                patch.object(entity_resolution, "query_with_usage", fake_query):
+            resolution, _ = await entity_resolution.resolve_single_entity("glucose")
+
+        assert resolution.curie == "CHEBI:17234"          # candidate's canonical-cased curie
+        assert resolution.resolved_name == "D-glucose"    # candidate's name, not model's
+        assert resolution.method == "exact"
+
+    @pytest.mark.asyncio
+    async def test_resolve_no_candidates_fails_without_sdk_call(self):
+        """Empty candidate set → method='failed' and the SDK is never invoked."""
+        sdk_called = {"n": 0}
+
+        async def spy_query(prompt, options, node_name):
+            sdk_called["n"] += 1
+            return ("{}", None)
+
+        with patch.object(entity_resolution, "prefetch_resolution_candidates",
+                          return_value=[]), \
+                patch.object(entity_resolution, "HAS_SDK", True), \
+                patch.object(entity_resolution, "query_with_usage", spy_query):
+            resolution, _ = await entity_resolution.resolve_single_entity("nonsense")
+
+        assert resolution.method == "failed"
+        assert resolution.curie is None
+        assert sdk_called["n"] == 0
+
+    @pytest.mark.asyncio
+    async def test_resolve_rejects_out_of_candidate_curie_r1a(self):
+        """R1a: a model-emitted CURIE NOT in the candidate set is rejected → failed,
+        never surfaced as a resolved fact."""
+        candidates = [{"curie": "CHEBI:17234", "name": "D-glucose",
+                       "category": "biolink:ChemicalEntity", "score": 1.4}]
+
+        async def fake_query(prompt, options, node_name):
+            # Plausible training-data CURIE that was never a candidate.
+            return ('{"curie": "CHEBI:99999", "confidence": 0.97}', None)
+
+        with patch.object(entity_resolution, "prefetch_resolution_candidates",
+                          return_value=candidates), \
+                patch.object(entity_resolution, "HAS_SDK", True), \
+                patch.object(entity_resolution, "query_with_usage", fake_query):
+            resolution, _ = await entity_resolution.resolve_single_entity("glucose")
+
+        assert resolution.method == "failed"
+        assert resolution.curie is None  # hallucinated CURIE rejected
+
+    @pytest.mark.asyncio
+    async def test_resolve_transport_failure_fails(self):
+        """Prefetch transport failure (all variant queries error) → no candidates →
+        method='failed', never a false resolution."""
+        async def boom(tool, params):
+            raise RuntimeError("connection refused")
+
+        with patch.object(entity_resolution, "call_kestrel_tool", side_effect=boom), \
+                patch.object(entity_resolution, "HAS_SDK", True):
+            resolution, _ = await entity_resolution.resolve_single_entity("glucose")
+
+        assert resolution.method == "failed"
+        assert resolution.curie is None
+
 
 # =============================================================================
 # Phase 1 Tests: Synthesis Node
@@ -237,15 +334,6 @@ class TestTriageNode:
         assert triage.classify_by_edge_count(0) == "cold_start"
 
     @pytest.mark.asyncio
-    async def test_parse_edge_count_result(self):
-        """Test JSON parsing from edge count response."""
-        json_response = '{"curie": "CHEBI:17234", "edge_count": 250}'
-        result = triage.parse_edge_count_result("CHEBI:17234", "glucose", json_response)
-        assert result.curie == "CHEBI:17234"
-        assert result.edge_count == 250
-        assert result.classification == "well_characterized"
-
-    @pytest.mark.asyncio
     async def test_empty_resolved_entities(self):
         """Empty resolved entities should return empty scores."""
         state: DiscoveryState = {"resolved_entities": []}
@@ -270,8 +358,12 @@ class TestTriageNode:
         assert "unknown_entity" in result["cold_start_curies"]
 
     @pytest.mark.asyncio
-    async def test_triage_with_mocked_sdk(self):
-        """Test full triage with mocked edge counting."""
+    async def test_triage_with_mocked_tier1(self):
+        """Test full triage with mocked Tier-1 HTTP edge counting (#61).
+
+        Triage is now HTTP-only (count_edges_via_api); the SDK Tier-2 fallback
+        was removed. Mock the Tier-1 path directly.
+        """
         mock_score = NoveltyScore(
             curie="CHEBI:17234",
             raw_name="glucose",
@@ -279,7 +371,7 @@ class TestTriageNode:
             classification="well_characterized",
         )
 
-        with patch.object(triage, 'count_edges_single', return_value=(mock_score, None)):
+        with patch.object(triage, 'count_edges_via_api', return_value=mock_score):
             state: DiscoveryState = {
                 "resolved_entities": [
                     EntityResolution(
@@ -295,6 +387,55 @@ class TestTriageNode:
             result = await triage.run(state)
             assert len(result["novelty_scores"]) == 1
             assert "CHEBI:17234" in result["well_characterized_curies"]
+
+    @pytest.mark.asyncio
+    async def test_tier1_transient_failure_recovered_by_retry(self):
+        """#61: a transient per-call failure (isError) is recovered by the single
+        in-place retry — the entity keeps its real count, no cold_start reroute."""
+        ok_payload = {
+            "isError": False,
+            "content": [{"text": '{"results_count": 300}'}],
+        }
+        err_payload = {"isError": True, "content": []}
+        calls = {"n": 0}
+
+        async def flaky_call(tool_name, params):
+            calls["n"] += 1
+            return err_payload if calls["n"] == 1 else ok_payload
+
+        entity = EntityResolution(
+            raw_name="glucose", curie="CHEBI:17234", resolved_name="D-glucose",
+            category="biolink:ChemicalEntity", confidence=0.95, method="exact",
+        )
+        with patch.object(triage, "call_kestrel_tool", side_effect=flaky_call):
+            score = await triage.count_edges_via_api(entity)
+
+        assert calls["n"] == 2  # retried once
+        assert score is not None
+        assert score.edge_count == 300
+        assert score.classification == "well_characterized"
+
+    @pytest.mark.asyncio
+    async def test_tier1_persistent_failure_routes_to_cold_start(self):
+        """#61: a count that fails even after the retry → None → the entity
+        defaults to cold_start in run(), never an SDK-guessed number."""
+        async def always_error(tool_name, params):
+            return {"isError": True, "content": []}
+
+        entity = EntityResolution(
+            raw_name="glucose", curie="CHEBI:17234", resolved_name="D-glucose",
+            category="biolink:ChemicalEntity", confidence=0.95, method="exact",
+        )
+        with patch.object(triage, "call_kestrel_tool", side_effect=always_error):
+            score = await triage.count_edges_via_api(entity)
+            assert score is None  # both attempts failed
+
+            state: DiscoveryState = {"resolved_entities": [entity]}
+            result = await triage.run(state)
+
+        # Failed count defaults the entity to cold_start (documented reroute)
+        assert "CHEBI:17234" in result["cold_start_curies"]
+        assert "CHEBI:17234" not in result["well_characterized_curies"]
 
 
 # =============================================================================
@@ -440,17 +581,30 @@ class TestDirectKGNode:
         assert findings == []
 
     @pytest.mark.asyncio
-    async def test_direct_kg_with_sdk_unavailable(self):
-        """Test graceful handling when SDK is not available."""
-        with patch.object(direct_kg, 'HAS_SDK', False):
-            state: DiscoveryState = {
-                "well_characterized_curies": ["CHEBI:17234"],
-                "moderate_curies": [],
-                "novelty_scores": [NoveltyScore(curie="CHEBI:17234", raw_name="glucose", edge_count=300, classification="well_characterized")],
-            }
+    async def test_tier1_failure_yields_no_findings(self):
+        """#61: when Tier-1 HTTP fails (returns None), the entity yields NO direct_kg
+        findings — honest no-findings, not a fabricated SDK fallback.
+
+        Replaces the old SDK-unavailable 'pending stub' behavior: the broken stdio
+        MCP Tier-2 fallback has been removed. analyze_via_api returns None only on
+        total failure, so there is nothing honest left to do but contribute no
+        findings for that entity.
+        """
+        async def fake_analyze_via_api(curie, raw_name):
+            return None  # simulate total Tier-1 failure
+
+        state: DiscoveryState = {
+            "well_characterized_curies": ["CHEBI:17234"],
+            "moderate_curies": [],
+            "novelty_scores": [NoveltyScore(curie="CHEBI:17234", raw_name="glucose", edge_count=300, classification="well_characterized")],
+        }
+        with patch.object(direct_kg, "analyze_via_api", fake_analyze_via_api):
             result = await direct_kg.run(state)
-            assert len(result["direct_findings"]) == 1
-            assert "SDK unavailable" in result["direct_findings"][0].claim
+
+        # No fabricated associations for the failed entity
+        assert result["direct_findings"] == []
+        assert result["disease_associations"] == []
+        assert result["pathway_memberships"] == []
 
 
 # =============================================================================
@@ -1149,6 +1303,36 @@ class TestIntegrationNode:
         assert len(gaps) == 0
         assert len(errors) > 0
 
+    def test_parse_integration_result_nulls_model_gap_curie(self):
+        """R1b (#61): a model-emitted gap CURIE is nulled, never surfaced as a KG fact.
+
+        Gaps are "expected but absent" — a CURIE the model emits is ungrounded
+        training-data recall. It must be dropped at construction so synthesis can
+        never render it indistinguishably from a real KG CURIE. The gap is still
+        conveyed by name/category/expected_reason.
+        """
+        json_response = '''
+        {
+            "bridges": [],
+            "gaps": [
+                {
+                    "name": "BCAAs",
+                    "category": "biolink:ChemicalEntity",
+                    "curie": "CHEBI:22918",
+                    "expected_reason": "Canonical early markers of T2D conversion",
+                    "absence_interpretation": "Not measured in cohort",
+                    "is_informative": true
+                }
+            ]
+        }
+        '''
+        bridges, gaps, errors = integration.parse_integration_result(json_response)
+
+        assert len(gaps) == 1
+        assert gaps[0].curie is None  # model-emitted CHEBI:22918 must be dropped
+        assert gaps[0].name == "BCAAs"  # gap still conveyed by name
+        assert len(errors) == 0
+
     def test_summarize_diseases(self):
         """Test disease summary generation for prompt."""
         diseases = [
@@ -1244,6 +1428,44 @@ class TestTemporalNode:
         result = await temporal.run(state)
         assert result["temporal_classifications"] == []
         assert "No findings available" in result["errors"][0]
+
+    @pytest.mark.asyncio
+    async def test_sdk_options_have_no_mcp_tools(self):
+        """Temporal builds SDK options with allowed_tools=[] and no mcp_servers (#61).
+
+        The stdio MCP never launched; the migration must remove the doomed-spawn
+        config while still producing classifications.
+        """
+        captured: dict = {}
+
+        def fake_options(**kwargs):
+            captured.update(kwargs)
+            return object()
+
+        async def fake_query(prompt, options, node_name):
+            return ('{"classifications": []}', None)
+
+        state: DiscoveryState = {
+            "is_longitudinal": True,
+            "duration_years": 5,
+            "disease_associations": [
+                DiseaseAssociation(
+                    entity_curie="CHEBI:17234",
+                    disease_curie="MONDO:0005148",
+                    disease_name="Type 2 Diabetes",
+                    predicate="biolink:related_to",
+                    source="test",
+                )
+            ],
+        }
+        with patch.object(temporal, "HAS_SDK", True), \
+                patch.object(temporal, "ClaudeAgentOptions", fake_options), \
+                patch.object(temporal, "query_with_usage", fake_query):
+            result = await temporal.run(state)
+
+        assert captured.get("allowed_tools") == []
+        assert "mcp_servers" not in captured
+        assert "temporal_classifications" in result
 
     def test_parse_temporal_result_valid_json(self):
         """Parse valid temporal classification JSON."""
@@ -1591,10 +1813,7 @@ class TestIntegration:
     @pytest.mark.asyncio
     async def test_direct_kg_with_real_api(self):
         """Test direct_kg with actual Kestrel API calls."""
-        # Skip if SDK not available
-        if not direct_kg.HAS_SDK:
-            pytest.skip("Claude Agent SDK not available")
-
+        # direct_kg is HTTP-only (Tier-1 Kestrel API); no SDK dependency (#61)
         state: DiscoveryState = {
             "well_characterized_curies": ["CHEBI:17234"],  # glucose
             "moderate_curies": [],

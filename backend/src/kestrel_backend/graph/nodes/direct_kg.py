@@ -31,7 +31,6 @@ from ...kestrel_client import call_kestrel_tool, multi_hop_query
 from ..state import (
     DiscoveryState, Finding, DiseaseAssociation, PathwayMembership, NoveltyScore
 )
-from ..sdk_utils import HAS_SDK, query_with_usage, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
 from ..pipeline_config import get_pipeline_config
 from ..state_contracts import validate_state, DirectKGInput, DirectKGOutput
 
@@ -46,50 +45,11 @@ _config = get_pipeline_config().direct_kg
 # Ranking presets to use (Kestrel API supports these)
 PRESETS = ["established", "hidden_gems"]
 
-# Semaphore to limit concurrent SDK calls (Tier 2 only)
-SDK_SEMAPHORE = asyncio.Semaphore(_config.sdk_semaphore)
-
 # Semaphore bounding the new multi-hop fan-out against the shared Kestrel server
 # (Tier-1 one-hop calls use a bare gather with no cap; the demo-slice multi-hop calls
 # must not saturate the connection pool — see plan RC6). Uses a dedicated config value so
 # it stays independent of batch_size (which controls Tier-2 SDK batching).
 MULTI_HOP_SEMAPHORE = asyncio.Semaphore(_config.multi_hop_semaphore)
-
-# System prompt for direct KG analysis (Tier 2 LLM fallback)
-DIRECT_KG_PROMPT = """You are a biomedical knowledge graph analyst. For the given entity (CURIE),
-use one_hop_query to retrieve and analyze its relationships.
-
-Query for THREE types of associations:
-1. Disease associations - use one_hop_query with end_category filter for biolink:Disease
-2. Pathway/biological process - filter for biolink:Pathway or biolink:BiologicalProcess
-3. Protein interactions (for genes) - filter for biolink:Protein or biolink:Gene
-
-For each association found, extract:
-- The predicate type (e.g., biolink:treats, biolink:gene_associated_with_condition)
-- The source database from edge provenance if available
-- Any PMIDs in the edge data
-
-CRITICAL: If a neighbor has very high connectivity (mentioned as having many edges or
-appearing frequently), flag it as a potential hub. Hub nodes create spurious associations.
-
-Return ONLY a valid JSON object (no other text):
-{
-  "diseases": [
-    {"curie": "MONDO:...", "name": "...", "predicate": "...", "source": "...", "pmids": [], "is_hub": false}
-  ],
-  "pathways": [
-    {"curie": "GO:...", "name": "...", "predicate": "...", "source": "..."}
-  ],
-  "interactions": [
-    {"curie": "...", "name": "...", "predicate": "..."}
-  ],
-  "hub_flags": ["CURIE1", "CURIE2"]
-}
-
-If the query returns no results or fails, return:
-{"diseases": [], "pathways": [], "interactions": [], "hub_flags": []}
-"""
-
 
 # =============================================================================
 # Deduplication and Merging Helpers
@@ -533,84 +493,6 @@ def parse_direct_kg_result(
     return diseases, pathways, findings, hub_flags
 
 
-async def analyze_single_entity(
-    curie: str,
-    raw_name: str
-) -> tuple[list[DiseaseAssociation], list[PathwayMembership], list[Finding], list[str], list[str], Any]:
-    """
-    Tier 2: Analyze a single entity using Claude Agent SDK with LLM reasoning.
-
-    This is the fallback path when Tier 1 API calls fail.
-
-    Returns:
-        tuple of (diseases, pathways, findings, hub_flags, errors, ModelUsageRecord | None)
-    """
-    if not HAS_SDK:
-        return (
-            [],
-            [],
-            [Finding(
-                entity=curie,
-                claim=f"Direct KG analysis pending for {raw_name} (SDK unavailable)",
-                tier=1,
-                source="direct_kg",
-                confidence="low",
-            )],
-            [],
-            [],
-            None,
-        )
-
-    try:
-        async with SDK_SEMAPHORE:
-            kestrel_config = get_kestrel_mcp_config()
-
-            options = ClaudeAgentOptions(
-                system_prompt=DIRECT_KG_PROMPT,
-                allowed_tools=[
-                    "mcp__kestrel__one_hop_query",
-                    "mcp__kestrel__get_nodes",
-                    "mcp__kestrel__get_edges",
-                ],
-                mcp_servers={"kestrel": kestrel_config},
-                max_turns=4,
-                permission_mode="bypassPermissions",
-                max_buffer_size=10 * 1024 * 1024,
-            )
-
-            result_text, usage_record = await query_with_usage(
-                prompt=f"Analyze entity: {raw_name} ({curie})",
-                options=options,
-                node_name="direct_kg",
-            )
-        diseases, pathways, findings, hub_flags = parse_direct_kg_result(curie, raw_name, result_text)
-
-        logger.info(
-            "Tier 2 direct_kg '%s': diseases=%d, pathways=%d, findings=%d",
-            curie, len(diseases), len(pathways), len(findings)
-        )
-
-        return diseases, pathways, findings, hub_flags, [], usage_record
-
-    except Exception as e:
-        error_msg = f"Tier 2 direct_kg failed for {curie}: {str(e)}"
-        logger.error(error_msg)
-        return (
-            [],
-            [],
-            [Finding(
-                entity=curie,
-                claim=f"Analysis failed for {raw_name}: {str(e)[:100]}",
-                tier=1,
-                source="direct_kg",
-                confidence="low",
-            )],
-            [],
-            [error_msg],
-            None,
-        )
-
-
 # =============================================================================
 # Helper Functions
 # =============================================================================
@@ -805,42 +687,28 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     logger.info("Tier 1 (API) analyzed %d/%d unique entities in %.1fs",
                 tier1_success, len(unique_curies), tier1_duration)
 
-    # ========== TIER 2: LLM Fallback ==========
-    model_usages = []
-    if tier2_needed_curies and HAS_SDK:
-        tier2_start = time.time()
-        logger.info("Tier 2 (LLM): Processing %d unique entities that failed Tier 1",
-                    len(tier2_needed_curies))
+    # ========== TIER 2 removed — honest no-findings (#61) ==========
+    # The Tier-2 LLM fallback configured the broken stdio MCP (uvx mcp-client-kestrel,
+    # not on PyPI), so its tools never registered and it could only emit associations
+    # not grounded in the KG. analyze_via_api returns None only on a *total* failure
+    # (per-call errors are swallowed with `continue`), so a fresh one_hop_query would
+    # re-fail the same endpoint with the same args. Entities whose Tier 1 failed now
+    # honestly yield NO direct_kg findings rather than hallucinated ones; they remain
+    # None in all_results. (A transient-failure prefetch is a post-deploy follow-on if
+    # logs ever justify it — out of scope here.)
+    model_usages: list = []
+    if tier2_needed_curies:
         for curie in tier2_needed_curies:
             logger.info(
-                "FALLBACK_EVENT node=direct_kg entity=%s reason=tier1_api_failed tier=2",
+                "FALLBACK_EVENT node=direct_kg entity=%s reason=tier1_api_failed "
+                "action=no_findings tier=2_dropped",
                 curie,
             )
-
-        for batch in chunk(tier2_needed_curies, _config.batch_size):
-            batch_tasks = []
-            for curie in batch:
-                raw_name = get_raw_name_for_curie(curie, novelty_scores, resolved_entities)
-                batch_tasks.append(analyze_single_entity(curie, raw_name))
-
-            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-
-            for curie, result in zip(batch, batch_results):
-                indices = curie_to_indices[curie]
-                if isinstance(result, Exception):
-                    errors.append(f"Tier 2 failed for {curie}: {str(result)}")
-                elif result is not None:
-                    # Extract usage record from the 6th element of the tuple
-                    usage_record = result[5] if len(result) > 5 else None
-                    # Pass the 5-element tuple (without usage) to all_results
-                    result_without_usage = result[:5]
-                    for idx in indices:
-                        all_results[idx] = result_without_usage
-                    if usage_record is not None:
-                        model_usages.append(usage_record)
-
-        tier2_duration = time.time() - tier2_start
-        logger.info("Tier 2 (LLM) completed in %.1fs", tier2_duration)
+        logger.info(
+            "Tier 1 failed for %d/%d unique entities; yielding no direct_kg findings "
+            "for them (honest no-findings, #61)",
+            len(tier2_needed_curies), len(unique_curies),
+        )
 
     # Aggregate results
     all_diseases: list[DiseaseAssociation] = []

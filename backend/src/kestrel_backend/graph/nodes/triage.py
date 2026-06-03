@@ -24,35 +24,14 @@ to route entities to the appropriate analysis branches (direct_kg or cold_start)
 import asyncio
 import json
 import logging
-import re
 import time
 from typing import Any
 
 from ...kestrel_client import call_kestrel_tool
 from ..state import DiscoveryState, NoveltyScore, EntityResolution
-from ..sdk_utils import HAS_SDK, query_with_usage, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS
-from ..pipeline_config import get_pipeline_config
 from ..state_contracts import validate_state, TriageInput, TriageOutput
 
 logger = logging.getLogger(__name__)
-
-_config = get_pipeline_config().triage
-
-# Semaphore to serialize SDK calls and prevent concurrent CLI spawn issues
-SDK_SEMAPHORE = asyncio.Semaphore(_config.sdk_semaphore)
-
-# Concise prompt for edge counting
-EDGE_COUNT_PROMPT = """You are a knowledge graph edge counter.
-Given a CURIE, use one_hop_query to retrieve its neighbors.
-Count the total number of edges (relationships) returned.
-
-Return ONLY a valid JSON object with this exact structure (no other text):
-{"curie": "PREFIX:ID", "edge_count": N}
-
-If the query fails or returns no results, return:
-{"curie": "PREFIX:ID", "edge_count": 0}
-
-Be extremely concise. No explanations."""
 
 
 # Classification thresholds
@@ -66,12 +45,19 @@ async def count_edges_via_api(entity: EntityResolution) -> NoveltyScore | None:
     Tier 1: Count edges via direct Kestrel API call.
 
     Uses one_hop_query with mode="preview" which returns results_count (edge count).
-    Returns None if API fails (triggering Tier 2 fallback).
+    Returns None if the count fails (the caller then defaults the entity to
+    cold_start).
+
+    A single in-place retry covers genuinely *time-varying* failures (server
+    ``isError`` / exception) so a transient hiccup does not silently downgrade a
+    well-characterized entity to cold_start (#61). *Deterministic* per-CURIE
+    failures (empty content, unparseable JSON) are NOT retried — an identical-args
+    retry would re-fail — and fall to the cold_start default by returning None.
     """
     curie = entity.curie
     raw_name = entity.raw_name
 
-    # Skip entities that failed resolution
+    # Skip entities that failed resolution (deterministic — no query, no retry)
     if not curie or entity.method == "failed":
         return NoveltyScore(
             curie=curie or raw_name,
@@ -80,50 +66,69 @@ async def count_edges_via_api(entity: EntityResolution) -> NoveltyScore | None:
             classification="cold_start",
         )
 
-    try:
-        # Call one_hop_query with preview mode - returns counts instead of full data
-        result = await call_kestrel_tool("one_hop_query", {
-            "start_node_ids": curie,
-            "mode": "preview",
-            "direction": "both",
-            "limit": 10000,  # High limit to get accurate count
-        })
-
-        is_error = result.get("isError", False)
-        content = result.get("content", [])
-
-        if is_error or not content:
-            logger.debug("Tier 1 triage '%s': API error or no content", curie)
-            return None
-
-        # Parse response
-        text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
-
+    max_attempts = 2  # one retry, for transient failures only
+    for attempt in range(max_attempts):
         try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            logger.debug("Tier 1 triage '%s': Could not parse JSON", curie)
-            return None
+            # Call one_hop_query with preview mode - returns counts instead of full data
+            result = await call_kestrel_tool("one_hop_query", {
+                "start_node_ids": curie,
+                "mode": "preview",
+                "direction": "both",
+                "limit": 10000,  # High limit to get accurate count
+            })
 
-        # results_count is the edge count
-        edge_count = int(data.get("results_count", 0))
-        classification = classify_by_edge_count(edge_count)
+            is_error = result.get("isError", False)
+            content = result.get("content", [])
 
-        logger.info(
-            "Tier 1 triage '%s': edges=%d, classification=%s",
-            curie, edge_count, classification
-        )
+            if is_error:
+                # Transient server-side error — retry once, then give up.
+                logger.debug(
+                    "Tier 1 triage '%s': API isError (attempt %d/%d)",
+                    curie, attempt + 1, max_attempts,
+                )
+                continue
 
-        return NoveltyScore(
-            curie=curie,
-            raw_name=raw_name,
-            edge_count=edge_count,
-            classification=classification,
-        )
+            if not content:
+                # Deterministic empty response for this CURIE — do not retry.
+                logger.debug("Tier 1 triage '%s': no content", curie)
+                return None
 
-    except Exception as e:
-        logger.warning("Tier 1 triage '%s': Exception - %s", curie, str(e))
-        return None
+            # Parse response
+            text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
+
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                # Deterministic malformed response — do not retry.
+                logger.debug("Tier 1 triage '%s': Could not parse JSON", curie)
+                return None
+
+            # results_count is the edge count
+            edge_count = int(data.get("results_count", 0))
+            classification = classify_by_edge_count(edge_count)
+
+            logger.info(
+                "Tier 1 triage '%s': edges=%d, classification=%s",
+                curie, edge_count, classification
+            )
+
+            return NoveltyScore(
+                curie=curie,
+                raw_name=raw_name,
+                edge_count=edge_count,
+                classification=classification,
+            )
+
+        except Exception as e:
+            # Transient (timeout / connection) — retry once, then give up.
+            logger.warning(
+                "Tier 1 triage '%s': Exception (attempt %d/%d) - %s",
+                curie, attempt + 1, max_attempts, str(e),
+            )
+            continue
+
+    # All attempts exhausted on transient failures → cold_start default (None).
+    return None
 
 
 def classify_by_edge_count(edge_count: int) -> str:
@@ -138,108 +143,16 @@ def classify_by_edge_count(edge_count: int) -> str:
         return "cold_start"
 
 
-def parse_edge_count_result(curie: str, raw_name: str, result_text: str) -> NoveltyScore:
-    """Parse LLM response into NoveltyScore object."""
-    try:
-        # Try to extract JSON from the response
-        json_match = re.search(r"\{[^{}]+\}", result_text)
-        if json_match:
-            data = json.loads(json_match.group())
-            edge_count = int(data.get("edge_count", 0))
-            return NoveltyScore(
-                curie=curie,
-                raw_name=raw_name,
-                edge_count=edge_count,
-                classification=classify_by_edge_count(edge_count),
-            )
-    except (json.JSONDecodeError, ValueError, TypeError):
-        pass
-
-    # Fallback for parse failures - treat as cold_start
-    return NoveltyScore(
-        curie=curie,
-        raw_name=raw_name,
-        edge_count=0,
-        classification="cold_start",
-    )
-
-
-async def count_edges_single(entity: EntityResolution) -> tuple[NoveltyScore, Any]:
-    """
-    Count edges for a single resolved entity using Claude Agent SDK.
-
-    Returns tuple of (NoveltyScore, ModelUsageRecord | None).
-    NoveltyScore has edge_count=0 (cold_start) on any error.
-    """
-    curie = entity.curie
-    raw_name = entity.raw_name
-
-    # Skip entities that failed resolution
-    if not curie or entity.method == "failed":
-        return (NoveltyScore(
-            curie=curie or raw_name,
-            raw_name=raw_name,
-            edge_count=0,
-            classification="cold_start",
-        ), None)
-
-    if not HAS_SDK:
-        # SDK not available - return mock for testing
-        return (NoveltyScore(
-            curie=curie,
-            raw_name=raw_name,
-            edge_count=0,
-            classification="cold_start",
-        ), None)
-
-    try:
-        async with SDK_SEMAPHORE:
-            kestrel_config = get_kestrel_mcp_config()
-
-            options = ClaudeAgentOptions(
-                system_prompt=EDGE_COUNT_PROMPT,
-                allowed_tools=[
-                    "mcp__kestrel__one_hop_query",
-                    "mcp__kestrel__get_nodes",
-                ],
-                mcp_servers={"kestrel": kestrel_config},
-                max_turns=2,
-                permission_mode="bypassPermissions",
-                max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for large KG responses
-            )
-
-            result_text, usage_record = await query_with_usage(
-                prompt=f"Count edges for: {curie}",
-                options=options,
-                node_name="triage",
-            )
-
-        # Debug logging for triage edge counting
-        if not result_text:
-            logger.warning("Triage got empty result_text for %s", curie)
-        else:
-            logger.debug("Triage result for %s: %s", curie, result_text[:200] if len(result_text) > 200 else result_text)
-
-        return parse_edge_count_result(curie, raw_name, result_text), usage_record
-
-    except Exception as e:
-        logger.warning("Edge counting failed for %s: %s", curie, str(e))
-        return (NoveltyScore(
-            curie=curie,
-            raw_name=raw_name,
-            edge_count=0,
-            classification="cold_start",
-        ), None)
-
-
-
 @validate_state(TriageInput, TriageOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
-    Triage resolved entities by KG connectivity using two-tier approach.
+    Triage resolved entities by KG connectivity using Tier-1 HTTP only (#61).
 
-    Tier 1 (API): Direct one_hop_query with mode="preview" for all entities
-    Tier 2 (LLM): Falls back to Claude Agent SDK for any failures
+    Tier 1 (API): Direct one_hop_query with mode="preview" for all entities,
+      with a single in-place retry for transient isError/exception failures.
+      Deterministic failures (empty content, bad JSON) are not retried.
+      Entities whose count still fails after the retry default to cold_start
+      (the broken stdio-MCP Tier-2 LLM fallback was removed).
 
     Returns:
         novelty_scores: List of NoveltyScore objects
@@ -300,61 +213,28 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         tier1_success, len(valid_entities), tier1_duration
     )
 
-    # ========== TIER 2: LLM Edge Counting ==========
+    # ========== Tier 2 removed — failed counts default to cold_start (#61) ==========
+    # The Tier-2 LLM edge-counting fallback configured the broken stdio MCP, so with
+    # no working tools it could only guess a number. count_edges_via_api now retries
+    # once on *transient* failures (server isError / exception); any entity that still
+    # failed (None) is left unset here and backfilled to cold_start by the no-None
+    # block below — never an SDK-guessed count.
+    #
+    # NOTE (honest reroute): classify_by_edge_count has no 'unknown' bucket, so a count
+    # that fails even after the retry → edge_count=0 → cold_start, and route_after_triage
+    # sends it to the cold-start analogue branch instead of direct_kg. A genuinely
+    # well-characterized entity whose count failed is therefore downgraded. This is
+    # PRE-EXISTING behavior (the prior default was already cold_start); the migration
+    # does not worsen it, it just reaches the same default without a fabricated number.
     model_usages: list = []
-    if tier1_failed_indices and HAS_SDK:
-        tier2_start = time.time()
-        failed_entities = [valid_entities[i] for i in tier1_failed_indices]
-        logger.info(
-            "Tier 2 (LLM): Processing %d entities that failed Tier 1",
-            len(failed_entities)
-        )
+    if tier1_failed_indices:
         for idx in tier1_failed_indices:
             entity = valid_entities[idx]
             logger.info(
-                "FALLBACK_EVENT node=triage entity=%s curie=%s reason=tier1_edge_count_failed tier=2",
-                entity.raw_name if hasattr(entity, 'raw_name') else str(entity),
-                entity.curie if hasattr(entity, 'curie') else 'unknown',
-            )
-
-        tier2_results = []
-        for batch in chunk(failed_entities, _config.batch_size):
-            batch_results = await asyncio.gather(
-                *[count_edges_single(e) for e in batch],
-                return_exceptions=True,
-            )
-            tier2_results.extend(batch_results)
-
-        # Map results back
-        for idx, result in zip(tier1_failed_indices, tier2_results):
-            if isinstance(result, Exception):
-                errors.append(f"Edge counting failed for {valid_entities[idx].curie}: {str(result)}")
-                all_scores[idx] = NoveltyScore(
-                    curie=valid_entities[idx].curie or valid_entities[idx].raw_name,
-                    raw_name=valid_entities[idx].raw_name,
-                    edge_count=0,
-                    classification="cold_start",
-                )
-            else:
-                score, usage_record = result
-                all_scores[idx] = score
-                if usage_record is not None:
-                    model_usages.append(usage_record)
-
-        tier2_duration = time.time() - tier2_start
-        tier2_success = sum(1 for i in tier1_failed_indices if all_scores[i] and all_scores[i].edge_count > 0)
-        logger.info(
-            "Tier 2 (LLM) counted edges for %d/%d entities in %.1fs",
-            tier2_success, len(tier1_failed_indices), tier2_duration
-        )
-    elif tier1_failed_indices:
-        # SDK not available - mark remaining as cold_start
-        for idx in tier1_failed_indices:
-            all_scores[idx] = NoveltyScore(
-                curie=valid_entities[idx].curie or valid_entities[idx].raw_name,
-                raw_name=valid_entities[idx].raw_name,
-                edge_count=0,
-                classification="cold_start",
+                "FALLBACK_EVENT node=triage entity=%s curie=%s "
+                "reason=tier1_edge_count_failed action=default_cold_start tier=2_dropped",
+                getattr(entity, "raw_name", str(entity)),
+                getattr(entity, "curie", "unknown"),
             )
 
     # Ensure no None values

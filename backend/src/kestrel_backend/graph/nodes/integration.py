@@ -27,7 +27,7 @@ from ..state import (
     EntityResolution
 )
 from ...kestrel_client import multi_hop_query, call_kestrel_tool
-from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS, query_with_usage
+from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
 from ..state_contracts import validate_state, IntegrationInput, IntegrationOutput
 from ..pipeline_config import get_pipeline_config
 
@@ -515,7 +515,13 @@ def parse_integration_result(
             gaps.append(GapEntity(
                 name=g.get("name", "Unknown"),
                 category=g.get("category", "biolink:NamedThing"),
-                curie=g.get("curie"),
+                # R1b (#61): NEVER surface a model-authored CURIE as a KG fact.
+                # Gaps are "expected but ABSENT" — the model's `curie` is
+                # ungrounded training-data recall, yet synthesis renders it as a
+                # backtick CURIE indistinguishable from a real one. Null it at
+                # construction (GapEntity is frozen, so this can't be a later
+                # mutation). The gap is conveyed by name/category/expected_reason.
+                curie=None,
                 expected_reason=g.get("expected_reason", ""),
                 absence_interpretation=g.get(
                     "absence_interpretation",
@@ -631,9 +637,6 @@ Analyze these findings to identify cross-type bridges and expected-but-absent en
         # Phase B: Gap analysis using LLM (reasoning-intensive)
         logger.info("Starting LLM-based gap analysis...")
 
-        # Configure Kestrel MCP server (stdio-based, same as entity_resolution)
-        kestrel_config = get_kestrel_mcp_config()
-
         # Updated prompt focused on gap analysis only
         gap_analysis_prompt = f"""{INTEGRATION_PROMPT}
 
@@ -677,13 +680,12 @@ Return ONLY a valid JSON object:
 If no gaps found, return: {{"gaps": []}}
 """
 
+        # Gap analysis reasons over the in-prompt findings only — no KG tools (#61).
+        # The stdio MCP never launched, so these tools never registered; gap
+        # analysis has only ever reasoned over the provided context. allowed_tools=[]
+        # removes the doomed spawn with no behavioral change. Bridges are HTTP (Phase A).
         options = ClaudeAgentOptions(
-            allowed_tools=[
-                "mcp__kestrel__one_hop_query",
-                "mcp__kestrel__hybrid_search",
-                "mcp__kestrel__get_nodes",
-            ],
-            mcp_servers={"kestrel": kestrel_config},
+            allowed_tools=[],
             max_turns=5,
             permission_mode="bypassPermissions",
         )

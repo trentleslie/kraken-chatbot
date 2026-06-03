@@ -23,14 +23,12 @@ try:
         SystemMessage,
         ToolUseBlock,
     )
-    from claude_agent_sdk.types import McpStdioServerConfig  # noqa: F401
     HAS_SDK = True
 except ImportError:
     HAS_SDK = False
     # Define stubs so importing code doesn't need conditional imports
     query = None  # type: ignore[assignment]
     ClaudeAgentOptions = None  # type: ignore[assignment,misc]
-    McpStdioServerConfig = None  # type: ignore[assignment,misc]
 
     # Sentinel classes so isinstance(event, X) returns False rather than raising
     # TypeError when the SDK is unavailable (issue #44 instrumentation).
@@ -46,23 +44,11 @@ except ImportError:
         pass
     ToolUseBlock = _ToolUseBlockStub  # type: ignore[assignment,misc]
 
-# Kestrel MCP server configuration constants
-KESTREL_COMMAND = "uvx"
-KESTREL_ARGS = ["mcp-client-kestrel"]
-
-
-def get_kestrel_mcp_config() -> Any:
-    """Create a McpStdioServerConfig for the Kestrel MCP server.
-
-    Returns the config object, or None if the SDK is not available.
-    """
-    if not HAS_SDK or McpStdioServerConfig is None:
-        return None
-    return McpStdioServerConfig(
-        type="stdio",
-        command=KESTREL_COMMAND,
-        args=KESTREL_ARGS,
-    )
+# NOTE (#61): the Kestrel *stdio* MCP config (get_kestrel_mcp_config, KESTREL_COMMAND,
+# KESTREL_ARGS, and the McpStdioServerConfig re-export) was removed. It pointed at
+# `uvx mcp-client-kestrel`, a package that does not exist on PyPI, so the subprocess
+# could never launch. All discovery-pipeline SDK nodes now use HTTP data-in-prompt
+# inference (allowed_tools=[]). Classic-mode agent.py keeps its own _get_kestrel_mcp_config.
 
 
 @dataclass(frozen=True)
