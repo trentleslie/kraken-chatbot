@@ -262,7 +262,8 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     duration = time.time() - start
     logger.info(
-        "Completed triage in %.1fs — well_char=%d, moderate=%d, sparse=%d, cold_start=%d (tier1=%d, tier2=%d)",
+        "Completed triage in %.1fs — well_char=%d, moderate=%d, sparse=%d, cold_start=%d "
+        "(tier1_ok=%d, tier1_failed=%d)",
         duration, len(well_characterized), len(moderate), len(sparse), len(cold_start),
         tier1_success, len(valid_entities) - tier1_success
     )

@@ -276,7 +276,11 @@ def _resolution_variants(entity: str) -> list[str]:
     add(entity)
     add(entity.replace("-", " "))   # de-hyphenated
     add(entity.replace("-", ""))    # hyphen-removed
-    add(re.sub(r"^[0-9A-Za-z]{1,3}-", "", entity))  # strip a leading "N-"/"16-"/"3-" prefix
+    # strip a leading "N-"/"16-"/"3-" prefix, but skip degenerate stubs (e.g. "IL-6" -> "6")
+    # that would just burn a result slot with noise — the raw name is always searched anyway.
+    stripped = re.sub(r"^[0-9A-Za-z]{1,3}-", "", entity)
+    if len(stripped) > 3:
+        add(stripped)
     if 2 <= len(entity) <= 6 and entity.isalnum():
         add(entity.upper())         # gene-symbol form
     return variants

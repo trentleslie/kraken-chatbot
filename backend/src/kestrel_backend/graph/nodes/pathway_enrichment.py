@@ -25,7 +25,7 @@ from ..state import (
 )
 from ...kestrel_client import multi_hop_query
 from .cold_start import get_entity_connections
-from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage, classify_mcp_degradation
+from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
 from ..pipeline_config import get_pipeline_config
 from ..state_contracts import validate_state, PathwayEnrichmentInput, PathwayEnrichmentOutput
 
@@ -535,27 +535,14 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         if parse_errors:
             logger.warning("pathway_enrichment parse errors: %s", parse_errors)
 
-        # Issue #44 (Stage 2): Phase B now uses data-in-prompt inference (allowed_tools=[]),
-        # so the MCP classifier is inert here (expected_tools=[] -> never degraded) and kept
-        # only as a safety net should MCP tools ever be reintroduced. The active protection
-        # against sparse-prompt re-hallucination is the prefetch no_data guard above.
-        verdict = classify_mcp_degradation(
-            expected_tools=[],
-            mcp_tool_calls=usage_record.mcp_tool_calls if usage_record else 0,
-            result_text=result_text,
-            available_tools=usage_record.available_tools if usage_record else None,
-        )
+        # Issue #44 (Stage 2): Phase B uses data-in-prompt inference (allowed_tools=[]),
+        # so there is no MCP tier left to degrade — the MCP-degradation classifier was
+        # removed here rather than left as inert/unreachable code. The active protection
+        # against sparse-prompt re-hallucination is the prefetch no_data guard above
+        # (see the _degraded_phase_b_result call at the prefetch stage). If MCP tools are
+        # ever reintroduced into Phase B, re-add classify_mcp_degradation(expected_tools=[...])
+        # plus the drop_findings_on_degraded branch here.
         phase_b_degraded = False
-        if verdict.degraded:
-            if _config.drop_findings_on_degraded:
-                return _degraded_phase_b_result(
-                    two_hop_findings, two_hop_errors, usage_record, f"mcp_{verdict.reason}"
-                )
-            phase_b_degraded = True  # flag for disclosure even though output is kept
-            logger.warning(
-                "pathway_enrichment degraded (reason=%s) but drop_findings_on_degraded=False — keeping output",
-                verdict.reason,
-            )
 
         # Create findings from top themes (SDK-derived — dropped on degradation)
         sdk_findings: list[Finding] = []
