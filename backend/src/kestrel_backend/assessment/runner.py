@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -164,6 +165,11 @@ async def run_assessment(
 
 async def main():
     """CLI entry point for assessment runner."""
+    # Disable Langfuse tracing for assessment runs so live assessments on a machine with
+    # LANGFUSE_* keys present do not flood the observability project with assessment traces.
+    # Must be set before get_settings() is first cached (i.e., before run_discovery runs).
+    os.environ["LANGFUSE_ENABLED"] = "false"
+
     parser = argparse.ArgumentParser(description="Run pipeline assessment")
     parser.add_argument("--queries", type=str, required=True, help="Path to queries.json")
     parser.add_argument("--mode", type=str, default="replay", choices=["live", "replay"],

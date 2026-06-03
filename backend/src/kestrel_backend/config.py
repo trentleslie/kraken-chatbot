@@ -48,6 +48,16 @@ def get_settings() -> Settings:
     """Load settings from environment, cached for performance."""
     load_dotenv()
 
+    # Reconcile Langfuse host: the v3 client (get_client()) reads LANGFUSE_HOST from the
+    # environment, but our config historically exposed LANGFUSE_BASE_URL. Without this,
+    # LANGFUSE_BASE_URL is dead config and the client falls back to the EU default host.
+    # If LANGFUSE_HOST is unset, derive it from LANGFUSE_BASE_URL (default: US cloud) so the
+    # correct region is always used. An explicitly set LANGFUSE_HOST always wins.
+    if not os.getenv("LANGFUSE_HOST"):
+        os.environ["LANGFUSE_HOST"] = os.getenv(
+            "LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com"
+        )
+
     origins_str = os.getenv("ALLOWED_ORIGINS", "https://kraken.expertintheloop.io")
     origins = [o.strip() for o in origins_str.split(",") if o.strip()]
 
