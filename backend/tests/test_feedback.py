@@ -1,5 +1,6 @@
 """Tests for user feedback functionality."""
 import pytest
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 from src.kestrel_backend.protocol import TraceMessage, PipelineCompleteMessage
 from src.kestrel_backend.database import record_feedback
@@ -54,3 +55,35 @@ async def test_record_feedback_without_db():
 
     # Should return None when database is not available
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_feedback_uses_v3_create_score(monkeypatch):
+    """The /api/feedback handler must score via Langfuse v3 create_score() — guards against
+    the regression where v2's removed .score() threw an AttributeError swallowed as a warning,
+    leaving scoring silently dead. A mock that auto-creates .score() would mask that bug, so
+    we assert create_score is the method actually called."""
+    from src.kestrel_backend import main
+
+    monkeypatch.setattr(main, "record_feedback", AsyncMock(return_value=uuid4()))
+    lf = MagicMock()
+    monkeypatch.setattr(main, "_get_pipeline_langfuse", lambda: lf)
+
+    class _Req:
+        async def json(self):
+            return {
+                "turn_id": str(uuid4()),
+                "conversation_id": str(uuid4()),
+                "feedback_type": "positive",
+                "trace_id": "trace-abc",
+            }
+
+    result = await main.submit_feedback(_Req(), auth={"user_id": "u1"})
+
+    assert result["status"] == "success"
+    lf.create_score.assert_called_once()
+    kwargs = lf.create_score.call_args.kwargs
+    assert kwargs["trace_id"] == "trace-abc"
+    assert kwargs["name"] == "user_feedback"
+    assert kwargs["value"] == 1  # positive -> 1
+    assert not lf.score.called  # must not call the removed v2 method
