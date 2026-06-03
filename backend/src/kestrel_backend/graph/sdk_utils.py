@@ -9,10 +9,43 @@ Semaphore definitions and fallback orchestration logic remain per-node
 """
 
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# Langfuse client (lazy, guarded) — mirrors agent.py:_get_langfuse(). Resolved once: a
+# disabled/keyless environment caches None so we never re-attempt get_client() per call.
+_langfuse = None
+_langfuse_resolved = False
+
+
+def _get_langfuse():
+    """Return a Langfuse v3 client if observability is enabled and keys are present, else None.
+
+    Observability must never break the pipeline, so any failure resolves to None.
+    """
+    global _langfuse, _langfuse_resolved
+    if _langfuse_resolved:
+        return _langfuse
+    _langfuse_resolved = True
+    try:
+        from ..config import get_settings
+
+        settings = get_settings()
+        if (
+            settings.langfuse_enabled
+            and settings.langfuse_public_key
+            and settings.langfuse_secret_key
+        ):
+            from langfuse import get_client
+
+            _langfuse = get_client()
+    except Exception:  # pragma: no cover - defensive: never let tracing setup break a run
+        _langfuse = None
+    return _langfuse
 
 # Centralized SDK availability check — single try/except for all nodes
 try:
@@ -219,74 +252,109 @@ async def query_with_usage(
     mcp_tool_calls = 0  # count of mcp__* tool-use blocks (issue #44 degradation signal)
     available_tools: list[str] | None = None  # tool names from the SDK init event, if exposed
 
-    async for event in query(prompt=prompt, options=options):
-        # Capture the available-tool list from the SDK init event (best-effort;
-        # stays None if this SDK version/stream doesn't expose it). Issue #44.
-        if isinstance(event, SystemMessage) and getattr(event, "subtype", None) == "init":
-            data = getattr(event, "data", None)
-            tools = data.get("tools") if isinstance(data, dict) else None
-            if isinstance(tools, list):
-                available_tools = [t for t in tools if isinstance(t, str)]
-
-        # Collect text content; count MCP tool-use blocks (issue #44).
-        if hasattr(event, "content") and event.content:
-            for block in event.content:
-                if hasattr(block, "text"):
-                    result_text_parts.append(block.text)
-                elif isinstance(block, ToolUseBlock) and getattr(block, "name", "").startswith("mcp__"):
-                    mcp_tool_calls += 1
-
-        # Accumulate usage from ResultMessage (final totals — replaces)
-        if isinstance(event, ResultMessage):
-            if event.usage:
-                usage = event.usage
-                if isinstance(usage, dict):
-                    input_tokens = usage.get("input_tokens", 0)
-                    output_tokens = usage.get("output_tokens", 0)
-                    cache_creation_tokens = usage.get("cache_creation_input_tokens", 0)
-                    cache_read_tokens = usage.get("cache_read_input_tokens", 0)
-                else:
-                    input_tokens = getattr(usage, "input_tokens", 0)
-                    output_tokens = getattr(usage, "output_tokens", 0)
-                    cache_creation_tokens = getattr(usage, "cache_creation_input_tokens", 0)
-                    cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0)
-                has_usage = True
-        # Accumulate usage from other event types (e.g., AssistantMessage)
-        elif hasattr(event, "usage") and event.usage:
-            usage = event.usage
-            if isinstance(usage, dict):
-                input_tokens += usage.get("input_tokens", 0)
-                output_tokens += usage.get("output_tokens", 0)
-                cache_creation_tokens += usage.get("cache_creation_input_tokens", 0)
-                cache_read_tokens += usage.get("cache_read_input_tokens", 0)
-            else:
-                input_tokens += getattr(usage, "input_tokens", 0)
-                output_tokens += getattr(usage, "output_tokens", 0)
-                cache_creation_tokens += getattr(usage, "cache_creation_input_tokens", 0)
-                cache_read_tokens += getattr(usage, "cache_read_input_tokens", 0)
-            has_usage = True
-
-    text = "".join(result_text_parts)
-
-    # Diagnostic line so degraded MCP runs are observable across SDK nodes (issue #44).
-    logger.info(
-        "%s SDK call: mcp_tool_calls=%d, available_tools=%s",
-        node_name,
-        mcp_tool_calls,
-        "unknown" if available_tools is None else f"{len(available_tools)} registered",
+    # Wrap the LLM call in a Langfuse generation. When the CallbackHandler has set a node
+    # span as the active OTel context (pipeline runs), this generation auto-nests under that
+    # node span — no parent/trace-id threading. When Langfuse is disabled, this is a no-op
+    # nullcontext yielding None. Creating it inside this coroutine (and inside any asyncio
+    # task spawned from it, which copies the contextvars context) keeps nesting correct.
+    langfuse = _get_langfuse()
+    generation_cm = (
+        langfuse.start_as_current_generation(
+            name=f"llm:{node_name}", model=model_name, input=prompt
+        )
+        if langfuse is not None
+        else nullcontext()
     )
 
-    record = None
-    if has_usage or mcp_tool_calls or available_tools is not None:
-        record = ModelUsageRecord(
-            model_name=model_name,
-            node_name=node_name,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_tokens=cache_read_tokens,
-            cache_creation_tokens=cache_creation_tokens,
-            mcp_tool_calls=mcp_tool_calls,
-            available_tools=available_tools,
+    with generation_cm as generation:
+        async for event in query(prompt=prompt, options=options):
+            # Capture the available-tool list from the SDK init event (best-effort;
+            # stays None if this SDK version/stream doesn't expose it). Issue #44.
+            if isinstance(event, SystemMessage) and getattr(event, "subtype", None) == "init":
+                data = getattr(event, "data", None)
+                tools = data.get("tools") if isinstance(data, dict) else None
+                if isinstance(tools, list):
+                    available_tools = [t for t in tools if isinstance(t, str)]
+
+            # Collect text content; count MCP tool-use blocks (issue #44).
+            if hasattr(event, "content") and event.content:
+                for block in event.content:
+                    if hasattr(block, "text"):
+                        result_text_parts.append(block.text)
+                    elif isinstance(block, ToolUseBlock) and getattr(block, "name", "").startswith("mcp__"):
+                        mcp_tool_calls += 1
+
+            # Accumulate usage from ResultMessage (final totals — replaces)
+            if isinstance(event, ResultMessage):
+                if event.usage:
+                    usage = event.usage
+                    if isinstance(usage, dict):
+                        input_tokens = usage.get("input_tokens", 0)
+                        output_tokens = usage.get("output_tokens", 0)
+                        cache_creation_tokens = usage.get("cache_creation_input_tokens", 0)
+                        cache_read_tokens = usage.get("cache_read_input_tokens", 0)
+                    else:
+                        input_tokens = getattr(usage, "input_tokens", 0)
+                        output_tokens = getattr(usage, "output_tokens", 0)
+                        cache_creation_tokens = getattr(usage, "cache_creation_input_tokens", 0)
+                        cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0)
+                    has_usage = True
+            # Accumulate usage from other event types (e.g., AssistantMessage)
+            elif hasattr(event, "usage") and event.usage:
+                usage = event.usage
+                if isinstance(usage, dict):
+                    input_tokens += usage.get("input_tokens", 0)
+                    output_tokens += usage.get("output_tokens", 0)
+                    cache_creation_tokens += usage.get("cache_creation_input_tokens", 0)
+                    cache_read_tokens += usage.get("cache_read_input_tokens", 0)
+                else:
+                    input_tokens += getattr(usage, "input_tokens", 0)
+                    output_tokens += getattr(usage, "output_tokens", 0)
+                    cache_creation_tokens += getattr(usage, "cache_creation_input_tokens", 0)
+                    cache_read_tokens += getattr(usage, "cache_read_input_tokens", 0)
+                has_usage = True
+
+        text = "".join(result_text_parts)
+
+        # Diagnostic line so degraded MCP runs are observable across SDK nodes (issue #44).
+        logger.info(
+            "%s SDK call: mcp_tool_calls=%d, available_tools=%s",
+            node_name,
+            mcp_tool_calls,
+            "unknown" if available_tools is None else f"{len(available_tools)} registered",
         )
+
+        record = None
+        if has_usage or mcp_tool_calls or available_tools is not None:
+            record = ModelUsageRecord(
+                model_name=model_name,
+                node_name=node_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_creation_tokens=cache_creation_tokens,
+                mcp_tool_calls=mcp_tool_calls,
+                available_tools=available_tools,
+            )
+
+        # Record LLM I/O + token usage on the generation so Langfuse can show latency,
+        # tokens, and (for a recognized model) cost. usage_details keys follow Langfuse's
+        # Anthropic convention; cost auto-computes from model + usage when the model is known.
+        if generation is not None:
+            generation.update(
+                output=text,
+                usage_details={
+                    "input": input_tokens,
+                    "output": output_tokens,
+                    "cache_read_input_tokens": cache_read_tokens,
+                    "cache_creation_input_tokens": cache_creation_tokens,
+                },
+                metadata={
+                    "mcp_tool_calls": mcp_tool_calls,
+                    "available_tools": (
+                        None if available_tools is None else len(available_tools)
+                    ),
+                },
+            )
 
     return text, record

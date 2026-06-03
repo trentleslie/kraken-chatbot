@@ -304,6 +304,89 @@ class TestQueryWithUsageDiagnostics:
         assert record.available_tools is None
 
 
+def _make_langfuse_mock():
+    """Return (client, generation) mocks where start_as_current_generation() is a context
+    manager yielding the generation, mirroring the Langfuse v3 API."""
+    gen = MagicMock()
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=gen)
+    cm.__exit__ = MagicMock(return_value=False)  # falsy => exceptions propagate
+    client = MagicMock()
+    client.start_as_current_generation.return_value = cm
+    return client, gen
+
+
+async def _mock_query_raise(**kwargs):
+    """Async generator that raises during iteration (simulates a mid-stream SDK failure)."""
+    raise RuntimeError("stream failed")
+    yield  # pragma: no cover - unreachable; makes this an async generator
+
+
+class TestQueryWithUsageLangfuse:
+    """Unit 2: per-node Langfuse generations wrapping the SDK call."""
+
+    async def test_generation_created_and_updated_when_enabled(self, monkeypatch):
+        events = [
+            _make_text_event("Hello "),
+            _make_text_event("world"),
+            _make_result_message({
+                "input_tokens": 100, "output_tokens": 50,
+                "cache_creation_input_tokens": 5, "cache_read_input_tokens": 10,
+            }),
+        ]
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.query", lambda **kw: _mock_query_gen(events))
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.HAS_SDK", True)
+        client, gen = _make_langfuse_mock()
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils._get_langfuse", lambda: client)
+
+        text, record = await query_with_usage("the prompt", MagicMock(), "synthesis")
+
+        assert text == "Hello world"
+        # Generation opened with node-derived name, model, and input prompt
+        client.start_as_current_generation.assert_called_once()
+        gkw = client.start_as_current_generation.call_args.kwargs
+        assert gkw["name"] == "llm:synthesis"
+        assert gkw["model"] == DEFAULT_MODEL_NAME
+        assert gkw["input"] == "the prompt"
+        # Generation updated with output + token usage mapped to Langfuse keys
+        gen.update.assert_called_once()
+        ukw = gen.update.call_args.kwargs
+        assert ukw["output"] == "Hello world"
+        assert ukw["usage_details"]["input"] == 100
+        assert ukw["usage_details"]["output"] == 50
+        assert ukw["usage_details"]["cache_read_input_tokens"] == 10
+        assert ukw["usage_details"]["cache_creation_input_tokens"] == 5
+
+    async def test_no_generation_when_langfuse_disabled(self, monkeypatch):
+        """Disabled Langfuse → no generation, return value unchanged (zero behavior change)."""
+        events = [
+            _make_text_event("x"),
+            _make_result_message({"input_tokens": 1, "output_tokens": 1,
+                                  "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}),
+        ]
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.query", lambda **kw: _mock_query_gen(events))
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.HAS_SDK", True)
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils._get_langfuse", lambda: None)
+
+        text, record = await query_with_usage("p", MagicMock(), "triage")
+
+        assert text == "x"
+        assert isinstance(record, ModelUsageRecord)
+
+    async def test_generation_closes_on_query_error(self, monkeypatch):
+        """A mid-stream SDK error still closes the generation context and propagates."""
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.query", lambda **kw: _mock_query_raise())
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.HAS_SDK", True)
+        client, gen = _make_langfuse_mock()
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils._get_langfuse", lambda: client)
+
+        with pytest.raises(RuntimeError, match="stream failed"):
+            await query_with_usage("p", MagicMock(), "synthesis")
+
+        # Context manager exited (generation finalized) even though the stream raised
+        client.start_as_current_generation.return_value.__exit__.assert_called()
+
+
 _KESTREL_EXPECTED = ["mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"]
 
 
