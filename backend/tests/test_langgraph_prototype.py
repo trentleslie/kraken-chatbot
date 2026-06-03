@@ -1149,6 +1149,36 @@ class TestIntegrationNode:
         assert len(gaps) == 0
         assert len(errors) > 0
 
+    def test_parse_integration_result_nulls_model_gap_curie(self):
+        """R1b (#61): a model-emitted gap CURIE is nulled, never surfaced as a KG fact.
+
+        Gaps are "expected but absent" — a CURIE the model emits is ungrounded
+        training-data recall. It must be dropped at construction so synthesis can
+        never render it indistinguishably from a real KG CURIE. The gap is still
+        conveyed by name/category/expected_reason.
+        """
+        json_response = '''
+        {
+            "bridges": [],
+            "gaps": [
+                {
+                    "name": "BCAAs",
+                    "category": "biolink:ChemicalEntity",
+                    "curie": "CHEBI:22918",
+                    "expected_reason": "Canonical early markers of T2D conversion",
+                    "absence_interpretation": "Not measured in cohort",
+                    "is_informative": true
+                }
+            ]
+        }
+        '''
+        bridges, gaps, errors = integration.parse_integration_result(json_response)
+
+        assert len(gaps) == 1
+        assert gaps[0].curie is None  # model-emitted CHEBI:22918 must be dropped
+        assert gaps[0].name == "BCAAs"  # gap still conveyed by name
+        assert len(errors) == 0
+
     def test_summarize_diseases(self):
         """Test disease summary generation for prompt."""
         diseases = [
