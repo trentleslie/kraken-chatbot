@@ -92,6 +92,44 @@ async def test_pipeline_degrades_when_langfuse_disabled(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pipeline_manual_spans_use_valid_v3_api(monkeypatch):
+    """Run handle_pipeline_mode against a REAL keyless Langfuse v3 client and drive one node
+    through, so the enclosing start_as_current_observation, propagate_attributes,
+    CallbackHandler, AND the manual node-span path (trace.start_span/update/end) are exercised
+    against the actual v3 API — a MagicMock trace would mask a v2/v3 mismatch. Refutes the
+    review claim that trace.start_span() raises AttributeError on a v3 span object."""
+    from langfuse import get_client
+
+    captured = {}
+
+    def fake_stream(query, conversation_history=None, config=None):
+        captured["config"] = config
+
+        async def _gen():
+            yield {"type": "node_update", "node": "intake", "node_output": {"raw_entities": []}}
+
+        return _gen()
+
+    monkeypatch.setattr(runner, "stream_discovery", fake_stream)
+    # Real v3 client: no keys => no-op export, but real LangfuseSpan objects + real API surface.
+    monkeypatch.setattr(main, "_get_pipeline_langfuse", lambda: get_client())
+
+    ws = AsyncMock()
+    await main.handle_pipeline_mode(ws, "metabolite X disease Y", "conn-real")
+
+    types = [m.get("type") for m in _sent(ws)]
+    # The node loop (which calls trace.start_span/update/end) and completion ran without an
+    # AttributeError — i.e. we got pipeline_complete, not an error response.
+    assert "pipeline_progress" in types  # node loop executed the manual-span path
+    assert "pipeline_complete" in types
+    assert "error" not in types
+    # Real handler threaded into the graph config; trace_id is a real non-empty string.
+    assert captured["config"] is not None and len(captured["config"]["callbacks"]) == 1
+    complete = next(m for m in _sent(ws) if m.get("type") == "pipeline_complete")
+    assert isinstance(complete["trace_id"], str) and complete["trace_id"]
+
+
+@pytest.mark.asyncio
 async def test_pipeline_degrades_when_trace_setup_raises(monkeypatch):
     """If Langfuse trace setup throws (bad import/handler/observation), the request must NOT
     hang — it degrades to no tracing and still responds (Greptile P1)."""
