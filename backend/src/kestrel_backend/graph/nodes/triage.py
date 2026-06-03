@@ -29,12 +29,9 @@ from typing import Any
 
 from ...kestrel_client import call_kestrel_tool
 from ..state import DiscoveryState, NoveltyScore, EntityResolution
-from ..pipeline_config import get_pipeline_config
 from ..state_contracts import validate_state, TriageInput, TriageOutput
 
 logger = logging.getLogger(__name__)
-
-_config = get_pipeline_config().triage
 
 
 # Classification thresholds
@@ -149,10 +146,13 @@ def classify_by_edge_count(edge_count: int) -> str:
 @validate_state(TriageInput, TriageOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
-    Triage resolved entities by KG connectivity using two-tier approach.
+    Triage resolved entities by KG connectivity using Tier-1 HTTP only (#61).
 
-    Tier 1 (API): Direct one_hop_query with mode="preview" for all entities
-    Tier 2 (LLM): Falls back to Claude Agent SDK for any failures
+    Tier 1 (API): Direct one_hop_query with mode="preview" for all entities,
+      with a single in-place retry for transient isError/exception failures.
+      Deterministic failures (empty content, bad JSON) are not retried.
+      Entities whose count still fails after the retry default to cold_start
+      (the broken stdio-MCP Tier-2 LLM fallback was removed).
 
     Returns:
         novelty_scores: List of NoveltyScore objects

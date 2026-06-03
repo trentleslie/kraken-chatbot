@@ -378,13 +378,15 @@ async def resolve_single_entity(entity: str, is_retry: bool = False) -> tuple[En
         category=None, confidence=0.0, method="failed",
     )
 
+    # Without the SDK we can't run the selection step, so fail fast before spending
+    # any HTTP round-trips on the prefetch.
+    if not HAS_SDK:
+        return (failed, None)
+
     # HTTP prefetch — variant searches build the candidate set.
     candidates = await prefetch_resolution_candidates(entity)
     if not candidates:
         # No real data → honest failure (no fabrication, no SDK call).
-        return (failed, None)
-
-    if not HAS_SDK:
         return (failed, None)
 
     shown = candidates[:_CANDIDATE_CAP]
@@ -455,9 +457,10 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
       - Uses entity_aliases dict to find alternative names
       - Avoids expensive LLM calls for entities with known aliases
 
-    Tier 2 (LLM): Falls back to Claude Agent SDK for remaining failed entities
-      - Handles complex synonyms, abbreviations, partial matches
-      - Uses standard prompt first, then aggressive retry prompt
+    Tier 2 (LLM): HTTP prefetch + SDK selection for remaining failed entities (#61)
+      - Multi-variant HTTP searches (hybrid_search + text_search) build a candidate set
+      - SDK selects the best candidate from the list (allowed_tools=[], max_turns=1)
+      - R1a: the returned CURIE must be a member of the prefetched candidate set
 
     Returns resolved_entities list and any errors encountered.
     """
