@@ -520,33 +520,42 @@ async def handle_pipeline_mode(
     session_id = str(conv_id) if conv_id else None
 
     if langfuse:
-        from langfuse import propagate_attributes
-        from langfuse.langchain import CallbackHandler
+        try:
+            from langfuse import propagate_attributes
+            from langfuse.langchain import CallbackHandler
 
-        # Real LangGraph CallbackHandler → graph-accurate node spans. The enclosing
-        # current-span makes the trace the active OTel context, so the handler's node spans
-        # AND the per-node generations created in sdk_utils.query_with_usage() nest under it.
-        # Phase A (plan Unit 4): the manual node_* spans below are kept temporarily for
-        # side-by-side nesting verification on dev; Phase B removes them once confirmed.
-        handler = CallbackHandler()
-        trace = span_stack.enter_context(
-            langfuse.start_as_current_observation(
-                as_type="span",
-                name="discovery_pipeline",
-                input={"query": content, "connection_id": connection_id},
-                metadata={"mode": "pipeline", "version": "2.0"},
+            # Real LangGraph CallbackHandler → graph-accurate node spans. The enclosing
+            # current-span makes the trace the active OTel context, so the handler's node spans
+            # AND the per-node generations created in sdk_utils.query_with_usage() nest under it.
+            # Phase A (plan Unit 4): the manual node_* spans below are kept temporarily for
+            # side-by-side nesting verification on dev; Phase B removes them once confirmed.
+            handler = CallbackHandler()
+            trace = span_stack.enter_context(
+                langfuse.start_as_current_observation(
+                    as_type="span",
+                    name="discovery_pipeline",
+                    input={"query": content, "connection_id": connection_id},
+                    metadata={"mode": "pipeline", "version": "2.0"},
+                )
             )
-        )
-        # Trace-level attributes (v3: not settable on the CallbackHandler constructor).
-        # metadata values must be strings (Dict[str, str]).
-        span_stack.enter_context(
-            propagate_attributes(
-                trace_name="discovery_pipeline",
-                session_id=session_id,
-                tags=["pipeline"],
-                metadata={"mode": "pipeline", "version": "2.0"},
+            # Trace-level attributes (v3: not settable on the CallbackHandler constructor).
+            # metadata values must be strings (Dict[str, str]).
+            span_stack.enter_context(
+                propagate_attributes(
+                    trace_name="discovery_pipeline",
+                    session_id=session_id,
+                    tags=["pipeline"],
+                    metadata={"mode": "pipeline", "version": "2.0"},
+                )
             )
-        )
+        except Exception as e:
+            # Tracing setup must never break the request. Release any partially-entered
+            # context managers and degrade to no tracing (handler=None → no callbacks) so the
+            # client still gets a response instead of a hung socket.
+            logger.warning("Langfuse trace setup failed; tracing disabled for this request: %s", e)
+            span_stack.close()
+            handler = None
+            trace = None
 
     # Attach the handler only when Langfuse is enabled; None = no callbacks (degrade cleanly).
     pipeline_config = {"callbacks": [handler]} if handler is not None else None

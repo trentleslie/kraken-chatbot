@@ -89,3 +89,32 @@ async def test_pipeline_degrades_when_langfuse_disabled(monkeypatch):
     types = [m.get("type") for m in _sent(ws)]
     assert "pipeline_complete" in types
     assert "done" in types
+
+
+@pytest.mark.asyncio
+async def test_pipeline_degrades_when_trace_setup_raises(monkeypatch):
+    """If Langfuse trace setup throws (bad import/handler/observation), the request must NOT
+    hang — it degrades to no tracing and still responds (Greptile P1)."""
+    captured = {}
+
+    def fake_stream(query, conversation_history=None, config=None):
+        captured["config"] = config
+        return _empty_stream()
+
+    monkeypatch.setattr(runner, "stream_discovery", fake_stream)
+    # Enabled, but constructing the handler blows up
+    monkeypatch.setattr(main, "_get_pipeline_langfuse", lambda: MagicMock())
+
+    def _boom():
+        raise RuntimeError("handler init failed")
+
+    monkeypatch.setattr(langfuse.langchain, "CallbackHandler", _boom)
+
+    ws = AsyncMock()
+    await main.handle_pipeline_mode(ws, "q", "conn-3")
+
+    # Degraded to no callbacks; client still got a complete response (no hang)
+    assert captured["config"] is None
+    types = [m.get("type") for m in _sent(ws)]
+    assert "pipeline_complete" in types
+    assert "done" in types

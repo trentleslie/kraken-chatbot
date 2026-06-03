@@ -167,8 +167,12 @@ async def main():
     """CLI entry point for assessment runner."""
     # Disable Langfuse tracing for assessment runs so live assessments on a machine with
     # LANGFUSE_* keys present do not flood the observability project with assessment traces.
-    # Must be set before get_settings() is first cached (i.e., before run_discovery runs).
     os.environ["LANGFUSE_ENABLED"] = "false"
+    # get_settings() is @lru_cache'd; clear it so the override above is read fresh even if a
+    # prior import already cached langfuse_enabled=True before main() ran.
+    from ..config import get_settings
+
+    get_settings.cache_clear()
 
     parser = argparse.ArgumentParser(description="Run pipeline assessment")
     parser.add_argument("--queries", type=str, required=True, help="Path to queries.json")
