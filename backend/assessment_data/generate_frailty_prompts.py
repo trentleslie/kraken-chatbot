@@ -56,20 +56,28 @@ def normalize_metabolite_name(name: str) -> str:
 
 def select_analytes(rows: list[dict], module: str) -> tuple[list[str], list[str]]:
     """Return (protein GeneSymbols, normalized metabolite names) for a module's top-K
-    by connectivity, excluding Chemistry and unnamed analytes."""
+    UNIQUE analytes by connectivity, excluding Chemistry and unnamed analytes.
+
+    Deduplicates by display token (the TSV can carry multiple annotation/probe rows for the
+    same GeneSymbol/metabolite, e.g. two IL6 rows in Brown); the highest-connectivity
+    occurrence wins and the freed slot is filled by the next distinct analyte so each case
+    still has up to TOP_K distinct analytes.
+    """
     members = [r for r in rows if r["ModuleID"] == module and r["Dataset"] in ("Protein", "Metabolite")]
     members.sort(key=_connectivity, reverse=True)
-    top = members[:TOP_K]
     proteins, metabolites = [], []
-    for r in top:
+    seen: set[tuple[str, str]] = set()
+    for r in members:
         if r["Dataset"] == "Protein":
-            gs = r["GeneSymbol"].strip()
-            if gs not in _NA:
-                proteins.append(gs)
+            kind, token = "P", r["GeneSymbol"].strip()
         else:
-            cn = r["ChemName"].strip()
-            if cn not in _NA:
-                metabolites.append(normalize_metabolite_name(cn))
+            kind, token = "M", normalize_metabolite_name(r["ChemName"].strip())
+        if token in _NA or (kind, token) in seen:
+            continue
+        seen.add((kind, token))
+        (proteins if kind == "P" else metabolites).append(token)
+        if len(proteins) + len(metabolites) >= TOP_K:
+            break
     return proteins, metabolites
 
 
@@ -92,7 +100,8 @@ def build_prompt(module: str, proteins: list[str], metabolites: list[str]) -> st
 
 
 def main() -> None:
-    rows = list(csv.DictReader(MODULES_TSV.open(), delimiter="\t"))
+    with MODULES_TSV.open(newline="") as fh:
+        rows = list(csv.DictReader(fh, delimiter="\t"))
     curated = json.loads(CURIE_SIDECAR.read_text()) if CURIE_SIDECAR.exists() else {}
 
     new_entries = []

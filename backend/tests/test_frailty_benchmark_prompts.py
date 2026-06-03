@@ -6,7 +6,9 @@ useful as benchmark inputs if intake.extract_entities() extracts the analytes we
 without fragmenting comma-bearing metabolite names and without leaking Chemistry analytes.
 """
 
+import csv
 import importlib.util
+import io
 import json
 import re
 from pathlib import Path
@@ -27,7 +29,7 @@ _spec = importlib.util.spec_from_file_location(
 genmod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(genmod)
 
-_ROWS = list(__import__("csv").DictReader(genmod.MODULES_TSV.open(), delimiter="\t"))
+_ROWS = list(csv.DictReader(io.StringIO(genmod.MODULES_TSV.read_text()), delimiter="\t"))
 
 # A "fragment" = a token that is a piece of lipid shorthand or a split parenthetical,
 # e.g. "d18:1", "18:2", "23:0)", or a token with a close-paren but no open-paren.
