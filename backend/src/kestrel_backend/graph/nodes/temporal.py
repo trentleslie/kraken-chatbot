@@ -29,7 +29,7 @@ from ..state import (
     DiscoveryState, TemporalClassification, Finding,
     DiseaseAssociation, PathwayMembership, InferredAssociation, Bridge
 )
-from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS, query_with_usage
+from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
 from ..state_contracts import validate_state, TemporalInput, TemporalOutput
 
 logger = logging.getLogger(__name__)
@@ -288,12 +288,13 @@ Classify each finding by its temporal relationship to disease progression.
 """
 
     try:
-        # Configure Kestrel MCP server (stdio-based, same as entity_resolution)
-        kestrel_config = get_kestrel_mcp_config()
-
+        # Reason over the in-prompt study context only — no KG tools (#61).
+        # The stdio MCP never launched (uvx mcp-client-kestrel is not on PyPI),
+        # so the prior "just for validation" tool was a doomed spawn on every
+        # call; allowed_tools=[] removes it with no behavioral loss. The full
+        # prompt stays in the user turn (parity-preserving; intentional).
         options = ClaudeAgentOptions(
-            allowed_tools=["mcp__kestrel__one_hop_query"],  # Minimal - just for validation
-            mcp_servers={"kestrel": kestrel_config},
+            allowed_tools=[],
             max_turns=3,  # Lightweight reasoning-focused node
             permission_mode="bypassPermissions",
         )

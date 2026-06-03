@@ -1245,6 +1245,44 @@ class TestTemporalNode:
         assert result["temporal_classifications"] == []
         assert "No findings available" in result["errors"][0]
 
+    @pytest.mark.asyncio
+    async def test_sdk_options_have_no_mcp_tools(self):
+        """Temporal builds SDK options with allowed_tools=[] and no mcp_servers (#61).
+
+        The stdio MCP never launched; the migration must remove the doomed-spawn
+        config while still producing classifications.
+        """
+        captured: dict = {}
+
+        def fake_options(**kwargs):
+            captured.update(kwargs)
+            return object()
+
+        async def fake_query(prompt, options, node_name):
+            return ('{"classifications": []}', None)
+
+        state: DiscoveryState = {
+            "is_longitudinal": True,
+            "duration_years": 5,
+            "disease_associations": [
+                DiseaseAssociation(
+                    entity_curie="CHEBI:17234",
+                    disease_curie="MONDO:0005148",
+                    disease_name="Type 2 Diabetes",
+                    predicate="biolink:related_to",
+                    source="test",
+                )
+            ],
+        }
+        with patch.object(temporal, "HAS_SDK", True), \
+                patch.object(temporal, "ClaudeAgentOptions", fake_options), \
+                patch.object(temporal, "query_with_usage", fake_query):
+            result = await temporal.run(state)
+
+        assert captured.get("allowed_tools") == []
+        assert "mcp_servers" not in captured
+        assert "temporal_classifications" in result
+
     def test_parse_temporal_result_valid_json(self):
         """Parse valid temporal classification JSON."""
         json_response = '''
