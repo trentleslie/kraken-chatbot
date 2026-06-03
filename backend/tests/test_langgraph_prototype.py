@@ -237,15 +237,6 @@ class TestTriageNode:
         assert triage.classify_by_edge_count(0) == "cold_start"
 
     @pytest.mark.asyncio
-    async def test_parse_edge_count_result(self):
-        """Test JSON parsing from edge count response."""
-        json_response = '{"curie": "CHEBI:17234", "edge_count": 250}'
-        result = triage.parse_edge_count_result("CHEBI:17234", "glucose", json_response)
-        assert result.curie == "CHEBI:17234"
-        assert result.edge_count == 250
-        assert result.classification == "well_characterized"
-
-    @pytest.mark.asyncio
     async def test_empty_resolved_entities(self):
         """Empty resolved entities should return empty scores."""
         state: DiscoveryState = {"resolved_entities": []}
@@ -270,8 +261,12 @@ class TestTriageNode:
         assert "unknown_entity" in result["cold_start_curies"]
 
     @pytest.mark.asyncio
-    async def test_triage_with_mocked_sdk(self):
-        """Test full triage with mocked edge counting."""
+    async def test_triage_with_mocked_tier1(self):
+        """Test full triage with mocked Tier-1 HTTP edge counting (#61).
+
+        Triage is now HTTP-only (count_edges_via_api); the SDK Tier-2 fallback
+        was removed. Mock the Tier-1 path directly.
+        """
         mock_score = NoveltyScore(
             curie="CHEBI:17234",
             raw_name="glucose",
@@ -279,7 +274,7 @@ class TestTriageNode:
             classification="well_characterized",
         )
 
-        with patch.object(triage, 'count_edges_single', return_value=(mock_score, None)):
+        with patch.object(triage, 'count_edges_via_api', return_value=mock_score):
             state: DiscoveryState = {
                 "resolved_entities": [
                     EntityResolution(
@@ -295,6 +290,55 @@ class TestTriageNode:
             result = await triage.run(state)
             assert len(result["novelty_scores"]) == 1
             assert "CHEBI:17234" in result["well_characterized_curies"]
+
+    @pytest.mark.asyncio
+    async def test_tier1_transient_failure_recovered_by_retry(self):
+        """#61: a transient per-call failure (isError) is recovered by the single
+        in-place retry — the entity keeps its real count, no cold_start reroute."""
+        ok_payload = {
+            "isError": False,
+            "content": [{"text": '{"results_count": 300}'}],
+        }
+        err_payload = {"isError": True, "content": []}
+        calls = {"n": 0}
+
+        async def flaky_call(tool_name, params):
+            calls["n"] += 1
+            return err_payload if calls["n"] == 1 else ok_payload
+
+        entity = EntityResolution(
+            raw_name="glucose", curie="CHEBI:17234", resolved_name="D-glucose",
+            category="biolink:ChemicalEntity", confidence=0.95, method="exact",
+        )
+        with patch.object(triage, "call_kestrel_tool", side_effect=flaky_call):
+            score = await triage.count_edges_via_api(entity)
+
+        assert calls["n"] == 2  # retried once
+        assert score is not None
+        assert score.edge_count == 300
+        assert score.classification == "well_characterized"
+
+    @pytest.mark.asyncio
+    async def test_tier1_persistent_failure_routes_to_cold_start(self):
+        """#61: a count that fails even after the retry → None → the entity
+        defaults to cold_start in run(), never an SDK-guessed number."""
+        async def always_error(tool_name, params):
+            return {"isError": True, "content": []}
+
+        entity = EntityResolution(
+            raw_name="glucose", curie="CHEBI:17234", resolved_name="D-glucose",
+            category="biolink:ChemicalEntity", confidence=0.95, method="exact",
+        )
+        with patch.object(triage, "call_kestrel_tool", side_effect=always_error):
+            score = await triage.count_edges_via_api(entity)
+            assert score is None  # both attempts failed
+
+            state: DiscoveryState = {"resolved_entities": [entity]}
+            result = await triage.run(state)
+
+        # Failed count defaults the entity to cold_start (documented reroute)
+        assert "CHEBI:17234" in result["cold_start_curies"]
+        assert "CHEBI:17234" not in result["well_characterized_curies"]
 
 
 # =============================================================================
