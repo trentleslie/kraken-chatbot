@@ -99,8 +99,9 @@ def main() -> None:
     for module in CURATED_MODULES:
         proteins, metabolites = select_analytes(rows, module)
         prompt = build_prompt(module, proteins, metabolites)
-        # expected_curies: curated subset keyed by module in the sidecar (list of CURIEs)
-        expected = curated.get(module, [])
+        # expected_curies: curated {analyte: CURIE} subset keyed by module in the sidecar.
+        module_curated = curated.get(module, {})
+        expected = sorted(set(module_curated.values())) if isinstance(module_curated, dict) else list(module_curated)
         new_entries.append({
             "query": prompt,
             "path_type": PATH_TYPE,
