@@ -182,7 +182,7 @@ active-context propagation.
 
 ## Implementation Units
 
-- [ ] **Unit 1: Dependencies + Langfuse host/env config**
+- [x] **Unit 1: Dependencies + Langfuse host/env config**
 
 **Goal:** Make the v3 CallbackHandler importable and the client correctly targeted, and make
 required env vars discoverable.
@@ -226,7 +226,7 @@ imports in the backend venv AND a trivial `astream(config={"callbacks":[handler]
 toy graph produces a trace in Langfuse — confirm both before building on the handler.
 `uv run python -m pytest tests/ -m "not integration"` passes.
 
-- [ ] **Unit 2: LLM generations in `query_with_usage()`**
+- [x] **Unit 2: LLM generations in `query_with_usage()`**
 
 **Goal:** Emit a Langfuse generation per node LLM call with model, input, output, token usage,
 and cost — auto-nesting under the active node span.
@@ -280,7 +280,7 @@ degradation signal from the stdio-MCP learning.
 **Verification:** A mocked node call produces a generation with correct token mapping; disabled
 path is a no-op.
 
-- [ ] **Unit 3: Thread callbacks config through `runner.py`**
+- [x] **Unit 3: Thread callbacks config through `runner.py`**
 
 **Goal:** Let callers attach the CallbackHandler to the graph execution.
 
@@ -307,7 +307,7 @@ path is a no-op.
 
 **Verification:** Mocked graph receives the config; existing pipeline tests still pass.
 
-- [ ] **Unit 4: Rewire `main.py:handle_pipeline_mode` to the CallbackHandler**
+- [x] **Unit 4: Rewire `main.py:handle_pipeline_mode` to the CallbackHandler** *(Phase A done — handler + enclosing span + generations + v3 feedback fix landed alongside manual spans; Phase B removal gated on Unit 6 dev verification)*
 
 **Goal:** Add the real handler under an enclosing trace span and — once node/generation nesting
 is verified — replace the manual per-node spans, preserving `trace.id` → client and feedback.
@@ -379,7 +379,7 @@ nesting/identity check.
 **Verification:** A pipeline run (enabled) yields one trace, handler-driven node spans, nested
 generations from Unit 2, and a working `trace_id` round-trip; disabled run is unaffected.
 
-- [ ] **Unit 5: Flush on FastAPI shutdown**
+- [x] **Unit 5: Flush on FastAPI shutdown**
 
 **Goal:** Prevent trace loss on deploy/restart without per-request flushing.
 
