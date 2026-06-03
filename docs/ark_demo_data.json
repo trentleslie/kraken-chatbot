@@ -1,0 +1,683 @@
+{
+  "patients": {
+    "A": {
+      "id": "patient_a",
+      "profile": {
+        "description": "High CAD PRS, AGT variant, High LDL, High BP",
+        "factors": [
+          {
+            "type": "genetic",
+            "name": "High CAD PRS"
+          },
+          {
+            "type": "genetic",
+            "name": "AGT variant"
+          },
+          {
+            "type": "biomarker",
+            "name": "High LDL"
+          },
+          {
+            "type": "clinical",
+            "name": "High BP"
+          }
+        ]
+      },
+      "kraken_subgraphs": {
+        "agt_bp_pathway": {
+          "data_source": "kraken_live",
+          "nodes": [
+            {
+              "id": "NCBIGene:183",
+              "name": "AGT",
+              "category": "biolink:Gene"
+            },
+            {
+              "id": "MONDO:0001134",
+              "name": "essential hypertension",
+              "category": "biolink:Disease"
+            },
+            {
+              "id": "MONDO:0005044",
+              "name": "hypertensive disorder",
+              "category": "biolink:Disease"
+            },
+            {
+              "id": "CHEBI:6503",
+              "name": "lisinopril",
+              "category": "biolink:Drug"
+            },
+            {
+              "id": "CHEBI:6541",
+              "name": "losartan",
+              "category": "biolink:Drug"
+            }
+          ],
+          "edges": [
+            {
+              "source": "NCBIGene:183",
+              "target": "MONDO:0001134",
+              "predicate": "biolink:gene_associated_with_condition",
+              "source_db": "infores:disgenet",
+              "edge_count": 10
+            },
+            {
+              "source": "NCBIGene:183",
+              "target": "MONDO:0005044",
+              "predicate": "biolink:gene_associated_with_condition",
+              "source_db": "infores:gwas-catalog",
+              "edge_count": 7
+            },
+            {
+              "source": "NCBIGene:183",
+              "target": "CHEBI:6503",
+              "predicate": "biolink:interacts_with",
+              "source_db": "infores:drugbank",
+              "edge_count": 9
+            },
+            {
+              "source": "NCBIGene:183",
+              "target": "CHEBI:6541",
+              "predicate": "biolink:interacts_with",
+              "source_db": "infores:drugbank",
+              "edge_count": 7
+            }
+          ],
+          "path_summary": "AGT gene \u2192 essential hypertension association; ACE inhibitors and ARBs modulate AGT pathway"
+        },
+        "ldl_cad_pathway": {
+          "data_source": "kraken_live",
+          "nodes": [
+            {
+              "id": "CHEBI:47774",
+              "name": "LDL cholesterol",
+              "category": "biolink:ChemicalEntity"
+            },
+            {
+              "id": "MONDO:0005010",
+              "name": "coronary artery disorder",
+              "category": "biolink:Disease"
+            },
+            {
+              "id": "CHEBI:59594",
+              "name": "colesevelam",
+              "category": "biolink:Drug"
+            },
+            {
+              "id": "CHEBI:176399",
+              "name": "inclisiran",
+              "category": "biolink:Drug"
+            }
+          ],
+          "edges": [
+            {
+              "source": "CHEBI:47774",
+              "target": "CHEBI:59594",
+              "predicate": "biolink:affected_by",
+              "source_db": "infores:drugbank",
+              "edge_count": 1
+            },
+            {
+              "source": "CHEBI:47774",
+              "target": "CHEBI:176399",
+              "predicate": "biolink:affected_by",
+              "source_db": "infores:drugbank",
+              "edge_count": 1
+            }
+          ],
+          "path_summary": "LDL cholesterol can be lowered by bile acid sequestrants (colesevelam) or PCSK9 inhibitors (inclisiran)"
+        }
+      },
+      "recommendations": [
+        {
+          "id": "rec_a1",
+          "text": "Consider ACE inhibitor (lisinopril) or ARB (losartan) for blood pressure management",
+          "detail": "AGT variant affects renin-angiotensin pathway; ACE inhibitors and ARBs directly modulate this pathway, providing targeted therapy for genetic risk",
+          "category": "pharmacological",
+          "evidence_grade": "established",
+          "subgraph_key": "agt_bp_pathway",
+          "sources": [
+            "DisGeNET",
+            "GWAS Catalog",
+            "DrugBank"
+          ]
+        },
+        {
+          "id": "rec_a2",
+          "text": "Monitor LDL levels and consider statin therapy based on overall cardiovascular risk",
+          "detail": "High LDL combined with CAD genetic risk indicates elevated cardiovascular risk; lipid-lowering therapy recommended per guidelines",
+          "category": "pharmacological",
+          "evidence_grade": "established",
+          "subgraph_key": "ldl_cad_pathway",
+          "sources": [
+            "DrugBank",
+            "Clinical Guidelines"
+          ]
+        },
+        {
+          "id": "rec_a3",
+          "text": "Implement DASH diet and regular aerobic exercise",
+          "detail": "Lifestyle modifications are first-line therapy for hypertension and cardiovascular risk reduction",
+          "category": "lifestyle",
+          "evidence_grade": "established",
+          "subgraph_key": "agt_bp_pathway",
+          "sources": [
+            "Clinical Guidelines"
+          ]
+        }
+      ]
+    },
+    "B": {
+      "id": "patient_b",
+      "profile": {
+        "description": "High BMI PRS, MTHFR variant, NOS3 variant, High Homocysteine, Low EPA/DHA, High BMI, High BP",
+        "factors": [
+          {
+            "type": "genetic",
+            "name": "High BMI PRS"
+          },
+          {
+            "type": "genetic",
+            "name": "MTHFR variant"
+          },
+          {
+            "type": "genetic",
+            "name": "NOS3 variant"
+          },
+          {
+            "type": "biomarker",
+            "name": "High Homocysteine"
+          },
+          {
+            "type": "biomarker",
+            "name": "Low EPA/DHA"
+          },
+          {
+            "type": "clinical",
+            "name": "High BMI"
+          },
+          {
+            "type": "clinical",
+            "name": "High BP"
+          }
+        ]
+      },
+      "kraken_subgraphs": {
+        "mthfr_folate_pathway": {
+          "data_source": "kraken_live",
+          "nodes": [
+            {
+              "id": "NCBIGene:4524",
+              "name": "MTHFR",
+              "category": "biolink:Gene"
+            },
+            {
+              "id": "CHEBI:27470",
+              "name": "folic acid",
+              "category": "biolink:ChemicalEntity"
+            },
+            {
+              "id": "CHEBI:17439",
+              "name": "vitamin B12",
+              "category": "biolink:ChemicalEntity"
+            },
+            {
+              "id": "CHEBI:17015",
+              "name": "riboflavin (B2)",
+              "category": "biolink:ChemicalEntity"
+            },
+            {
+              "id": "CHEBI:17230",
+              "name": "homocysteine",
+              "category": "biolink:SmallMolecule"
+            }
+          ],
+          "edges": [
+            {
+              "source": "NCBIGene:4524",
+              "target": "CHEBI:27470",
+              "predicate": "biolink:participates_in",
+              "source_db": "infores:reactome",
+              "edge_count": 7
+            },
+            {
+              "source": "NCBIGene:4524",
+              "target": "CHEBI:17439",
+              "predicate": "biolink:participates_in",
+              "source_db": "infores:reactome",
+              "edge_count": 6
+            },
+            {
+              "source": "NCBIGene:4524",
+              "target": "CHEBI:17015",
+              "predicate": "biolink:participates_in",
+              "source_db": "infores:reactome",
+              "edge_count": 4
+            }
+          ],
+          "path_summary": "MTHFR variant affects folate metabolism; B vitamins (folate, B12, riboflavin) support MTHFR enzyme function and homocysteine clearance"
+        },
+        "nos3_cardiovascular": {
+          "data_source": "kraken_live",
+          "nodes": [
+            {
+              "id": "NCBIGene:4846",
+              "name": "NOS3",
+              "category": "biolink:Gene"
+            },
+            {
+              "id": "CHEBI:16480",
+              "name": "nitric oxide",
+              "category": "biolink:ChemicalEntity"
+            },
+            {
+              "id": "GO:0008217",
+              "name": "regulation of blood pressure",
+              "category": "biolink:BiologicalProcess"
+            }
+          ],
+          "edges": [
+            {
+              "source": "NCBIGene:4846",
+              "target": "CHEBI:16480",
+              "predicate": "biolink:produces",
+              "source_db": "infores:reactome",
+              "edge_count": 6
+            },
+            {
+              "source": "CHEBI:16480",
+              "target": "GO:0008217",
+              "predicate": "biolink:participates_in",
+              "source_db": "infores:go",
+              "edge_count": 4
+            }
+          ],
+          "path_summary": "NOS3 produces nitric oxide which regulates blood pressure through vasodilation"
+        }
+      },
+      "recommendations": [
+        {
+          "id": "rec_b1",
+          "text": "Consider methylfolate (L-methylfolate) supplementation instead of folic acid",
+          "detail": "MTHFR variants reduce enzyme activity; methylfolate bypasses the MTHFR step in folate metabolism, directly lowering homocysteine",
+          "category": "nutritional",
+          "evidence_grade": "established",
+          "subgraph_key": "mthfr_folate_pathway",
+          "sources": [
+            "Reactome",
+            "PharmGKB"
+          ]
+        },
+        {
+          "id": "rec_b2",
+          "text": "Add vitamin B12 and riboflavin (B2) to support homocysteine metabolism",
+          "detail": "B12 and riboflavin are cofactors in homocysteine clearance pathways; combined B vitamin therapy more effective than folate alone",
+          "category": "nutritional",
+          "evidence_grade": "established",
+          "subgraph_key": "mthfr_folate_pathway",
+          "sources": [
+            "Reactome",
+            "HMDB"
+          ]
+        },
+        {
+          "id": "rec_b3",
+          "text": "Increase omega-3 fatty acid intake (EPA/DHA) through diet or supplementation",
+          "detail": "Low EPA/DHA associated with increased cardiovascular inflammation; supplementation may improve lipid profiles and endothelial function",
+          "category": "nutritional",
+          "evidence_grade": "hidden_gems",
+          "subgraph_key": "nos3_cardiovascular",
+          "sources": [
+            "PubMed",
+            "Clinical trials"
+          ]
+        },
+        {
+          "id": "rec_b4",
+          "text": "Monitor homocysteine levels after supplementation initiation",
+          "detail": "Target homocysteine level < 10 \u03bcmol/L; recheck 2-3 months after starting B vitamin supplementation",
+          "category": "monitoring",
+          "evidence_grade": "established",
+          "subgraph_key": "mthfr_folate_pathway",
+          "sources": [
+            "Clinical Guidelines"
+          ]
+        }
+      ]
+    },
+    "C": {
+      "id": "patient_c",
+      "profile": {
+        "description": "High CAD PRS, High AFIB PRS, AGT variant, SLCO1B1 *5 carrier, High LDL, Low EPA/DHA, High BP",
+        "factors": [
+          {
+            "type": "genetic",
+            "name": "High CAD PRS"
+          },
+          {
+            "type": "genetic",
+            "name": "High AFIB PRS"
+          },
+          {
+            "type": "genetic",
+            "name": "AGT variant"
+          },
+          {
+            "type": "genetic",
+            "name": "SLCO1B1 *5 carrier"
+          },
+          {
+            "type": "biomarker",
+            "name": "High LDL"
+          },
+          {
+            "type": "biomarker",
+            "name": "Low EPA/DHA"
+          },
+          {
+            "type": "clinical",
+            "name": "High BP"
+          }
+        ]
+      },
+      "kraken_subgraphs": {
+        "slco1b1_statin_pgx": {
+          "data_source": "kraken_live",
+          "nodes": [
+            {
+              "id": "NCBIGene:10599",
+              "name": "SLCO1B1",
+              "category": "biolink:Gene"
+            },
+            {
+              "id": "CHEBI:8361",
+              "name": "pravastatin",
+              "category": "biolink:Drug"
+            },
+            {
+              "id": "CHEBI:2911",
+              "name": "atorvastatin",
+              "category": "biolink:Drug"
+            },
+            {
+              "id": "CHEBI:9150",
+              "name": "simvastatin",
+              "category": "biolink:Drug"
+            },
+            {
+              "id": "CHEBI:38545",
+              "name": "rosuvastatin",
+              "category": "biolink:Drug"
+            },
+            {
+              "id": "CHEBI:40303",
+              "name": "lovastatin",
+              "category": "biolink:Drug"
+            },
+            {
+              "id": "MONDO:0005336",
+              "name": "myopathy",
+              "category": "biolink:Disease"
+            }
+          ],
+          "edges": [
+            {
+              "source": "NCBIGene:10599",
+              "target": "CHEBI:8361",
+              "predicate": "biolink:affects",
+              "source_db": "infores:pharmgkb",
+              "edge_count": 13,
+              "pmids": []
+            },
+            {
+              "source": "NCBIGene:10599",
+              "target": "CHEBI:2911",
+              "predicate": "biolink:affects",
+              "source_db": "infores:pharmgkb",
+              "edge_count": 11,
+              "pmids": []
+            },
+            {
+              "source": "NCBIGene:10599",
+              "target": "CHEBI:9150",
+              "predicate": "biolink:affects",
+              "source_db": "infores:pharmgkb",
+              "edge_count": 7,
+              "pmids": []
+            },
+            {
+              "source": "NCBIGene:10599",
+              "target": "CHEBI:38545",
+              "predicate": "biolink:affects",
+              "source_db": "infores:pharmgkb",
+              "edge_count": 7,
+              "pmids": []
+            },
+            {
+              "source": "NCBIGene:10599",
+              "target": "CHEBI:40303",
+              "predicate": "biolink:affects",
+              "source_db": "infores:pharmgkb",
+              "edge_count": 7,
+              "pmids": []
+            },
+            {
+              "source": "NCBIGene:10599",
+              "target": "MONDO:0005336",
+              "predicate": "biolink:gene_associated_with_condition",
+              "source_db": "infores:gwas-catalog",
+              "edge_count": 7,
+              "pmids": [
+                "PMID:31220337"
+              ],
+              "gwas_p_value": 3e-09
+            }
+          ],
+          "path_summary": "SLCO1B1 transporter affects statin hepatic uptake; *5 variant reduces transport, increasing statin blood levels and myopathy risk"
+        },
+        "afib_treatment": {
+          "data_source": "kraken_live",
+          "nodes": [
+            {
+              "id": "MONDO:0004981",
+              "name": "atrial fibrillation",
+              "category": "biolink:Disease"
+            },
+            {
+              "id": "NCBIGene:6331",
+              "name": "SCN5A",
+              "category": "biolink:Gene"
+            },
+            {
+              "id": "NCBIGene:3741",
+              "name": "KCNA5",
+              "category": "biolink:Gene"
+            },
+            {
+              "id": "CHEBI:2663",
+              "name": "amiodarone",
+              "category": "biolink:Drug"
+            },
+            {
+              "id": "CHEBI:50659",
+              "name": "dronedarone",
+              "category": "biolink:Drug"
+            },
+            {
+              "id": "CHEBI:2904",
+              "name": "atenolol",
+              "category": "biolink:Drug"
+            }
+          ],
+          "edges": [
+            {
+              "source": "MONDO:0004981",
+              "target": "NCBIGene:6331",
+              "predicate": "biolink:genetically_associated_with",
+              "source_db": "infores:gwas-catalog",
+              "edge_count": 12
+            },
+            {
+              "source": "MONDO:0004981",
+              "target": "NCBIGene:3741",
+              "predicate": "biolink:genetically_associated_with",
+              "source_db": "infores:gwas-catalog",
+              "edge_count": 11
+            },
+            {
+              "source": "MONDO:0004981",
+              "target": "CHEBI:2663",
+              "predicate": "biolink:treated_by",
+              "source_db": "infores:drugbank",
+              "edge_count": 10
+            },
+            {
+              "source": "MONDO:0004981",
+              "target": "CHEBI:50659",
+              "predicate": "biolink:treated_by",
+              "source_db": "infores:drugbank",
+              "edge_count": 9
+            },
+            {
+              "source": "MONDO:0004981",
+              "target": "CHEBI:2904",
+              "predicate": "biolink:treated_by",
+              "source_db": "infores:drugbank",
+              "edge_count": 11
+            }
+          ],
+          "path_summary": "AFIB involves ion channel gene variants (SCN5A, KCNA5); treatments include antiarrhythmics and rate control agents"
+        },
+        "agt_bp_pathway": {
+          "data_source": "kraken_live",
+          "nodes": [
+            {
+              "id": "NCBIGene:183",
+              "name": "AGT",
+              "category": "biolink:Gene"
+            },
+            {
+              "id": "MONDO:0005044",
+              "name": "hypertension",
+              "category": "biolink:Disease"
+            },
+            {
+              "id": "CHEBI:6503",
+              "name": "lisinopril",
+              "category": "biolink:Drug"
+            },
+            {
+              "id": "CHEBI:6541",
+              "name": "losartan",
+              "category": "biolink:Drug"
+            }
+          ],
+          "edges": [
+            {
+              "source": "NCBIGene:183",
+              "target": "MONDO:0005044",
+              "predicate": "biolink:gene_associated_with_condition",
+              "source_db": "infores:disgenet",
+              "edge_count": 7
+            },
+            {
+              "source": "NCBIGene:183",
+              "target": "CHEBI:6503",
+              "predicate": "biolink:interacts_with",
+              "source_db": "infores:drugbank",
+              "edge_count": 9
+            },
+            {
+              "source": "NCBIGene:183",
+              "target": "CHEBI:6541",
+              "predicate": "biolink:interacts_with",
+              "source_db": "infores:drugbank",
+              "edge_count": 7
+            }
+          ],
+          "path_summary": "AGT variant associated with hypertension; ACE inhibitors and ARBs target pathway"
+        }
+      },
+      "recommendations": [
+        {
+          "id": "rec_c1",
+          "text": "Avoid high-dose simvastatin; prefer pravastatin, rosuvastatin, or fluvastatin at standard doses",
+          "detail": "SLCO1B1 *5 carrier status increases statin myopathy risk 4-17 fold; pravastatin has lowest myopathy risk due to reduced SLCO1B1 dependence; simvastatin contraindicated at 80mg",
+          "category": "pharmacological",
+          "evidence_grade": "established",
+          "subgraph_key": "slco1b1_statin_pgx",
+          "sources": [
+            "GWAS Catalog (p=3e-09)",
+            "PMID:31220337",
+            "PharmGKB",
+            "FDA Label"
+          ]
+        },
+        {
+          "id": "rec_c2",
+          "text": "Monitor for muscle symptoms (myalgia, weakness) especially in first 6 months of statin therapy",
+          "detail": "SLCO1B1 variant increases myopathy risk; early detection prevents progression to rhabdomyolysis; check CK if symptoms develop",
+          "category": "monitoring",
+          "evidence_grade": "established",
+          "subgraph_key": "slco1b1_statin_pgx",
+          "sources": [
+            "GWAS Catalog",
+            "Clinical Guidelines"
+          ]
+        },
+        {
+          "id": "rec_c3",
+          "text": "Consider ACE inhibitor or ARB for blood pressure given AGT variant and AFIB risk",
+          "detail": "AGT variant affects renin-angiotensin pathway; ACE inhibitors/ARBs also reduce AFIB recurrence risk",
+          "category": "pharmacological",
+          "evidence_grade": "established",
+          "subgraph_key": "agt_bp_pathway",
+          "sources": [
+            "DisGeNET",
+            "DrugBank"
+          ]
+        },
+        {
+          "id": "rec_c4",
+          "text": "Discuss AFIB screening given high polygenic risk score",
+          "detail": "High AFIB PRS indicates 2-3x increased risk; consider home rhythm monitoring or wearable devices for early detection",
+          "category": "monitoring",
+          "evidence_grade": "established",
+          "subgraph_key": "afib_treatment",
+          "sources": [
+            "GWAS Catalog"
+          ]
+        },
+        {
+          "id": "rec_c5",
+          "text": "Increase omega-3 intake to support cardiovascular health",
+          "detail": "Low EPA/DHA combined with CAD and AFIB risk; omega-3s have anti-inflammatory and antiarrhythmic properties",
+          "category": "nutritional",
+          "evidence_grade": "hidden_gems",
+          "subgraph_key": "afib_treatment",
+          "sources": [
+            "PubMed",
+            "Clinical trials"
+          ]
+        }
+      ]
+    }
+  },
+  "metadata": {
+    "generated_at": "2026-03-06T16:30:00Z",
+    "kraken_version": "KESTREL MCP Server v1.16.0",
+    "kg_sources": [
+      "RTX-KG2",
+      "ROBOKOP",
+      "SPOKE",
+      "DisGeNET",
+      "GWAS Catalog",
+      "DrugBank",
+      "PharmGKB",
+      "Reactome"
+    ],
+    "total_live_subgraphs": 7,
+    "total_constructed_subgraphs": 0,
+    "notes": "All subgraphs derived from live KRAKEN queries; multi-hop paths not available but direct associations strong"
+  }
+}

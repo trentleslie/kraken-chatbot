@@ -6,12 +6,12 @@ import pytest
 from kestrel_backend.graph.sdk_utils import (
     DEFAULT_MODEL_NAME,
     HAS_SDK,
-    KESTREL_ARGS,
-    KESTREL_COMMAND,
     ResultMessage,
+    SystemMessage,
+    ToolUseBlock,
     chunk,
+    classify_mcp_degradation,
     create_agent_options,
-    get_kestrel_mcp_config,
     query_with_usage,
 )
 from kestrel_backend.graph.state import ModelUsageRecord
@@ -22,28 +22,6 @@ class TestHasSDK:
 
     def test_has_sdk_is_boolean(self):
         assert isinstance(HAS_SDK, bool)
-
-
-class TestKestrelConfig:
-    """Test Kestrel MCP configuration factory."""
-
-    def test_kestrel_constants(self):
-        assert KESTREL_COMMAND == "uvx"
-        assert KESTREL_ARGS == ["mcp-client-kestrel"]
-
-    def test_get_kestrel_mcp_config_returns_config_or_none(self):
-        config = get_kestrel_mcp_config()
-        if HAS_SDK:
-            assert config is not None
-            # McpStdioServerConfig may be a dict or object depending on SDK version
-            if isinstance(config, dict):
-                assert config["command"] == "uvx"
-                assert config["args"] == ["mcp-client-kestrel"]
-            else:
-                assert config.command == "uvx"
-                assert config.args == ["mcp-client-kestrel"]
-        else:
-            assert config is None
 
 
 class TestCreateAgentOptions:
@@ -78,15 +56,19 @@ class TestCreateAgentOptions:
             assert options is None
 
     def test_create_with_mcp_servers(self):
-        config = get_kestrel_mcp_config()
-        if config is not None:
-            options = create_agent_options(
-                system_prompt="With MCP",
-                allowed_tools=["hybrid_search"],
-                mcp_servers=[config],
-            )
+        # create_agent_options still supports an mcp_servers passthrough (used by
+        # future non-stdio servers); the Kestrel stdio config itself was retired (#61).
+        config = {"type": "stdio", "command": "x", "args": []}
+        options = create_agent_options(
+            system_prompt="With MCP",
+            allowed_tools=["hybrid_search"],
+            mcp_servers=[config],
+        )
+        if HAS_SDK:
             assert options is not None
             assert options.mcp_servers == [config]
+        else:
+            assert options is None
 
 
 class TestChunk:
@@ -245,3 +227,153 @@ class TestQueryWithUsage:
 
         with pytest.raises(RuntimeError, match="SDK is not available"):
             await query_with_usage("p", MagicMock(), "test")
+
+
+# --- Helper factories for MCP-diagnostics events (Unit 1, issue #44) ---
+
+def _make_tool_use_event(name: str):
+    """Create a mock event carrying a single ToolUseBlock content block."""
+    block = MagicMock(spec=ToolUseBlock)  # spec => isinstance True, no .text attr
+    block.name = name
+    event = MagicMock(spec=[])  # no .usage
+    event.content = [block]
+    return event
+
+
+def _make_init_event(tools):
+    """Create a mock SystemMessage(subtype='init', data={'tools': [...]})."""
+    event = MagicMock(spec=SystemMessage)
+    event.subtype = "init"
+    event.data = {"tools": tools}
+    return event
+
+
+class TestQueryWithUsageDiagnostics:
+    """Unit 1 (issue #44): MCP tool-availability diagnostics on ModelUsageRecord."""
+
+    async def test_counts_mcp_tool_calls(self, monkeypatch):
+        """Only mcp__* tool-use blocks are counted; non-mcp tools are ignored."""
+        events = [
+            _make_init_event(["Bash", "mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"]),
+            _make_tool_use_event("mcp__kestrel__one_hop_query"),
+            _make_tool_use_event("Bash"),  # not counted
+            _make_tool_use_event("mcp__kestrel__get_nodes"),
+            _make_text_event("done"),
+            _make_result_message({"input_tokens": 1, "output_tokens": 1,
+                                  "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}),
+        ]
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.query", lambda **kw: _mock_query_gen(events))
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.HAS_SDK", True)
+
+        text, record = await query_with_usage("p", MagicMock(), "pathway_enrichment")
+
+        assert text == "done"
+        assert record is not None
+        assert record.mcp_tool_calls == 2
+        assert record.available_tools == ["Bash", "mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"]
+
+    async def test_zero_mcp_tool_calls(self, monkeypatch):
+        """A run with no tool-use blocks reports mcp_tool_calls == 0 (the degraded signal)."""
+        events = [
+            _make_text_event("I cannot use those tools"),
+            _make_result_message({"input_tokens": 1, "output_tokens": 1,
+                                  "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}),
+        ]
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.query", lambda **kw: _mock_query_gen(events))
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.HAS_SDK", True)
+
+        _, record = await query_with_usage("p", MagicMock(), "pathway_enrichment")
+
+        assert record is not None
+        assert record.mcp_tool_calls == 0
+
+    async def test_available_tools_none_without_init_event(self, monkeypatch):
+        """When no SystemMessage init event is present, available_tools degrades to None."""
+        events = [
+            _make_tool_use_event("mcp__kestrel__one_hop_query"),
+            _make_result_message({"input_tokens": 1, "output_tokens": 1,
+                                  "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}),
+        ]
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.query", lambda **kw: _mock_query_gen(events))
+        monkeypatch.setattr("kestrel_backend.graph.sdk_utils.HAS_SDK", True)
+
+        _, record = await query_with_usage("p", MagicMock(), "pathway_enrichment")
+
+        assert record is not None
+        assert record.mcp_tool_calls == 1
+        assert record.available_tools is None
+
+
+_KESTREL_EXPECTED = ["mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"]
+
+
+class TestClassifyMcpDegradation:
+    """Unit 2 (issue #44): structural MCP-degradation classifier."""
+
+    def test_zero_calls_with_phrase_high_confidence(self):
+        v = classify_mcp_degradation(
+            _KESTREL_EXPECTED, mcp_tool_calls=0,
+            result_text="The Kestrel MCP tools are not available in my current tool set.",
+        )
+        assert v.degraded is True
+        assert v.confidence == "high"  # phrase corroborates the structural signal
+
+    def test_zero_calls_no_phrase_structural(self):
+        v = classify_mcp_degradation(
+            _KESTREL_EXPECTED, mcp_tool_calls=0, result_text="Here are some shared pathways.",
+        )
+        assert v.degraded is True
+
+    def test_tools_used_not_degraded(self):
+        # Healthy run: at least one mcp call, even with no shared neighbors found.
+        v = classify_mcp_degradation(_KESTREL_EXPECTED, mcp_tool_calls=3, result_text="")
+        assert v.degraded is False
+
+    def test_empty_expected_never_degraded(self):
+        # Data-in-prompt nodes (allowed_tools=[]) must never be flagged, even with the phrase.
+        v = classify_mcp_degradation(
+            [], mcp_tool_calls=0, result_text="not available in my current tool set",
+        )
+        assert v.degraded is False
+
+    def test_phrase_alone_does_not_trigger(self):
+        # Tools were used but the text contains the phrase → not degraded (phrase is corroborator only).
+        v = classify_mcp_degradation(
+            _KESTREL_EXPECTED, mcp_tool_calls=2,
+            result_text="those tools are not available for everything",
+        )
+        assert v.degraded is False
+
+    def test_definitive_missing_from_init(self):
+        # init tool list lacks an expected tool → definitive degraded, even if a call happened.
+        v = classify_mcp_degradation(
+            _KESTREL_EXPECTED, mcp_tool_calls=1, result_text="",
+            available_tools=["mcp__kestrel__one_hop_query", "Bash"],  # get_nodes missing
+        )
+        assert v.degraded is True
+        assert v.confidence == "definitive"
+
+    def test_all_expected_present_and_used_not_degraded(self):
+        v = classify_mcp_degradation(
+            _KESTREL_EXPECTED, mcp_tool_calls=2, result_text="",
+            available_tools=["mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"],
+        )
+        assert v.degraded is False
+
+    def test_tools_registered_zero_calls_no_phrase_not_degraded(self):
+        # init list confirms all expected tools present; zero calls + no phrase → not degraded
+        # (the model may legitimately skip tools — avoids a false positive for non-mandating nodes)
+        v = classify_mcp_degradation(
+            _KESTREL_EXPECTED, mcp_tool_calls=0, result_text="No shared neighbors found.",
+            available_tools=["mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"],
+        )
+        assert v.degraded is False
+
+    def test_tools_registered_zero_calls_with_phrase_still_degraded(self):
+        # the phrase corroborator still trips even when the init list confirms tools present
+        v = classify_mcp_degradation(
+            _KESTREL_EXPECTED, mcp_tool_calls=0,
+            result_text="those tools are not available in my current tool set",
+            available_tools=["mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"],
+        )
+        assert v.degraded is True

@@ -343,6 +343,8 @@ async def multi_hop_query(
     max_hops: int = 3,
     predicate_filter: str | None = None,
     limit: int = 100,
+    constraints: list[dict[str, Any]] | None = None,
+    mode: str | None = None,
 ) -> dict[str, Any]:
     """
     Perform a multi-hop pathfinding query in the knowledge graph.
@@ -399,5 +401,13 @@ async def multi_hop_query(
 
     if predicate_filter:
         arguments["predicate"] = predicate_filter  # API uses 'predicate'
+
+    # Optional in-query constraints (e.g. degree/degree_percentile to suppress hubs)
+    # and result detail mode (slim|full). The Kestrel MCP tool accepts both.
+    if constraints:
+        arguments["constraints"] = constraints
+
+    if mode:
+        arguments["mode"] = mode
 
     return await call_kestrel_tool("multi_hop_query", arguments)

@@ -17,10 +17,18 @@ spec.loader.exec_module(state_module)
 LiteratureSupport = state_module.LiteratureSupport
 Hypothesis = state_module.Hypothesis
 
-# Set up package hierarchy for literature_grounding relative imports
+# Set up package hierarchy for literature_grounding relative imports.
+# NOTE (issue #40): give each stub a real __path__ so submodules this file does NOT
+# explicitly fake (e.g. kestrel_backend.logging_config, imported by test_logging.py)
+# still resolve to the real source instead of failing with "'kestrel_backend' is not a
+# package" during collection. The explicitly-faked submodules below remain authoritative
+# because a direct sys.modules entry is consulted before __path__-based resolution.
 kestrel_backend = types.ModuleType("kestrel_backend")
+kestrel_backend.__path__ = ["src/kestrel_backend"]
 kestrel_backend_graph = types.ModuleType("kestrel_backend.graph")
+kestrel_backend_graph.__path__ = ["src/kestrel_backend/graph"]
 kestrel_backend_graph_nodes = types.ModuleType("kestrel_backend.graph.nodes")
+kestrel_backend_graph_nodes.__path__ = ["src/kestrel_backend/graph/nodes"]
 
 sys.modules["kestrel_backend"] = kestrel_backend
 sys.modules["kestrel_backend.graph"] = kestrel_backend_graph
@@ -44,6 +52,7 @@ mock_semantic_scholar = types.ModuleType("kestrel_backend.semantic_scholar")
 mock_semantic_scholar.search_papers = None
 mock_semantic_scholar.score_relevance = None
 mock_semantic_scholar.classify_relationship = None
+mock_semantic_scholar.classify_relationship_llm = None  # issue #40: real node imports this (R14)
 mock_semantic_scholar.extract_key_passage = None
 mock_semantic_scholar.format_authors = None
 mock_semantic_scholar.extract_doi = None
@@ -237,6 +246,27 @@ class TestLiteratureSupportModel:
         assert lit.relevance_score == 0.85
         assert lit.relationship == "supporting"
         assert lit.doi is None  # Optional field
+
+    def test_repairs_mojibake_in_text_fields(self):
+        """Issue #39: UTF-8 mojibake in citation text is repaired; legit text preserved."""
+        moj_em = "—".encode("utf-8").decode("latin-1")    # em-dash mojibake
+        moj_apos = "’".encode("utf-8").decode("latin-1")  # apostrophe mojibake
+        lit = LiteratureSupport(
+            paper_id="p", year=2021, authors=f"Rabbani{moj_apos}s group",
+            title=f"Lipid{moj_em}diabetes link",
+            key_passage="real em-dash — and café",
+        )
+        assert lit.title == "Lipid—diabetes link"  # single-encoding mojibake repaired
+        assert moj_em not in lit.title
+        assert "Rabbani" in lit.authors and moj_apos not in lit.authors
+        assert "café" in lit.key_passage  # legitimate accented text preserved
+        assert "—" in lit.key_passage     # legitimate em-dash preserved (not stripped)
+
+        # deeply double-encoded sequence from the issue (Rabbani 2021)
+        lit2 = LiteratureSupport(paper_id="p2", year=2021, authors="A",
+                                 title='dose Ã¢Â€Â" response curve')
+        assert "Ã¢" not in lit2.title  # double-mojibake lead bytes removed
+        assert "—" in lit2.title       # replaced with the correct em-dash
 
     def test_literature_support_with_doi(self):
         """Test LiteratureSupport with DOI."""

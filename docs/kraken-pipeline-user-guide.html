@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KRAKEN Discovery Pipeline — User Guide</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#171f29; --panel2:#1e2935; --ink:#e6edf3; --muted:#9aa7b4;
+    --line:#2b3947; --accent:#4aa3ff; --accent2:#6ee7b7; --warn:#f7c948;
+    --chip:#243240; --code:#0b1118;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{display:grid;grid-template-columns:260px 1fr;max-width:1200px;margin:0 auto}
+  nav{position:sticky;top:0;align-self:start;height:100vh;overflow:auto;padding:28px 18px;
+    border-right:1px solid var(--line);background:var(--panel)}
+  nav h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:18px 0 8px}
+  nav a{display:block;color:var(--ink);text-decoration:none;padding:5px 10px;border-radius:6px;font-size:14px}
+  nav a:hover{background:var(--chip);color:var(--accent)}
+  main{padding:42px 48px;min-width:0}
+  header.hero{border-bottom:1px solid var(--line);padding-bottom:24px;margin-bottom:8px}
+  .eyebrow{color:var(--accent2);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px}
+  h1{font-size:34px;margin:6px 0 4px;letter-spacing:-.5px}
+  h2.section{font-size:24px;margin:46px 0 12px;padding-top:10px;border-top:1px solid var(--line)}
+  h3{font-size:18px;margin:26px 0 8px;color:#cdd9e5}
+  p,li{color:#d3dde6}
+  .lede{font-size:18px;color:var(--muted);max-width:70ch}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:.88em;
+    background:var(--code);padding:2px 6px;border-radius:5px;color:#bfe3ff;border:1px solid var(--line)}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:16px 18px;overflow:auto}
+  pre code{background:none;border:none;padding:0;color:#d6e7f5}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14.5px}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#cdd9e5;font-weight:600}
+  tr:nth-child(even) td{background:rgba(255,255,255,.018)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:16px 0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .chip{display:inline-block;background:var(--chip);border:1px solid var(--line);border-radius:999px;
+    padding:2px 10px;font-size:12px;color:#bcd;margin:2px 4px 2px 0}
+  .chip.on{border-color:var(--accent2);color:var(--accent2)}
+  .chip.off{border-color:var(--warn);color:var(--warn)}
+  .note{border-left:3px solid var(--accent);background:rgba(74,163,255,.07);padding:12px 16px;border-radius:0 8px 8px 0;margin:14px 0}
+  .note.warn{border-color:var(--warn);background:rgba(247,201,72,.07)}
+  .note.ok{border-color:var(--accent2);background:rgba(110,231,183,.07)}
+  .kpi{display:flex;gap:14px;flex-wrap:wrap;margin:10px 0}
+  .kpi div{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 16px;min-width:130px}
+  .kpi b{display:block;font-size:22px;color:var(--accent)}
+  .kpi span{color:var(--muted);font-size:13px}
+  .muted{color:var(--muted)}
+  .tag{font-size:11px;font-weight:700;padding:1px 7px;border-radius:5px;vertical-align:middle}
+  .tag.flag{background:#3a2f12;color:var(--warn);border:1px solid #5a4a1e}
+  .tag.live{background:#13362b;color:var(--accent2);border:1px solid #1f5544}
+  .tag.plan{background:#241d36;color:#c4b5fd;border:1px solid #3d3163}
+  footer{margin-top:50px;border-top:1px solid var(--line);padding-top:18px;color:var(--muted);font-size:13px}
+  svg{max-width:100%;height:auto}
+  .diagram{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin:16px 0}
+  @media(max-width:900px){.wrap{grid-template-columns:1fr}nav{position:static;height:auto;border-right:none;border-bottom:1px solid var(--line)}main{padding:28px 20px}.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <div class="eyebrow">KRAKEN</div>
+  <div style="font-weight:700;margin:2px 0 10px">Pipeline User Guide</div>
+  <h2>Contents</h2>
+  <a href="#overview">1 · Overview</a>
+  <a href="#modes">2 · Operating modes</a>
+  <a href="#pipeline">3 · The discovery pipeline</a>
+  <a href="#nodes">4 · Node reference</a>
+  <a href="#depth">5 · Reasoning depth</a>
+  <a href="#tiers">6 · Two-tier execution</a>
+  <a href="#kg">7 · The Kestrel graph</a>
+  <a href="#config">8 · Configuration</a>
+  <a href="#io">9 · Inputs &amp; outputs</a>
+  <a href="#run">10 · Running it</a>
+  <a href="#state">11 · Current state</a>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">Biomedical Knowledge-Graph Discovery</div>
+  <h1>KRAKEN Discovery Pipeline</h1>
+  <p class="lede">A 10-node LangGraph workflow that turns a biomedical question into a research-grade
+  analysis — resolving entities, classifying them by knowledge-graph connectivity, reasoning over the
+  Kestrel graph at one-hop / multi-hop / subgraph depth, and synthesising a cited report with hypotheses.</p>
+  <p class="muted" style="font-size:13px">Reflects the discovery pipeline as merged to
+  <code>dev</code> · generated 2026-06-01.</p>
+</header>
+
+<!-- 1 OVERVIEW -->
+<h2 class="section" id="overview">1 · Overview</h2>
+<p>KRAKEN answers biomedical discovery questions against <b>Kestrel</b>, a large biomedical knowledge graph.
+It runs as a Python (FastAPI) backend plus a React frontend that communicate over WebSocket. Two engines
+sit behind it: a single-agent <b>Classic mode</b> for direct graph queries, and a <b>Discovery Pipeline
+mode</b> — the LangGraph workflow this guide documents.</p>
+<div class="kpi">
+  <div><b>10</b><span>pipeline nodes</span></div>
+  <div><b>16.3M</b><span>graph nodes</span></div>
+  <div><b>112.5M</b><span>graph edges</span></div>
+  <div><b>21</b><span>Kestrel tools</span></div>
+  <div><b>2</b><span>analysis tiers</span></div>
+</div>
+<div class="note">The pipeline is <b>additive and degradation-tolerant</b>: each node enriches a shared
+state object, and individual API/LLM failures are logged and skipped rather than aborting the run.</div>
+
+<!-- 2 MODES -->
+<h2 class="section" id="modes">2 · Operating modes</h2>
+<div class="grid2">
+  <div class="card">
+    <h3 style="margin-top:0">Classic mode</h3>
+    <p>A single Claude agent with the Kestrel MCP tools, for direct, conversational graph queries
+    ("what is X associated with?"). Fast, interactive, no multi-node orchestration.</p>
+    <p class="muted">Note: the "advanced" agent tools (<code>guilt_by_association</code>,
+    <code>missing_edge_prediction</code>, …) are agent-side Claude prompts, not Kestrel server endpoints.</p>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Discovery Pipeline mode</h3>
+    <p>The 10-node LangGraph workflow — research-grade analysis with entity triage, parallel
+    well-characterised vs. cold-start branches, pathway enrichment, cross-entity integration, optional
+    temporal classification, synthesis, and literature grounding.</p>
+    <p class="muted">This guide covers Discovery Pipeline mode.</p>
+  </div>
+</div>
+
+<!-- 3 PIPELINE -->
+<h2 class="section" id="pipeline">3 · The discovery pipeline</h2>
+<p>Entry point is <code>intake</code>; the graph ends after <code>literature_grounding</code>. Two
+decision points shape the flow: <b>Triage</b> routes entities into parallel analysis branches by
+connectivity, and <b>Integration</b> conditionally inserts the <b>Temporal</b> node for longitudinal studies.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 960 470" role="img" aria-label="Pipeline topology">
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#5c7aa8"/>
+    </marker>
+  </defs>
+  <style>
+    .box{fill:#1e2935;stroke:#33465a;rx:9}
+    .lbl{fill:#dfe9f2;font:13px -apple-system,Segoe UI,Roboto,sans-serif;text-anchor:middle}
+    .br{fill:#13362b;stroke:#1f5544}
+    .cond{fill:#241d36;stroke:#3d3163}
+    .ed{stroke:#5c7aa8;stroke-width:1.6;fill:none;marker-end:url(#arrow)}
+    .cap{fill:#9aa7b4;font:11px -apple-system,sans-serif;text-anchor:middle}
+  </style>
+  <!-- row 1 -->
+  <rect class="box" x="20"  y="20" width="130" height="40" rx="9"/><text class="lbl" x="85"  y="45">intake</text>
+  <rect class="box" x="190" y="20" width="150" height="40" rx="9"/><text class="lbl" x="265" y="45">entity_resolution</text>
+  <rect class="box cond" x="380" y="20" width="110" height="40" rx="9"/><text class="lbl" x="435" y="45">triage ◇</text>
+  <line class="ed" x1="150" y1="40" x2="188" y2="40"/>
+  <line class="ed" x1="340" y1="40" x2="378" y2="40"/>
+  <!-- branches -->
+  <rect class="br" x="540" y="0"  width="130" height="38" rx="9"/><text class="lbl" x="605" y="24">direct_kg</text>
+  <rect class="br" x="540" y="56" width="130" height="38" rx="9"/><text class="lbl" x="605" y="80">cold_start</text>
+  <line class="ed" x1="490" y1="34" x2="538" y2="19"/>
+  <line class="ed" x1="490" y1="46" x2="538" y2="75"/>
+  <text class="cap" x="605" y="108">parallel (if both)</text>
+  <!-- converge -->
+  <rect class="box" x="730" y="20" width="150" height="40" rx="9"/><text class="lbl" x="805" y="45">pathway_enrichment</text>
+  <line class="ed" x1="670" y1="19" x2="728" y2="36"/>
+  <line class="ed" x1="670" y1="75" x2="728" y2="44"/>
+  <!-- row 2 -->
+  <rect class="box" x="730" y="150" width="150" height="40" rx="9"/><text class="lbl" x="805" y="175">integration ◇</text>
+  <line class="ed" x1="805" y1="60" x2="805" y2="148"/>
+  <rect class="cond" x="540" y="150" width="120" height="40" rx="9"/><text class="lbl" x="600" y="175">temporal</text>
+  <text class="cap" x="690" y="142">if longitudinal</text>
+  <line class="ed" x1="730" y1="170" x2="662" y2="170"/>
+  <rect class="box" x="730" y="250" width="150" height="40" rx="9"/><text class="lbl" x="805" y="275">synthesis</text>
+  <line class="ed" x1="805" y1="190" x2="805" y2="248"/>
+  <line class="ed" x1="600" y1="190" x2="730" y2="262"/>
+  <text class="cap" x="650" y="232">else</text>
+  <rect class="box" x="730" y="350" width="150" height="40" rx="9"/><text class="lbl" x="805" y="375">literature_grounding</text>
+  <line class="ed" x1="805" y1="290" x2="805" y2="348"/>
+  <rect class="box" x="730" y="420" width="150" height="34" rx="9" style="fill:#0b1118"/><text class="lbl" x="805" y="442">END</text>
+  <line class="ed" x1="805" y1="390" x2="805" y2="418"/>
+  <!-- skip note -->
+  <text class="cap" x="435" y="78">◇ = decision point</text>
+</svg>
+</div>
+<p class="muted" style="font-size:13.5px">If triage resolves no entities, it routes straight to
+<code>pathway_enrichment</code> (analysis branches skipped). When both well-characterised and sparse
+entities exist, <code>direct_kg</code> and <code>cold_start</code> run in the same LangGraph superstep;
+their findings merge safely via <code>operator.add</code> reducers.</p>
+
+<!-- 4 NODES -->
+<h2 class="section" id="nodes">4 · Node reference</h2>
+<table>
+  <tr><th>#</th><th>Node</th><th>Purpose</th><th>Notes</th></tr>
+  <tr><td>1</td><td><b>intake</b></td><td>Parse the query, extract candidate entities, detect query type &amp; longitudinal intent.</td><td>Heuristic, no LLM.</td></tr>
+  <tr><td>2</td><td><b>entity_resolution</b></td><td>Resolve names to CURIEs via Kestrel search.</td><td>Tier-1 API, Tier-2 SDK fallback.</td></tr>
+  <tr><td>3</td><td><b>triage</b></td><td>Count edges per entity; classify as well-characterised / moderate / sparse / cold-start; route branches.</td><td>Decision point.</td></tr>
+  <tr><td>4</td><td><b>direct_kg</b></td><td>Analyse well-characterised &amp; moderate entities — disease associations, pathway memberships via ranking presets; optional multi-hop chains.</td><td>Parallel branch. <span class="tag flag">multi-hop flag</span></td></tr>
+  <tr><td>5</td><td><b>cold_start</b></td><td>Analogue-based inference for sparse / unknown entities (similar-nodes search).</td><td>Parallel branch.</td></tr>
+  <tr><td>6</td><td><b>pathway_enrichment</b></td><td>Shared neighbours across all entities; emergent biological themes.</td><td>Convergence point; hub-aware.</td></tr>
+  <tr><td>7</td><td><b>integration</b></td><td>Cross-entity bridges (multi-hop), gap analysis; optional connecting subgraph.</td><td>Decision point. <span class="tag flag">subgraph flag</span></td></tr>
+  <tr><td>8</td><td><b>temporal</b></td><td>Longitudinal classification of findings.</td><td>Conditional — longitudinal studies only.</td></tr>
+  <tr><td>9</td><td><b>synthesis</b></td><td>Generate the final report and hypotheses from all accumulated evidence.</td><td>—</td></tr>
+  <tr><td>10</td><td><b>literature_grounding</b></td><td>Attach citations to hypotheses from PubMed / OpenAlex / Exa / Semantic Scholar; build a references table.</td><td>HTTP APIs; terminal node.</td></tr>
+</table>
+
+<!-- 5 DEPTH -->
+<h2 class="section" id="depth">5 · Reasoning depth</h2>
+<p>The pipeline reasons over the graph at three depths. One-hop is always on; multi-hop and subgraph are
+<b>flag-gated and default off</b> (the "reasoning-depth demo slice"), so they stay inert until explicitly enabled.</p>
+<table>
+  <tr><th>Mode</th><th>Where</th><th>What it surfaces</th><th>Status</th></tr>
+  <tr><td><b>One-hop</b></td><td>direct_kg</td><td>Direct disease/pathway associations via ranking presets.</td><td><span class="tag live">always on</span></td></tr>
+  <tr><td><b>Multi-hop</b></td><td>direct_kg</td><td>Mechanistic chains for well-characterised entities, e.g. <code>disease → intermediate → target</code> (<code>source=direct_kg_multi_hop</code>).</td><td><span class="tag flag">multi_hop_enabled</span></td></tr>
+  <tr><td><b>Subgraph</b></td><td>integration</td><td>Connecting structure (nodes + edges) between resolved entities, summarised as a Bridge.</td><td><span class="tag flag">subgraph_enabled</span></td></tr>
+</table>
+<div class="note ok"><b>Hub guard.</b> Multi-hop and subgraph queries suppress generic "hub" nodes
+<i>in-query</i> via a <code>degree &lt; hub_threshold</code> constraint (Kestrel accepts <code>degree</code> /
+<code>degree_percentile</code> node constraints), so deep traversal doesn't resurface high-degree noise as findings.</div>
+
+<!-- 6 TIERS -->
+<h2 class="section" id="tiers">6 · Two-tier execution</h2>
+<p>Most analysis nodes follow the same resilience pattern:</p>
+<div class="grid2">
+  <div class="card"><h3 style="margin-top:0">Tier 1 — direct API</h3>
+    <p>Structured calls to Kestrel (<code>one_hop_query</code>, <code>multi_hop_query</code>,
+    <code>similar_nodes</code>, …). Fast, deterministic, the common path.</p></div>
+  <div class="card"><h3 style="margin-top:0">Tier 2 — Claude SDK fallback</h3>
+    <p>When a Tier-1 call fails, the node falls back to a Claude Agent SDK reasoning step with the Kestrel
+    MCP tools. Bounded by per-node semaphores.</p></div>
+</div>
+<p class="muted">Concurrency is deliberately heterogeneous: entity_resolution / triage use a semaphore of 1
+(CLI-spawn safety); batch-analysis nodes use 6–8. The demo-slice multi-hop fan-out has its own dedicated
+semaphore so it stays independent of Tier-2 batching.</p>
+
+<!-- 7 KG -->
+<h2 class="section" id="kg">7 · The Kestrel knowledge graph</h2>
+<p>Kestrel exposes a biomedical graph (<code>kraken</code> v2.0.0) over an MCP-over-HTTP API at
+<code>https://kestrel.nathanpricelab.com/mcp</code>. Data-access tools require an <code>X-API-Key</code>;
+metadata/vocabulary tools are open.</p>
+<div class="kpi">
+  <div><b>16,278,030</b><span>nodes</span></div>
+  <div><b>112,506,763</b><span>edges</span></div>
+  <div><b>88</b><span>Biolink categories</span></div>
+  <div><b>115</b><span>predicates</span></div>
+</div>
+<table>
+  <tr><th>Group</th><th>Tools</th></tr>
+  <tr><td>Traversal</td><td><code>one_hop_query</code>, <code>multi_hop_query</code>, <code>subgraph_query</code>, <code>get_edges</code>, <code>get_nodes</code></td></tr>
+  <tr><td>Search</td><td><code>text_search</code>, <code>hybrid_search</code>, <code>vector_search</code>, <code>similar_nodes</code></td></tr>
+  <tr><td>Metadata / vocab (no key)</td><td><code>health_check</code>, <code>get_metagraph</code>, <code>get_traversal_options</code>, <code>get_valid_categories</code> / <code>_predicates</code> / <code>_prefixes</code>, …</td></tr>
+</table>
+<p><b>Ranking presets</b> (used to tune novelty vs. confidence on traversal queries):
+<span class="chip">established</span><span class="chip">hidden_gems</span>
+<span class="chip">frontier</span><span class="chip">deep_dive</span>
+<span class="chip">speculative</span><span class="chip">long_shot</span>.
+The pipeline currently uses <code>established</code> + <code>hidden_gems</code> in <code>direct_kg</code>;
+broader preset routing is planned (see §11).</p>
+
+<!-- 8 CONFIG -->
+<h2 class="section" id="config">8 · Configuration</h2>
+<p>Per-node settings live in <code>backend/src/kestrel_backend/graph/pipeline_config.py</code>
+(accessed via <code>get_pipeline_config()</code>). Key knobs:</p>
+<table>
+  <tr><th>Config · field</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td><code>DirectKGConfig.hub_threshold</code></td><td>5000</td><td>Entities/path-nodes above this edge count are treated as hubs.</td></tr>
+  <tr><td><code>DirectKGConfig.multi_hop_enabled</code></td><td><span class="chip off">False</span></td><td>Enable multi-hop mechanistic chains for well-characterised entities.</td></tr>
+  <tr><td><code>DirectKGConfig.multi_hop_max_hops</code> / <code>_limit</code></td><td>2 / 10</td><td>Multi-hop path length and result cap.</td></tr>
+  <tr><td><code>DirectKGConfig.multi_hop_semaphore</code></td><td>6</td><td>Concurrent multi-hop calls (independent of Tier-2 batching).</td></tr>
+  <tr><td><code>IntegrationConfig.subgraph_enabled</code></td><td><span class="chip off">False</span></td><td>Enable connecting-subgraph detection between entities.</td></tr>
+  <tr><td><code>IntegrationConfig.max_subgraph_nodes</code></td><td>5</td><td>Entities passed as <code>node_ids</code> to a subgraph query.</td></tr>
+  <tr><td><code>LiteratureGroundingConfig.max_hypotheses</code></td><td>15</td><td>Hypotheses grounded per run (prioritised by tier).</td></tr>
+</table>
+<div class="note warn"><b>Demo flags are off by default.</b> To show reasoning depth (e.g. in LangGraph
+Studio), set <code>multi_hop_enabled</code> and <code>subgraph_enabled</code> to <code>True</code>, then
+revert after — they gate behaviour whose quality has not yet been formally evaluated.</div>
+
+<!-- 9 IO -->
+<h2 class="section" id="io">9 · Inputs &amp; outputs</h2>
+<p>The pipeline operates on a single shared <code>DiscoveryState</code> (a Pydantic-typed TypedDict).
+You invoke it with a query string; it returns the final state.</p>
+<pre><code>from kestrel_backend.graph.runner import run_discovery
+
+state = await run_discovery("Type 2 diabetes mechanisms and connected drug targets")
+print(state["synthesis_report"])   # the narrative report
+print(state["hypotheses"])         # list[Hypothesis], each with literature_support
+print(state["bridges"])            # list[Bridge] cross-entity connections</code></pre>
+<p>Key state fields:</p>
+<table>
+  <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+  <tr><td><code>raw_query</code></td><td>str</td><td>The input question (required).</td></tr>
+  <tr><td><code>query_type</code></td><td>retrieval · discovery · hybrid</td><td>Detected intent.</td></tr>
+  <tr><td><code>direct_findings</code></td><td>list[Finding]</td><td>Evidence from direct_kg / cold_start / integration (incl. multi-hop chains).</td></tr>
+  <tr><td><code>bridges</code></td><td>list[Bridge]</td><td>Cross-entity connections (multi-hop + subgraph).</td></tr>
+  <tr><td><code>synthesis_report</code></td><td>str</td><td>Final narrative report.</td></tr>
+  <tr><td><code>hypotheses</code></td><td>list[Hypothesis]</td><td>Generated hypotheses, grounded with citations.</td></tr>
+  <tr><td><code>model_usages</code></td><td>list[ModelUsageRecord]</td><td>Per-node token usage (for cost tracking).</td></tr>
+</table>
+<p class="muted">Streaming: <code>stream_discovery(query)</code> yields <code>{node_name: node_output}</code>
+per superstep — this is what LangGraph Studio visualises.</p>
+
+<!-- 10 RUN -->
+<h2 class="section" id="run">10 · Running it</h2>
+<h3>Local backend + frontend</h3>
+<pre><code># Frontend (React, Vite HMR on :5173)
+npm run dev
+
+# Backend (FastAPI, WebSocket on :8000)
+cd backend &amp;&amp; uv sync
+uv run uvicorn src.kestrel_backend.main:app --reload --host 127.0.0.1 --port 8000</code></pre>
+<h3>LangGraph Studio (visual debugger)</h3>
+<pre><code>cd backend &amp;&amp; uv run langgraph dev    # open the printed Studio URL
+# graph entry: kestrel_backend.graph.builder:build_discovery_graph (kraken_discovery)</code></pre>
+<h3>Tests</h3>
+<pre><code>cd backend
+uv run python -m pytest tests/ -m "not integration"</code></pre>
+<div class="note warn">Use <code>uv run python -m pytest</code> — not <code>uv run pytest</code>. On paths
+containing spaces, the <code>pytest</code> launcher's shebang breaks and falls back to the system Python
+(which lacks the project's dependencies).</div>
+<h3>Required environment (<code>backend/.env</code>)</h3>
+<p><code>KESTREL_API_KEY</code> (graph data access), <code>ANTHROPIC_API_KEY</code> + Claude SDK OAuth
+(<code>claude login</code>), and the literature keys <code>S2_API_KEY</code> / <code>EXA_API_KEY</code>
+(OpenAlex &amp; PubMed need none). Set <code>CLERK_AUTH_ENABLED=false</code> to disable auth locally.</p>
+
+<!-- 11 STATE -->
+<h2 class="section" id="state">11 · Current state &amp; roadmap</h2>
+<p>What is live, flag-gated, and planned right now:</p>
+<table>
+  <tr><th>Capability</th><th>Status</th></tr>
+  <tr><td>10-node pipeline, parallel branches, conditional temporal node, literature grounding</td><td><span class="tag live">live</span></td></tr>
+  <tr><td>Per-node cost tracking (<code>model_usages</code>) for AstaBench</td><td><span class="tag live">live</span></td></tr>
+  <tr><td>Multi-hop chains in direct_kg · connecting subgraph in integration (hub-guarded)</td><td><span class="tag flag">built · flag-off</span></td></tr>
+  <tr><td>Per-entity tool strategies, expanded ranking presets, <code>/canonicalize</code>, a pipeline-init metadata node, <code>validation_tier</code></td><td><span class="tag plan">planned</span></td></tr>
+  <tr><td>AstaBench literature-grounding comparison (solver + ScholarQA)</td><td><span class="tag plan">planned</span></td></tr>
+</table>
+<div class="note"><b>On the flag-gated depth features:</b> they are wired and verified against the live graph,
+but they are a <i>capability demonstration</i> — not yet a measured improvement in discovery quality.
+That evaluation is tracked separately.</div>
+
+<footer>
+KRAKEN Discovery Pipeline — user guide · generated from source on
+<code>dev</code>, 2026-06-01. Topology per
+<code>backend/src/kestrel_backend/graph/builder.py</code>. Self-contained HTML; no external dependencies.
+</footer>
+</main>
+</div>
+</body>
+</html>

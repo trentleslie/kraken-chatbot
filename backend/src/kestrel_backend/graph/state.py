@@ -5,9 +5,19 @@ Uses TypedDict for LangGraph compatibility with Pydantic models for validation.
 The Annotated[list[X], operator.add] pattern enables parallel writes to list fields.
 """
 
-from typing import TypedDict, Literal, Annotated
-from pydantic import BaseModel, Field, ConfigDict
+from typing import TypedDict, Literal, Annotated, Any
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 import operator
+import ftfy
+
+
+# Deeply double-encoded UTF-8 mojibake sequences that ftfy cannot fully resolve on its
+# own (observed in literature citations, e.g. Rabbani 2021). Applied before ftfy.fix_text,
+# which then repairs the common single-encoding cases. (issue #39)
+_MOJIBAKE_REPLACEMENTS = {
+    'Ã¢Â€Â"': "—",   # em-dash
+    "Ã¢Â€Â™": "'",   # apostrophe
+}
 
 
 class EntityResolution(BaseModel):
@@ -229,6 +239,22 @@ class LiteratureSupport(BaseModel):
         default="s2", description="Source of this literature reference"
     )
 
+    @field_validator("title", "authors", "key_passage", mode="before")
+    @classmethod
+    def _repair_mojibake(cls, v: Any) -> Any:
+        """Repair UTF-8 mojibake in citation text at construction so it is clean
+        everywhere downstream — references table and frontend (issue #39).
+
+        Explicit replacements catch deeply double-encoded punctuation that ftfy can't
+        fully resolve; ftfy.fix_text handles common single-encoding mojibake and leaves
+        legitimate text (em-dashes, accents) intact.
+        """
+        if not isinstance(v, str) or not v:
+            return v
+        for bad, good in _MOJIBAKE_REPLACEMENTS.items():
+            v = v.replace(bad, good)
+        return ftfy.fix_text(v)
+
 
 # =============================================================================
 # Phase 5: Hypothesis Model
@@ -273,6 +299,10 @@ class ModelUsageRecord(BaseModel):
     output_tokens: int = Field(0, ge=0)
     cache_read_tokens: int = Field(0, ge=0, description="Prompt cache read tokens")
     cache_creation_tokens: int = Field(0, ge=0, description="Prompt cache creation tokens")
+    # MCP tool-availability diagnostics (issue #44). mcp_tool_calls counts mcp__* tool-use
+    # blocks observed; available_tools is the SDK init tool list when exposed (else None).
+    mcp_tool_calls: int = Field(0, ge=0, description="Count of mcp__* tool-use blocks in this call")
+    available_tools: list[str] | None = Field(None, description="Tool names from SDK init event, if exposed")
 
 
 class DiscoveryState(TypedDict, total=False):
@@ -332,6 +362,9 @@ class DiscoveryState(TypedDict, total=False):
     # === Phase 4a: Pathway Enrichment ===
     shared_neighbors: Annotated[list[SharedNeighbor], operator.add]
     biological_themes: list[BiologicalTheme]
+    # Set True when Phase B (one-hop SDK/HTTP) was dropped as unreliable (issue #44).
+    # Plain single-writer boolean — pathway_enrichment is serial, so no reducer needed.
+    pathway_enrichment_degraded: bool
 
     # === Phase 4b: Integration (Bridges + Gap Analysis) ===
     bridges: Annotated[list[Bridge], operator.add]

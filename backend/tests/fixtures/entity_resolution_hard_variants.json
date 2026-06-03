@@ -1,0 +1,28 @@
+{
+  "_description": "Hard-variant entity-resolution recall fixture for the #61 go/no-go gate. Each `raw_name` is a deliberately hard spelling (hyphenation, numeric/N- prefix, '-ate' vs '-ic acid', lowercase gene symbol, common-vs-canonical name) that would plausibly miss Tier-1's raw hybrid_search score threshold and fall to the Tier-2 prefetch+select path. `expected_curie` is the correct node, labeled by a model-INDEPENDENT rule: gene symbols -> the verified HUMAN NCBIGene id (confirmed via human equivalent_ids: ENSG/UniProt-human/REACT R-HSA, NOT the arbitrary-species ortholog hybrid_search returns for a bare symbol); metabolites -> the node whose canonical name exactly equals the entity, else the standard CHEBI L-/acid form. Entries marked `_ambiguous` have multiple equally-valid CURIEs for the same entity (acid vs anion, or the same compound across UMLS/MESH/CHEBI) and exact-CURIE matching is inherently brittle for them. The gate asserts the Tier-2 path resolves `raw_name` to `expected_curie` for >= 95% of entries. Re-run: uv run python tests/recall_gate.py (needs live Kestrel + Claude SDK).",
+  "_threshold": 0.95,
+  "entities": [
+    {"raw_name": "tryptophan", "expected_curie": "CHEBI:27897", "class": "common-name-exact"},
+    {"raw_name": "phenylalanine", "expected_curie": "CHEBI:17295", "class": "common-name-to-L-canonical"},
+    {"raw_name": "beta-hydroxybutyrate", "expected_curie": "CHEBI:20067", "class": "ate-vs-acid+greek-prefix", "_ambiguous": "CHEMBL beta-Hydroxybutyrate vs CHEBI 3-hydroxybutyric acid"},
+    {"raw_name": "hexadecanedioate", "expected_curie": "CHEBI:73722", "class": "ate-vs-acid", "_ambiguous": "CHEBI:76276 hexadecanedioate(2-) anion vs CHEBI:73722 acid"},
+    {"raw_name": "N-lactoyl phenylalanine", "expected_curie": "CHEBI:174217", "class": "N-prefix+spacing+L-form"},
+    {"raw_name": "hexadecanoate", "expected_curie": "CHEBI:7896", "class": "ate-exact-name"},
+    {"raw_name": "pyruvate", "expected_curie": "CHEBI:15361", "class": "ate-exact-name"},
+    {"raw_name": "tyrosine", "expected_curie": "CHEBI:17895", "class": "common-name-to-L-canonical"},
+    {"raw_name": "urate", "expected_curie": "CHEBI:17775", "class": "ate-vs-acid+iupac-name"},
+    {"raw_name": "kynurenine", "expected_curie": "CHEBI:28683", "class": "common-name-exact", "_ambiguous": "UMLS:C0022818 vs CHEBI:28683, same entity different DB"},
+    {"raw_name": "kif6", "expected_curie": "NCBIGene:221458", "class": "lowercase-gene-symbol-human"},
+    {"raw_name": "nlgn1", "expected_curie": "NCBIGene:22871", "class": "lowercase-gene-symbol-human"},
+    {"raw_name": "tp53", "expected_curie": "NCBIGene:7157", "class": "lowercase-gene-symbol-human"},
+    {"raw_name": "brca1", "expected_curie": "NCBIGene:672", "class": "lowercase-gene-symbol-human"},
+    {"raw_name": "apoe", "expected_curie": "NCBIGene:348", "class": "lowercase-gene-symbol-human"},
+    {"raw_name": "pcsk9", "expected_curie": "NCBIGene:255738", "class": "lowercase-gene-symbol-human"},
+    {"raw_name": "il6", "expected_curie": "NCBIGene:3569", "class": "lowercase-gene-symbol-human"},
+    {"raw_name": "L-leucine", "expected_curie": "CHEBI:15603", "class": "hyphenation-control"},
+    {"raw_name": "L-valine", "expected_curie": "CHEBI:16414", "class": "hyphenation-control"},
+    {"raw_name": "L-isoleucine", "expected_curie": "CHEBI:17191", "class": "hyphenation-control"},
+    {"raw_name": "carnitine", "expected_curie": "UMLS:C0007258", "class": "common-name-exact", "_ambiguous": "UMLS:C0007258 vs MESH:M0003493, same entity different DB"},
+    {"raw_name": "creatinine", "expected_curie": "CHEBI:16737", "class": "common-name-control"}
+  ]
+}

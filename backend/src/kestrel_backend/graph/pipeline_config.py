@@ -36,6 +36,26 @@ class DirectKGConfig(BaseModel):
         default=25,
         description="Maximum edges per preset per category in KG queries.",
     )
+    multi_hop_enabled: bool = Field(
+        default=False,
+        description="Demo-slice flag: when True, well-characterized entities also get a "
+        "multi_hop_query for mechanistic chains. Default False keeps the pipeline inert "
+        "until the demo run flips it (docs/plans/2026-05-30-001-feat-discovery-depth-demo-slice-plan.md).",
+    )
+    multi_hop_max_hops: int = Field(
+        default=2,
+        description="Max path length for direct_kg multi-hop queries.",
+    )
+    multi_hop_limit: int = Field(
+        default=10,
+        description="Max paths returned per multi-hop query.",
+    )
+    multi_hop_semaphore: int = Field(
+        default=6,
+        description="Concurrent multi-hop API calls against the shared Kestrel server. "
+        "Kept independent of batch_size (Tier-2 SDK batching) so tuning one does not "
+        "silently change the other.",
+    )
 
 
 class PathwayEnrichmentConfig(BaseModel):
@@ -46,6 +66,17 @@ class PathwayEnrichmentConfig(BaseModel):
         description="Nodes with more edges than this are flagged as hubs in "
         "shared-neighbor filtering. Lower than direct_kg (5000) because this "
         "filters neighbors, not entities — a different purpose.",
+    )
+    drop_findings_on_degraded: bool = Field(
+        default=True,
+        description="When Phase B is detected as degraded (MCP tools unavailable or "
+        "HTTP prefetch returned no data), drop the unreliable SDK shared-neighbor "
+        "findings instead of letting hallucinated output reach synthesis (issue #44).",
+    )
+    sdk_semaphore: int = Field(
+        default=4,
+        description="Max concurrent SDK calls for the Phase B data-in-prompt inference "
+        "(issue #44 Stage 2). Mirrors the other SDK nodes' per-node semaphore.",
     )
 
 
@@ -129,6 +160,27 @@ class LiteratureGroundingConfig(BaseModel):
     )
 
 
+class IntegrationConfig(BaseModel):
+    """Configuration for the integration node."""
+
+    hub_threshold: int = Field(
+        default=5000,
+        description="Subgraph traversal is constrained to nodes below this degree "
+        "(in-query hub guard), matching direct_kg's threshold.",
+    )
+    subgraph_enabled: bool = Field(
+        default=False,
+        description="Demo-slice flag: when True, integration also runs a subgraph_query "
+        "to surface connecting structure between resolved entities. Default False keeps "
+        "the pipeline inert until the demo run flips it "
+        "(docs/plans/2026-05-30-001-feat-discovery-depth-demo-slice-plan.md).",
+    )
+    max_subgraph_nodes: int = Field(
+        default=5,
+        description="Max resolved-entity CURIEs passed as node_ids to a subgraph_query.",
+    )
+
+
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration with per-node sub-models.
 
@@ -143,6 +195,7 @@ class PipelineConfig(BaseModel):
     triage: TriageConfig = Field(default_factory=TriageConfig)
     cold_start: ColdStartConfig = Field(default_factory=ColdStartConfig)
     literature_grounding: LiteratureGroundingConfig = Field(default_factory=LiteratureGroundingConfig)
+    integration: IntegrationConfig = Field(default_factory=IntegrationConfig)
 
 
 @lru_cache(maxsize=1)

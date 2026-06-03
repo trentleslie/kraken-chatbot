@@ -194,3 +194,33 @@ class TestSelectCanonicalRun:
         idx, output = select_canonical_run(runs, outputs)
         assert idx == 0
         assert output == {"run": 0}
+
+
+class TestComputeAllToleranceBands:
+    """Test the file-discovery layer that reads stored run outputs."""
+
+    def test_missing_middle_run_not_truncated(self, tmp_path):
+        """Issue #47: a missing run in the middle (run 3 of 5) must not silently
+        drop the later runs (4, 5) — glob discovery instead of break-on-first-gap."""
+        from kestrel_backend.assessment.variance import compute_all_tolerance_bands
+        from kestrel_backend.assessment.capture import query_hash
+
+        query = "test query for variance truncation"
+        qh = query_hash(query)
+        outputs = tmp_path / "outputs"
+        outputs.mkdir(parents=True)
+
+        # Runs 1, 2, 4, 5 exist on disk; run 3 is absent (e.g. failed to write).
+        for run in (1, 2, 4, 5):
+            (outputs / f"{qh}_run{run}.json").write_text(json.dumps({
+                "resolved_entities": [{"curie": "X:1"}],
+                "direct_findings": [],
+            }))
+
+        all_bands = compute_all_tolerance_bands(tmp_path, [{"query": query}])
+        assert qh in all_bands
+
+        # All 4 present runs must be counted — the old break-on-missing loop stopped
+        # at run 2 when run 3 was absent, yielding run_count == 2.
+        assert all_bands[qh]["run_count"] == 4
+        assert all_bands[qh]["metric_bands"]["resolved_entity_count"]["n"] == 4

@@ -69,6 +69,14 @@ class TestSerializeState:
         result = _serialize_state(state)
         assert result == {"pair": ["a", "b"]}
 
+    def test_serialize_set_to_sorted_list(self):
+        """Issue #46: set/frozenset serialize to a deterministic sorted list,
+        not the str() fallback like "{'a', 'b'}"."""
+        assert _serialize_value({"b", "a", "c"}) == ["a", "b", "c"]
+        assert _serialize_value(frozenset({3, 1, 2})) == [1, 2, 3]
+        # integers must sort numerically, not lexicographically ([1, 10, 2]) — Greptile #58
+        assert _serialize_value({1, 10, 2}) == [1, 2, 10]
+
 
 class TestQueryHash:
     """Test deterministic query hashing."""

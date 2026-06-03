@@ -18,3 +18,8 @@ backend/assessment_data/cassettes/
 backend/assessment_data/outputs/
 backend/assessment_data/canonical/
 backend/assessment_data/capture_summary.json
+# Scratch spikes / build artifacts (not tracked)
+tmp/
+
+# Large vendored review PDF (~10MB) — kept local; small reference PDFs are tracked
+docs/references/biomedical-link-prediction-methods-and-evidence.pdf

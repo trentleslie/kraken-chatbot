@@ -24,7 +24,8 @@ from ..state import (
     DiscoveryState, SharedNeighbor, BiologicalTheme, Finding
 )
 from ...kestrel_client import multi_hop_query
-from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, McpStdioServerConfig, get_kestrel_mcp_config, chunk, KESTREL_COMMAND, KESTREL_ARGS, query_with_usage
+from .cold_start import get_entity_connections
+from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
 from ..pipeline_config import get_pipeline_config
 from ..state_contracts import validate_state, PathwayEnrichmentInput, PathwayEnrichmentOutput
 
@@ -40,28 +41,32 @@ MIN_EDGE_COUNT = 20
 # Timeout for SDK query (8 minutes for multi-entity analysis)
 SDK_QUERY_TIMEOUT = 480
 
-# System prompt for pathway enrichment analysis
-PATHWAY_ENRICHMENT_PROMPT = """You are a biomedical knowledge graph analyst finding shared biological context.
+# Limit concurrent SDK inference calls (issue #44 Stage 2; also closes the
+# previously-missing semaphore gap for this node).
+SDK_SEMAPHORE = asyncio.Semaphore(_config.sdk_semaphore)
 
-You have access to these Kestrel MCP tools:
-- one_hop_query: Query neighbors of an entity. Use with curie parameter to get connected nodes.
-- get_nodes: Get details about specific nodes including edge count (degree).
+# Inference system prompt (issue #44): the one-hop neighbors are pre-fetched via HTTP and
+# embedded in the user prompt, so the model has NO tools — it reasons over the provided
+# data and emits a strict shared_neighbors/themes JSON schema.
+#
+# NOTE: this node was migrated off the stdio Kestrel MCP server (`uvx mcp-client-kestrel`,
+# which does not exist on PyPI — see cold_start.py) to direct HTTP. The same broken stdio
+# path is still used by entity_resolution, direct_kg, integration, temporal, and triage;
+# their SDK tiers are silently degraded by the same root cause and should be audited /
+# migrated under a separate issue. The Stage 1 instrumentation (sdk_utils diagnostics)
+# quantifies their exposure in production logs.
+PATHWAY_INFERENCE_PROMPT = """You are a biomedical knowledge graph analyst finding shared biological context.
 
-TASK: For the given list of entities, find neighbors that are shared by 2+ input entities.
+The one-hop neighbors of each input entity have already been retrieved from the Kestrel
+knowledge graph and are provided to you below. You do NOT have tools — reason over the
+provided data only.
 
-STEP 1: For each input entity CURIE, call one_hop_query to get its neighbors.
-        Example: one_hop_query(curie="CHEBI:28757") returns neighbors of fructose.
+TASK: Find neighbors that appear in 2+ input entities' neighbor lists (shared neighbors),
+track which input entities connect to each, and group them by Biolink category into
+biological themes.
 
-STEP 2: Identify neighbors that appear in 2+ entity neighborhoods (shared neighbors).
-        Track which input entities connect to each shared neighbor.
-
-STEP 3: For promising shared neighbors, call get_nodes to check their degree (edge count).
-        If degree > 1000, mark as hub (less specific, connects to everything).
-
-STEP 4: Group shared neighbors by category to identify biological themes.
-
-CRITICAL: Hub nodes (degree >1000) like GO:0005515 (protein binding), GO:0005737 (cytoplasm)
-connect to everything and provide less insight. Flag them clearly.
+Hub nodes (very high degree — e.g. GO:0005515 protein binding, GO:0005737 cytoplasm) connect
+to everything and provide less insight. Mark them with "is_hub": true when you can tell.
 
 Return ONLY a valid JSON object (no other text):
 {
@@ -79,17 +84,45 @@ Return ONLY a valid JSON object (no other text):
   "themes": [
     {
       "category": "biolink:BiologicalProcess",
-      "members": ["GO:0006915", "GO:0006954"],
-      "member_names": ["apoptotic process", "inflammatory response"],
-      "input_coverage": 4,
+      "members": ["GO:0006915"],
+      "member_names": ["apoptotic process"],
+      "input_coverage": 2,
       "top_non_hub": "GO:0006915"
     }
   ]
 }
 
-If no shared neighbors are found after querying, return:
-{"shared_neighbors": [], "themes": []}
+If no shared neighbors are found, return: {"shared_neighbors": [], "themes": []}
 """
+
+
+def _build_inference_user_prompt(selected_entities: list, per_entity: dict[str, dict]) -> str:
+    """Embed the prefetched one-hop neighbors into the inference prompt (issue #44, Stage 2)."""
+    blocks = []
+    for e in selected_entities:
+        data = per_entity.get(e.curie, {})
+        if data.get("errored"):
+            continue  # skip entities whose HTTP prefetch failed — no useful data to embed
+        neighbors = []
+        for edge in data.get("edges", []):
+            if isinstance(edge, dict):
+                obj = edge.get("object", {})
+                oid = obj.get("id") if isinstance(obj, dict) else None
+                pred = edge.get("predicate", "")
+                if oid:
+                    neighbors.append(f"{oid} [{pred}]")
+        name = e.resolved_name or e.raw_name
+        neighbor_str = "; ".join(neighbors[:50]) if neighbors else "none"
+        blocks.append(
+            f"### {e.curie} ({name})\n"
+            f"Predicate summary: {data.get('summary', '')}\n"
+            f"Neighbors ({len(neighbors)}): {neighbor_str}"
+        )
+    body = "\n\n".join(blocks)
+    return (
+        f"Analyze these {len(selected_entities)} entities' one-hop neighbors and find "
+        f"neighbors shared by 2+ entities:\n\n{body}\n\nReturn JSON only."
+    )
 
 
 def parse_enrichment_result(
@@ -256,6 +289,95 @@ async def find_two_hop_shared_neighbors(
     return shared_neighbors, errors
 
 
+def _build_two_hop_findings(two_hop_neighbors: dict[str, int]) -> list[Finding]:
+    """Build Phase A two-hop Finding objects.
+
+    Computed independently of Phase B so they survive a Phase B degradation or
+    exception (issue #44, R5).
+    """
+    if not two_hop_neighbors:
+        return []
+    top_two_hop = sorted(two_hop_neighbors.items(), key=lambda x: x[1], reverse=True)[:3]
+    two_hop_summary = ", ".join([f"{curie} ({count} inputs)" for curie, count in top_two_hop])
+    return [Finding(
+        entity=", ".join([c for c, _ in top_two_hop]),
+        claim=f"Two-hop connectivity: {two_hop_summary}",
+        tier=2,
+        source="pathway_enrichment_two_hop",
+        confidence="moderate",
+    )]
+
+
+def _degraded_phase_b_result(
+    two_hop_findings: list[Finding],
+    base_errors: list[str],
+    usage_record: Any,
+    reason: str,
+) -> dict[str, Any]:
+    """Shared degraded-result builder (issue #44).
+
+    Drops the unreliable SDK Phase B findings, keeps the real Phase A two-hop
+    findings, and flags the run as degraded. Used for both the MCP-unavailable
+    path (Unit 3) and the HTTP-prefetch-no-data path (Unit 5).
+    """
+    logger.warning(
+        "pathway_enrichment degraded (reason=%s) — dropping SDK shared neighbors, keeping two-hop",
+        reason,
+    )
+    result: dict[str, Any] = {
+        "shared_neighbors": [],
+        "biological_themes": [],
+        "direct_findings": two_hop_findings,
+        "pathway_enrichment_degraded": True,
+        "errors": base_errors + [f"pathway_enrichment Phase B degraded: {reason}"],
+    }
+    if usage_record is not None:
+        result["model_usages"] = [usage_record]
+    return result
+
+
+async def prefetch_one_hop_neighbors(entities: list) -> tuple[dict[str, dict], bool]:
+    """Fetch one-hop neighbor data per entity via the HTTP Kestrel client (issue #44, Stage 2).
+
+    Mirrors cold_start's ``get_entity_connections`` (which collapses every failure mode into
+    an empty ``{"edges": []}`` with no ``total_count`` key — so absence of ``total_count``
+    is our per-entity ``errored`` discriminator).
+
+    Returns ``(per_entity, no_data)`` where ``per_entity`` maps curie -> ``{summary, edges,
+    errored}`` and ``no_data`` is True when fewer than 2 entities returned real (non-errored,
+    non-empty) neighbor data. ``no_data`` is the post-migration emptiness signal that keeps
+    the in-prompt inference from running on a sparse, hallucination-prone prompt.
+    """
+    curies = [e.curie for e in entities if e.curie]
+    results = await asyncio.gather(
+        *[get_entity_connections(c) for c in curies], return_exceptions=True
+    )
+    per_entity: dict[str, dict] = {}
+    populated = 0
+    for curie, result in zip(curies, results):
+        if isinstance(result, Exception):
+            logger.warning("prefetch one_hop_query raised for %s: %s", curie, result)
+            per_entity[curie] = {"summary": f"Error: {result}", "edges": [], "errored": True}
+            continue
+        errored = "total_count" not in result  # get_entity_connections drops it on every failure
+        edges = result.get("edges", [])
+        per_entity[curie] = {
+            "summary": result.get("summary", ""),
+            "edges": edges,
+            "errored": errored,
+        }
+        if not errored and edges:
+            populated += 1
+
+    no_data = populated < 2  # shared-neighbor analysis is meaningless below 2 populated entities
+    if no_data:
+        logger.warning(
+            "pathway_enrichment prefetch: only %d/%d entities returned real neighbor data (no-data signal)",
+            populated, len(curies),
+        )
+    return per_entity, no_data
+
+
 @validate_state(PathwayEnrichmentInput, PathwayEnrichmentOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
@@ -333,12 +455,6 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             "errors": ["Claude Agent SDK not available for pathway enrichment"],
         }
 
-    # Build entity list for the user prompt (include edge counts for context)
-    entity_list = "\n".join([
-        f"- {e.curie} ({e.resolved_name or e.raw_name}, {edge_count_map.get(e.curie, 0)} edges)"
-        for e in selected_entities
-    ])
-
     # Phase A: Two-hop shared neighbor analysis via API (fast, no LLM)
     logger.info("Starting two-hop shared neighbor analysis via API...")
     entity_curies = [e.curie for e in selected_entities if e.curie]
@@ -355,41 +471,43 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             list(two_hop_neighbors.items())[:5]
         )
 
-    # User prompt with entity count to help LLM budget tool calls
-    user_prompt = f"""Analyze these {len(selected_entities)} entities and find shared neighbors:
-
-{entity_list}
-
-You have {len(selected_entities)} entities to query. Budget your tool calls:
-- Use one_hop_query for each entity (~{len(selected_entities)} calls)
-- Use get_nodes sparingly for key shared neighbors
-- Return JSON when done
-
-NOTE: Two-hop analysis already completed separately. Focus on ONE-HOP neighbors only."""
+    # Stage Phase A two-hop findings OUTSIDE the Phase B try so they survive a
+    # Phase B degradation or exception (issue #44, R5).
+    two_hop_findings = _build_two_hop_findings(two_hop_neighbors)
 
     try:
-        # Configure Kestrel MCP server (stdio-based, same as entity_resolution)
-        kestrel_config = get_kestrel_mcp_config()
+        # Stage 2 (issue #44): fetch one-hop neighbors via HTTP, then reason over them
+        # in-prompt with NO stdio MCP. Mirrors cold_start's data-in-prompt inference.
+        per_entity, no_data = await prefetch_one_hop_neighbors(selected_entities)
+        if no_data:
+            # Fewer than 2 entities returned real neighbor data — running inference on a
+            # sparse prompt would re-hallucinate, so degrade instead (issue #44).
+            return _degraded_phase_b_result(
+                two_hop_findings, two_hop_errors, None, "prefetch_no_data"
+            )
+
+        user_prompt = _build_inference_user_prompt(selected_entities, per_entity)
 
         options = ClaudeAgentOptions(
-            system_prompt=PATHWAY_ENRICHMENT_PROMPT,
-            allowed_tools=["mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"],
-            mcp_servers={"kestrel": kestrel_config},
-            max_turns=25,  # Enough for ~N one_hop_query + get_nodes + JSON synthesis
+            system_prompt=PATHWAY_INFERENCE_PROMPT,
+            allowed_tools=[],  # data-in-prompt inference — no MCP tools (issue #44)
+            max_turns=2,
             permission_mode="bypassPermissions",
-            max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for large KG responses
+            max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for embedded KG data
         )
 
-        # Execute the query using query_with_usage with timeout
+        # Execute the inference under the shared SDK semaphore (closes the
+        # previously-missing semaphore gap for this node).
         try:
-            result_text, usage_record = await asyncio.wait_for(
-                query_with_usage(
-                    prompt=user_prompt,
-                    options=options,
-                    node_name="pathway_enrichment",
-                ),
-                timeout=SDK_QUERY_TIMEOUT,
-            )
+            async with SDK_SEMAPHORE:
+                result_text, usage_record = await asyncio.wait_for(
+                    query_with_usage(
+                        prompt=user_prompt,
+                        options=options,
+                        node_name="pathway_enrichment",
+                    ),
+                    timeout=SDK_QUERY_TIMEOUT,
+                )
         except asyncio.TimeoutError:
             duration = time.time() - start
             logger.error(
@@ -399,6 +517,8 @@ NOTE: Two-hop analysis already completed separately. Focus on ONE-HOP neighbors 
             return {
                 "shared_neighbors": [],
                 "biological_themes": [],
+                "direct_findings": two_hop_findings,  # preserve Phase A on timeout (issue #44, R5)
+                "pathway_enrichment_degraded": True,  # disclose: Phase B produced nothing
                 "errors": [f"SDK query timed out after {SDK_QUERY_TIMEOUT}s"],
             }
 
@@ -415,16 +535,25 @@ NOTE: Two-hop analysis already completed separately. Focus on ONE-HOP neighbors 
         if parse_errors:
             logger.warning("pathway_enrichment parse errors: %s", parse_errors)
 
-        # Create findings from top themes
-        findings: list[Finding] = []
+        # Issue #44 (Stage 2): Phase B uses data-in-prompt inference (allowed_tools=[]),
+        # so there is no MCP tier left to degrade — the MCP-degradation classifier was
+        # removed here rather than left as inert/unreachable code. The active protection
+        # against sparse-prompt re-hallucination is the prefetch no_data guard above
+        # (see the _degraded_phase_b_result call at the prefetch stage). If MCP tools are
+        # ever reintroduced into Phase B, re-add classify_mcp_degradation(expected_tools=[...])
+        # plus the drop_findings_on_degraded branch here.
+        phase_b_degraded = False
+
+        # Create findings from top themes (SDK-derived — dropped on degradation)
+        sdk_findings: list[Finding] = []
         for theme in themes[:5]:  # Top 5 themes
             if theme.input_coverage >= 2:
                 non_hub_count = sum(
-                    1 for sn in shared_neighbors 
+                    1 for sn in shared_neighbors
                     if sn.curie in theme.members and not sn.is_hub
                 )
                 category_name = theme.category.replace("biolink:", "")
-                findings.append(Finding(
+                sdk_findings.append(Finding(
                     entity=", ".join(theme.members[:3]),
                     claim=f"Shared {category_name} context: {', '.join(theme.member_names[:3])} connects {theme.input_coverage} input entities",
                     tier=2,
@@ -432,18 +561,8 @@ NOTE: Two-hop analysis already completed separately. Focus on ONE-HOP neighbors 
                     confidence="high" if non_hub_count > 0 else "moderate",
                 ))
 
-        # Add two-hop findings
-        if two_hop_neighbors:
-            # Add finding about two-hop connectivity
-            top_two_hop = sorted(two_hop_neighbors.items(), key=lambda x: x[1], reverse=True)[:3]
-            two_hop_summary = ", ".join([f"{curie} ({count} inputs)" for curie, count in top_two_hop])
-            findings.append(Finding(
-                entity=", ".join([c for c, _ in top_two_hop]),
-                claim=f"Two-hop connectivity: {two_hop_summary}",
-                tier=2,
-                source="pathway_enrichment_two_hop",
-                confidence="moderate",
-            ))
+        # Combine SDK theme findings with the staged Phase A two-hop findings.
+        findings = sdk_findings + two_hop_findings
 
         duration = time.time() - start
         logger.info(
@@ -458,6 +577,7 @@ NOTE: Two-hop analysis already completed separately. Focus on ONE-HOP neighbors 
             "shared_neighbors": shared_neighbors,
             "biological_themes": themes,
             "direct_findings": findings,  # Add to direct_findings via reducer
+            "pathway_enrichment_degraded": phase_b_degraded,
             "errors": all_errors,
         }
         if usage_record is not None:
@@ -467,8 +587,12 @@ NOTE: Two-hop analysis already completed separately. Focus on ONE-HOP neighbors 
     except Exception as e:
         duration = time.time() - start
         logger.error("Pathway enrichment failed after %.1fs: %s", duration, str(e))
+        # Preserve the staged Phase A two-hop findings even on a Phase B exception
+        # (issue #44, R5): emit direct_findings so the operator.add reducer receives them.
         return {
             "shared_neighbors": [],
             "biological_themes": [],
+            "direct_findings": two_hop_findings,
+            "pathway_enrichment_degraded": True,  # disclose: Phase B produced nothing
             "errors": [f"Pathway enrichment failed: {str(e)}"],
         }
