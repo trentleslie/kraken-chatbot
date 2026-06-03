@@ -6,15 +6,12 @@ import pytest
 from kestrel_backend.graph.sdk_utils import (
     DEFAULT_MODEL_NAME,
     HAS_SDK,
-    KESTREL_ARGS,
-    KESTREL_COMMAND,
     ResultMessage,
     SystemMessage,
     ToolUseBlock,
     chunk,
     classify_mcp_degradation,
     create_agent_options,
-    get_kestrel_mcp_config,
     query_with_usage,
 )
 from kestrel_backend.graph.state import ModelUsageRecord
@@ -25,28 +22,6 @@ class TestHasSDK:
 
     def test_has_sdk_is_boolean(self):
         assert isinstance(HAS_SDK, bool)
-
-
-class TestKestrelConfig:
-    """Test Kestrel MCP configuration factory."""
-
-    def test_kestrel_constants(self):
-        assert KESTREL_COMMAND == "uvx"
-        assert KESTREL_ARGS == ["mcp-client-kestrel"]
-
-    def test_get_kestrel_mcp_config_returns_config_or_none(self):
-        config = get_kestrel_mcp_config()
-        if HAS_SDK:
-            assert config is not None
-            # McpStdioServerConfig may be a dict or object depending on SDK version
-            if isinstance(config, dict):
-                assert config["command"] == "uvx"
-                assert config["args"] == ["mcp-client-kestrel"]
-            else:
-                assert config.command == "uvx"
-                assert config.args == ["mcp-client-kestrel"]
-        else:
-            assert config is None
 
 
 class TestCreateAgentOptions:
@@ -81,15 +56,19 @@ class TestCreateAgentOptions:
             assert options is None
 
     def test_create_with_mcp_servers(self):
-        config = get_kestrel_mcp_config()
-        if config is not None:
-            options = create_agent_options(
-                system_prompt="With MCP",
-                allowed_tools=["hybrid_search"],
-                mcp_servers=[config],
-            )
+        # create_agent_options still supports an mcp_servers passthrough (used by
+        # future non-stdio servers); the Kestrel stdio config itself was retired (#61).
+        config = {"type": "stdio", "command": "x", "args": []}
+        options = create_agent_options(
+            system_prompt="With MCP",
+            allowed_tools=["hybrid_search"],
+            mcp_servers=[config],
+        )
+        if HAS_SDK:
             assert options is not None
             assert options.mcp_servers == [config]
+        else:
+            assert options is None
 
 
 class TestChunk:
