@@ -36,11 +36,12 @@ class FakeRest:
 
 
 def _query_then_done(spec):
-    """Stateless LLM: emit `spec` on the initial task prompt, else 'done'."""
+    """Stateless LLM: emit `spec` until a refining query has run (prompt reports
+    'new paths'), then 'done'."""
     async def fn(prompt, system):
-        if prompt.startswith("Task:"):
-            return json.dumps(spec), None
-        return json.dumps({"action": "done"}), None
+        if "new paths" in prompt:
+            return json.dumps({"action": "done"}), None
+        return json.dumps(spec), None
     return fn
 
 
@@ -87,15 +88,15 @@ async def test_invalid_verb_is_reprompted_then_recovers():
     rest = FakeRest({("CHEBI:1", "MONDO:1"): [["CHEBI:1", "NCBIGene:5", "MONDO:1"]]})
 
     async def llm(prompt, system):
-        if prompt.startswith("Task:"):
-            return json.dumps({"action": "query", "verb": "BOGUS"}), None
         if "verb must be one of" in prompt:
             return json.dumps({"action": "query", "verb": "multi_hop",
                                "start_node_ids": ["CHEBI:1"], "end_node_ids": ["MONDO:1"], "max_path_length": 3}), None
-        return json.dumps({"action": "done"}), None
+        if "new paths" in prompt:
+            return json.dumps({"action": "done"}), None
+        return json.dumps({"action": "query", "verb": "BOGUS"}), None  # initial -> invalid verb
 
     rec = await run_iterate_loop(rest, ITEM, llm)
-    assert rec["hit"] is True
+    assert rec["hit"] is True  # baseline seed recovers the gold; invalid verb is re-prompted
 
 
 async def test_grounding_violation_on_invented_curie():

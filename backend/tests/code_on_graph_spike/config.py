@@ -31,10 +31,10 @@ class SpikeConfig(BaseModel):
     cost_ceiling_mult: float = Field(default=3.0, description="Worst-case loop cost must be <= this x baseline")
 
     # --- evidence budget (finding #2) ---
-    multi_hop_limit: int = Field(default=100, description="FROZEN: /multi-hop limit, applied identically to BOTH arms")
+    multi_hop_limit: int = Field(default=100, description="FROZEN: per-query /multi-hop limit, applied identically to BOTH arms")
     baseline_max_path_length: int = Field(default=5, description="Static baseline = ONE-SHOT query at full depth (== iterate reach), so the comparison isolates iteration, not search depth; not a shallow 2-hop")
     max_path_length: int = Field(default=5, description="Executor cap; also the reachability-filter hop bound")
-    aggregate_path_budget: int = Field(default=100, description="Loop's cumulative distinct-path budget == baseline's")
+    aggregate_path_budget: int = Field(default=600, description="Loop's CUMULATIVE distinct-path cap = (turn_cap+1) x per-query limit. The loop seeds with the baseline (100) then accumulates from up to 5 TARGETED refinement queries — surfacing gold paths the single broad top-100 buried IS the mechanism under test. Fairness is bounded by the turn cap (cost), not a shared budget.")
 
     # --- variance band (no temperature control) ---
     k_reruns: int = Field(default=3, ge=1, description="Per-item reruns; hit = majority of K")

@@ -20,10 +20,11 @@ def test_config_is_frozen():
 
 
 def test_multi_hop_limit_is_a_single_frozen_knob_for_both_arms():
-    # finding #2: the limit determines whether the gold path surfaces; it must be
+    # finding #2: the per-query limit determines whether the gold path surfaces; it must be
     # one value applied identically to baseline and iterate arms.
     assert isinstance(CONFIG.multi_hop_limit, int)
-    assert CONFIG.aggregate_path_budget == CONFIG.multi_hop_limit
+    # the loop may accumulate beyond one query's worth (its mechanism); bounded by turn cap.
+    assert CONFIG.aggregate_path_budget == (CONFIG.turn_cap + 1) * CONFIG.multi_hop_limit
 
 
 def test_a_fresh_instance_uses_the_same_defaults():
