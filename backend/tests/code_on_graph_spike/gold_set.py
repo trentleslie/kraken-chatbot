@@ -41,7 +41,7 @@ async def _evaluate(rest: KestrelREST, rec: DmdbRecord, max_hops: int) -> dict |
 
 
 async def build_random_slice(rest: KestrelREST, records: list[DmdbRecord], n: int,
-                             seed: int, max_hops: int, concurrency: int = 12) -> list[dict]:
+                             seed: int, max_hops: int, concurrency: int = 16) -> list[dict]:
     """Seeded shuffle, then resolve + reachability-filter until n items survive.
 
     Records are evaluated in parallel chunks for throughput, but survivors are appended

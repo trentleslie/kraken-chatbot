@@ -23,7 +23,7 @@ class SpikeConfig(BaseModel):
     mcnemar_exact_primary: bool = Field(default=True, description="Exact binomial McNemar is primary; asymptotic uncorrected is sensitivity")
     pi_d_prior: float = Field(default=0.25, description="Conservative discordance prior for powered-N before the iterate arm exists")
     n_floor: int = Field(default=30, description="Hard floor; below the powered-N -> INCONCLUSIVE, never a kill")
-    n_target: int = Field(default=50, description="Target N (20 anchors + 30 random)")
+    n_target: int = Field(default=90, description="Target N = powered-N (90) for 80% power at 15pp, pi_d=0.25: 20 anchors + 70 random")
 
     # --- cost (P3) ---
     turn_cap: int = Field(default=5, description="Hard self-correction turn cap for the iterate loop")

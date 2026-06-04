@@ -37,7 +37,9 @@ class KestrelREST:
 
     def __init__(self, client: httpx.AsyncClient | None = None, base_url: str | None = None):
         self._base = (base_url or KESTREL_API_URL).rstrip("/")
-        self._client = client or httpx.AsyncClient(timeout=60.0)
+        self._client = client or httpx.AsyncClient(
+            timeout=httpx.Timeout(90.0, connect=15.0),
+            limits=httpx.Limits(max_connections=24, max_keepalive_connections=24))
         self._owns_client = client is None
         self.kestrel_calls = 0  # R10: count Kestrel calls (incl. grounding lookups)
 
