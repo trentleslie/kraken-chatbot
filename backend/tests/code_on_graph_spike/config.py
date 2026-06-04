@@ -32,7 +32,7 @@ class SpikeConfig(BaseModel):
 
     # --- evidence budget (finding #2) ---
     multi_hop_limit: int = Field(default=100, description="FROZEN: /multi-hop limit, applied identically to BOTH arms")
-    baseline_max_path_length: int = Field(default=2, description="Static baseline hop length")
+    baseline_max_path_length: int = Field(default=5, description="Static baseline = ONE-SHOT query at full depth (== iterate reach), so the comparison isolates iteration, not search depth; not a shallow 2-hop")
     max_path_length: int = Field(default=5, description="Executor cap; also the reachability-filter hop bound")
     aggregate_path_budget: int = Field(default=100, description="Loop's cumulative distinct-path budget == baseline's")
 
