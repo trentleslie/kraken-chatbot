@@ -1,0 +1,813 @@
+{
+  "_meta": {
+    "n": 50,
+    "anchors": 20,
+    "random": 30,
+    "seed": 20260603,
+    "max_path_length": 5,
+    "strata": {
+      "t2d": 10,
+      "alzheimers": 10,
+      "random": 30
+    }
+  },
+  "items": [
+    {
+      "trial_id": "t2d-01",
+      "drug": "metformin",
+      "start_curie": "CHEBI:6801",
+      "bridge": "PRKAA1 (AMPK)",
+      "gold_bridge_curies": [
+        "NCBIGene:5562"
+      ],
+      "gold_target_curie": "MONDO:0005148",
+      "stratum": "t2d",
+      "hop_length": 2,
+      "difficulty": "hard",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "t2d-02",
+      "drug": "pioglitazone",
+      "start_curie": "CHEBI:8228",
+      "bridge": "PPARG",
+      "gold_bridge_curies": [
+        "NCBIGene:5468"
+      ],
+      "gold_target_curie": "MONDO:0005148",
+      "stratum": "t2d",
+      "hop_length": 2,
+      "difficulty": "easy",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "t2d-03",
+      "drug": "sitagliptin",
+      "start_curie": "CHEBI:40237",
+      "bridge": "DPP4",
+      "gold_bridge_curies": [
+        "NCBIGene:1803"
+      ],
+      "gold_target_curie": "MONDO:0005148",
+      "stratum": "t2d",
+      "hop_length": 2,
+      "difficulty": "easy",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "t2d-04",
+      "drug": "empagliflozin",
+      "start_curie": "CHEBI:82720",
+      "bridge": "SLC5A2",
+      "gold_bridge_curies": [
+        "NCBIGene:6524"
+      ],
+      "gold_target_curie": "MONDO:0005148",
+      "stratum": "t2d",
+      "hop_length": 2,
+      "difficulty": "easy",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "t2d-05",
+      "drug": "glipizide",
+      "start_curie": "CHEBI:5384",
+      "bridge": "ABCC8 (SUR1)",
+      "gold_bridge_curies": [
+        "NCBIGene:6833"
+      ],
+      "gold_target_curie": "MONDO:0005148",
+      "stratum": "t2d",
+      "hop_length": 2,
+      "difficulty": "easy",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "t2d-06",
+      "drug": "liraglutide",
+      "start_curie": "CHEBI:71193",
+      "bridge": "GLP1R",
+      "gold_bridge_curies": [
+        "NCBIGene:2740"
+      ],
+      "gold_target_curie": "MONDO:0005148",
+      "stratum": "t2d",
+      "hop_length": 2,
+      "difficulty": "easy",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "t2d-07",
+      "drug": "acarbose",
+      "start_curie": "CHEBI:2376",
+      "bridge": "MGAM",
+      "gold_bridge_curies": [
+        "NCBIGene:8972"
+      ],
+      "gold_target_curie": "MONDO:0005148",
+      "stratum": "t2d",
+      "hop_length": 2,
+      "difficulty": "easy",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "t2d-08",
+      "drug": "repaglinide",
+      "start_curie": "CHEBI:8805",
+      "bridge": "KCNJ11 (Kir6.2)",
+      "gold_bridge_curies": [
+        "NCBIGene:3767"
+      ],
+      "gold_target_curie": "MONDO:0005148",
+      "stratum": "t2d",
+      "hop_length": 2,
+      "difficulty": "easy",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "t2d-09",
+      "drug": "bromocriptine",
+      "start_curie": "CHEBI:3181",
+      "bridge": "DRD2",
+      "gold_bridge_curies": [
+        "NCBIGene:1813"
+      ],
+      "gold_target_curie": "MONDO:0005148",
+      "stratum": "t2d",
+      "hop_length": 2,
+      "difficulty": "hard",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "t2d-10",
+      "drug": "pramlintide",
+      "start_curie": "CHEBI:135922",
+      "bridge": "CALCR",
+      "gold_bridge_curies": [
+        "NCBIGene:799"
+      ],
+      "gold_target_curie": "MONDO:0005148",
+      "stratum": "t2d",
+      "hop_length": 2,
+      "difficulty": "hard",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "ad-01",
+      "drug": "donepezil",
+      "start_curie": "CHEBI:145499",
+      "bridge": "ACHE",
+      "gold_bridge_curies": [
+        "NCBIGene:43"
+      ],
+      "gold_target_curie": "MONDO:0004975",
+      "stratum": "alzheimers",
+      "hop_length": 2,
+      "difficulty": "easy",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "ad-02",
+      "drug": "galantamine",
+      "start_curie": "CHEBI:42944",
+      "bridge": "ACHE",
+      "gold_bridge_curies": [
+        "NCBIGene:43"
+      ],
+      "gold_target_curie": "MONDO:0004975",
+      "stratum": "alzheimers",
+      "hop_length": 2,
+      "difficulty": "easy",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "ad-03",
+      "drug": "rivastigmine",
+      "start_curie": "CHEBI:8874",
+      "bridge": "BCHE",
+      "gold_bridge_curies": [
+        "NCBIGene:590"
+      ],
+      "gold_target_curie": "MONDO:0004975",
+      "stratum": "alzheimers",
+      "hop_length": 2,
+      "difficulty": "easy",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "ad-04",
+      "drug": "memantine",
+      "start_curie": "CHEBI:64312",
+      "bridge": "GRIN2B (NMDA)",
+      "gold_bridge_curies": [
+        "NCBIGene:2904"
+      ],
+      "gold_target_curie": "MONDO:0004975",
+      "stratum": "alzheimers",
+      "hop_length": 2,
+      "difficulty": "hard",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "ad-05",
+      "drug": "verubecestat",
+      "start_curie": "UNII:J1I0P6WT7T",
+      "bridge": "BACE1",
+      "gold_bridge_curies": [
+        "NCBIGene:23621"
+      ],
+      "gold_target_curie": "MONDO:0004975",
+      "stratum": "alzheimers",
+      "hop_length": 2,
+      "difficulty": "easy",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "ad-06",
+      "drug": "semagacestat",
+      "start_curie": "CHEBI:131158",
+      "bridge": "PSEN1",
+      "gold_bridge_curies": [
+        "NCBIGene:5663"
+      ],
+      "gold_target_curie": "MONDO:0004975",
+      "stratum": "alzheimers",
+      "hop_length": 2,
+      "difficulty": "easy",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "ad-07",
+      "drug": "lecanemab",
+      "start_curie": "UNII:12PYH0FTU9",
+      "bridge": "APP",
+      "gold_bridge_curies": [
+        "NCBIGene:351"
+      ],
+      "gold_target_curie": "MONDO:0004975",
+      "stratum": "alzheimers",
+      "hop_length": 2,
+      "difficulty": "easy",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "ad-08",
+      "drug": "aducanumab",
+      "start_curie": "UNII:105J35OE21",
+      "bridge": "APP",
+      "gold_bridge_curies": [
+        "NCBIGene:351"
+      ],
+      "gold_target_curie": "MONDO:0004975",
+      "stratum": "alzheimers",
+      "hop_length": 2,
+      "difficulty": "easy",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "ad-09",
+      "drug": "idalopirdine",
+      "start_curie": "UNII:59WCJ0YNWM",
+      "bridge": "HTR6",
+      "gold_bridge_curies": [
+        "NCBIGene:3362"
+      ],
+      "gold_target_curie": "MONDO:0004975",
+      "stratum": "alzheimers",
+      "hop_length": 2,
+      "difficulty": "hard",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "ad-10",
+      "drug": "brexpiprazole",
+      "start_curie": "CHEBI:134716",
+      "bridge": "DRD2",
+      "gold_bridge_curies": [
+        "NCBIGene:1813"
+      ],
+      "gold_target_curie": "MONDO:0004975",
+      "stratum": "alzheimers",
+      "hop_length": 2,
+      "difficulty": "hard",
+      "source": "anchor"
+    },
+    {
+      "trial_id": "dmdb-DB00502_MESH_D005879_1",
+      "drug": "haloperidol",
+      "start_curie": "CHEBI:5613",
+      "bridge": "D(2) dopamine receptor / dopamine secretion, neurotransmission / Tics",
+      "gold_bridge_curies": [
+        "NCBIGene:24318",
+        "GO:0061527",
+        "MONDO:0002420"
+      ],
+      "gold_target_curie": "MONDO:0007661",
+      "stratum": "random",
+      "hop_length": 4,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00502_MESH_D005879_1"
+    },
+    {
+      "trial_id": "dmdb-DB00792_MESH_D012223_1",
+      "drug": "tripelennamine",
+      "start_curie": "CHEBI:9741",
+      "bridge": "Histamine H1 receptor / histamine receptor activity / vasodilation",
+      "gold_bridge_curies": [
+        "NCBIGene:3269",
+        "GO:0004969",
+        "UMLS:C0042401"
+      ],
+      "gold_target_curie": "UMLS:C0494650",
+      "stratum": "random",
+      "hop_length": 4,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00792_MESH_D012223_1"
+    },
+    {
+      "trial_id": "dmdb-DB01042_MESH_D009101_1",
+      "drug": "Melphalan",
+      "start_curie": "CHEBI:28876",
+      "bridge": "DNA / DNA synthesis involved in DNA replication / Cell population proliferation",
+      "gold_bridge_curies": [
+        "NCBIGene:31934",
+        "GO:0000731",
+        "GO:0008284"
+      ],
+      "gold_target_curie": "MONDO:0009693",
+      "stratum": "random",
+      "hop_length": 4,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB01042_MESH_D009101_1"
+    },
+    {
+      "trial_id": "dmdb-DB01053_MESH_D011018_1",
+      "drug": "benzathine benzylpenicillin",
+      "start_curie": "CHEBI:7963",
+      "bridge": "Penicillin-binding protein, transpeptidase / peptidoglycan biosynthetic process / cell wall organization / Streptococcus pneumoniae",
+      "gold_bridge_curies": [
+        "NCBIGene:944843",
+        "PathWhiz:PW123547",
+        "GO:0071554",
+        "NCBITaxon:1313"
+      ],
+      "gold_target_curie": "MONDO:0005249",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB01053_MESH_D011018_1"
+    },
+    {
+      "trial_id": "dmdb-DB06824_MESH_D002292_1",
+      "drug": "Trientine",
+      "start_curie": "CHEBI:9706",
+      "bridge": "G-Quadruplexes / Telomerase reverse transcriptase / cell population proliferation / neoplastic cell",
+      "gold_bridge_curies": [
+        "UMLS:C1517336",
+        "PR:000016238",
+        "GO:0008284",
+        "CL:0001063"
+      ],
+      "gold_target_curie": "MONDO:0005086",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB06824_MESH_D002292_1"
+    },
+    {
+      "trial_id": "dmdb-DB01606_MESH_D013203_1",
+      "drug": "tazobactam",
+      "start_curie": "CHEBI:9421",
+      "bridge": "Beta-lactamase/transpeptidase-like / beta-lactam antibiotic catabolic process / Staphylococcus aureus",
+      "gold_bridge_curies": [
+        "NCBIGene:89492124",
+        "GO:0030655",
+        "NCBITaxon:1280"
+      ],
+      "gold_target_curie": "MONDO:0005545",
+      "stratum": "random",
+      "hop_length": 4,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB01606_MESH_D013203_1"
+    },
+    {
+      "trial_id": "dmdb-DB00620_MESH_D003424_1",
+      "drug": "triamcinolone diacetate",
+      "start_curie": "CHEBI:9667",
+      "bridge": "Glucocorticoid receptor / Phospholipase A2 / Inflammation",
+      "gold_bridge_curies": [
+        "NCBIGene:24413",
+        "NCBIGene:29354",
+        "CHV:0000006703"
+      ],
+      "gold_target_curie": "MONDO:0005011",
+      "stratum": "random",
+      "hop_length": 4,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00620_MESH_D003424_1"
+    },
+    {
+      "trial_id": "dmdb-DB00852_MESH_D003233_1",
+      "drug": "pseudoephedrine",
+      "start_curie": "CHEBI:51209",
+      "bridge": "Alpha-1A adrenergic receptor / Vasoconstriction / Mucus secretion / Allergy",
+      "gold_bridge_curies": [
+        "NCBIGene:29412",
+        "GO:0042310",
+        "GO:0070254",
+        "MONDO:0005271"
+      ],
+      "gold_target_curie": "MONDO:0005642",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00852_MESH_D003233_1"
+    },
+    {
+      "trial_id": "dmdb-DB00929_MESH_D006473_1",
+      "drug": "misoprostol",
+      "start_curie": "CHEBI:63610",
+      "bridge": "Prostaglandin E2 receptor EP4 subtype / Uterine smooth muscle contraction / Vasoconstriction",
+      "gold_bridge_curies": [
+        "NCBIGene:5734",
+        "GO:0070471",
+        "GO:0042310"
+      ],
+      "gold_target_curie": "UMLS:C0473508",
+      "stratum": "random",
+      "hop_length": 4,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00929_MESH_D006473_1"
+    },
+    {
+      "trial_id": "dmdb-DB01212_MESH_D004927_1",
+      "drug": "ceftriaxone",
+      "start_curie": "CHEBI:3514",
+      "bridge": "Penicillin-binding protein 2 / peptidoglycan biosynthetic process / peptidoglycan-based cell wall biogenesis / Escherichia coli",
+      "gold_bridge_curies": [
+        "NCBIGene:944843",
+        "PathWhiz:PW123547",
+        "GO:0009273",
+        "NCBITaxon:562"
+      ],
+      "gold_target_curie": "MONDO:0020920",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB01212_MESH_D004927_1"
+    },
+    {
+      "trial_id": "dmdb-DB00355_MESH_D004716_1",
+      "drug": "Aztreonam",
+      "start_curie": "CHEBI:94511",
+      "bridge": "Penicillin-binding protein, transpeptidase / peptidoglycan biosynthetic process / peptidoglycan-based cell wall biogenesis / Chlamydia trachomatis",
+      "gold_bridge_curies": [
+        "NCBIGene:944843",
+        "PathWhiz:PW123547",
+        "GO:0009273",
+        "BVBRC:813.39"
+      ],
+      "gold_target_curie": "MONDO:0000918",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00355_MESH_D004716_1"
+    },
+    {
+      "trial_id": "dmdb-DB04572_MESH_D010051_1",
+      "drug": "thiotepa",
+      "start_curie": "CHEBI:9570",
+      "bridge": "DNA / DNA replication / epithelial cell proliferation",
+      "gold_bridge_curies": [
+        "NCBIGene:31934",
+        "GO:0006261",
+        "GO:0050678"
+      ],
+      "gold_target_curie": "UMLS:C2217303",
+      "stratum": "random",
+      "hop_length": 4,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB04572_MESH_D010051_1"
+    },
+    {
+      "trial_id": "dmdb-DB00935_MESH_D015508_1",
+      "drug": "oxymetazoline",
+      "start_curie": "CHEBI:7862",
+      "bridge": "Alpha-1a adrenergic receptor / Vasoconstriction",
+      "gold_bridge_curies": [
+        "NCBIGene:29412",
+        "GO:0042310"
+      ],
+      "gold_target_curie": "MONDO:0003014",
+      "stratum": "random",
+      "hop_length": 3,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00935_MESH_D015508_1"
+    },
+    {
+      "trial_id": "dmdb-DB00196_MESH_C536777_1",
+      "drug": "fluconazole",
+      "start_curie": "CHEBI:46081",
+      "bridge": "Lanosterol 14-alpha demethylase (Candida albicans) / Ergosterol biosynthetic process / Cell wall biogenesis / Candida",
+      "gold_bridge_curies": [
+        "NCBIGene:856398",
+        "GO:0006696",
+        "GO:0042546",
+        "NCBITaxon:5475"
+      ],
+      "gold_target_curie": "MONDO:0002026",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00196_MESH_C536777_1"
+    },
+    {
+      "trial_id": "dmdb-DB04911_MESH_D013207_1",
+      "drug": "oritavancin",
+      "start_curie": "CHEBI:82699",
+      "bridge": "peptidoglycan-based cell wall biogenesis / cell division / Staphylococcus aureus",
+      "gold_bridge_curies": [
+        "GO:0009273",
+        "GO:0051301",
+        "NCBITaxon:1280"
+      ],
+      "gold_target_curie": "MONDO:0024313",
+      "stratum": "random",
+      "hop_length": 4,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB04911_MESH_D013207_1"
+    },
+    {
+      "trial_id": "dmdb-DB00585_MESH_D004415_1",
+      "drug": "nizatidine",
+      "start_curie": "CHEBI:7601",
+      "bridge": "Histamine H2 receptor / Gastric acid secretion / Gastric acid",
+      "gold_bridge_curies": [
+        "NCBIGene:85268",
+        "GO:0001696",
+        "MESH:D005744"
+      ],
+      "gold_target_curie": "UMLS:C0232483",
+      "stratum": "random",
+      "hop_length": 4,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00585_MESH_D004415_1"
+    },
+    {
+      "trial_id": "dmdb-DB00742_MESH_D004487_1",
+      "drug": "Mannitol",
+      "start_curie": "CHEBI:16899",
+      "bridge": "Hyperosmotic response",
+      "gold_bridge_curies": [
+        "GO:0006972"
+      ],
+      "gold_target_curie": "MONDO:0006932",
+      "stratum": "random",
+      "hop_length": 2,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00742_MESH_D004487_1"
+    },
+    {
+      "trial_id": "dmdb-DB01007_MESH_D002181_1",
+      "drug": "tioconazole",
+      "start_curie": "CHEBI:77898",
+      "bridge": "Lanosterol 14-alpha demethylase (Candida albicans) / Ergosterol biosynthetic process / Cell wall biogenesis / Candida",
+      "gold_bridge_curies": [
+        "NCBIGene:856398",
+        "GO:0006696",
+        "GO:0042546",
+        "NCBITaxon:5475"
+      ],
+      "gold_target_curie": "MONDO:0007019",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB01007_MESH_D002181_1"
+    },
+    {
+      "trial_id": "dmdb-DB01597_MESH_D004697_1",
+      "drug": "Cilastatin",
+      "start_curie": "CHEBI:3697",
+      "bridge": "Dipeptidase 1 / Imipenem / cell wall biogenesis / Bacteria",
+      "gold_bridge_curies": [
+        "NCBIGene:397196",
+        "CHEBI:51799",
+        "GO:0042546",
+        "NCBITaxon:2"
+      ],
+      "gold_target_curie": "MONDO:0006669",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB01597_MESH_D004697_1"
+    },
+    {
+      "trial_id": "dmdb-DB01332_MESH_D013203_1",
+      "drug": "ceftizoxime",
+      "start_curie": "CHEBI:553473",
+      "bridge": "Penicillin-binding protein, transpeptidase / peptidoglycan biosynthetic process / peptidoglycan-based cell wall biogenesis / Staphylococcus",
+      "gold_bridge_curies": [
+        "NCBIGene:944843",
+        "PathWhiz:PW123547",
+        "GO:0009273",
+        "NCBITaxon:766918"
+      ],
+      "gold_target_curie": "MONDO:0024313",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB01332_MESH_D013203_1"
+    },
+    {
+      "trial_id": "dmdb-DB01254_MESH_D001752_1",
+      "drug": "dasatinib",
+      "start_curie": "CHEBI:49375",
+      "bridge": "Tyrosine-protein kinase ABL1 / Transmembrane receptor protein tyrosine kinase activity / Abnormal cell proliferation",
+      "gold_bridge_curies": [
+        "NCBIGene:25",
+        "GO:0004714",
+        "HP:0031377"
+      ],
+      "gold_target_curie": "MONDO:0018874",
+      "stratum": "random",
+      "hop_length": 4,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB01254_MESH_D001752_1"
+    },
+    {
+      "trial_id": "dmdb-DB00059_MESH_D054198_1",
+      "drug": "pegaspargase",
+      "start_curie": "UNII:7D96IR0PPM",
+      "bridge": "extracellular asparagine / cellular proliferation",
+      "gold_bridge_curies": [
+        "PathWhiz:PW002527",
+        "UMLS:C0596290"
+      ],
+      "gold_target_curie": "MONDO:0004967",
+      "stratum": "random",
+      "hop_length": 3,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00059_MESH_D054198_1"
+    },
+    {
+      "trial_id": "dmdb-DB00335_MESH_D006973_1",
+      "drug": "atenolol",
+      "start_curie": "CHEBI:2904",
+      "bridge": "Beta-1 adrenergic receptor / Renin / Vasoconstriction / Vasoconstriction",
+      "gold_bridge_curies": [
+        "NCBIGene:29412",
+        "PR:000013883",
+        "GO:0042310",
+        "GO:0042310"
+      ],
+      "gold_target_curie": "MONDO:0005044",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00335_MESH_D006973_1"
+    },
+    {
+      "trial_id": "dmdb-DB00934_MESH_D003866_1",
+      "drug": "Maprotiline",
+      "start_curie": "CHEBI:6690",
+      "bridge": "Sodium-dependent noradrenaline transporter / norepinephrine uptake / adrenergic system / Depression",
+      "gold_bridge_curies": [
+        "NCBIGene:25553",
+        "GO:0051620",
+        "UMLS:C0001637",
+        "MONDO:0002050"
+      ],
+      "gold_target_curie": "MONDO:0002050",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00934_MESH_D003866_1"
+    },
+    {
+      "trial_id": "dmdb-DB01240_MESH_D065631_1",
+      "drug": "epoprostenol",
+      "start_curie": "CHEBI:15552",
+      "bridge": "Prostacyclin receptor / inflammatory response",
+      "gold_bridge_curies": [
+        "NCBIGene:5739",
+        "GO:0006954"
+      ],
+      "gold_target_curie": "MONDO:0011786",
+      "stratum": "random",
+      "hop_length": 3,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB01240_MESH_D065631_1"
+    },
+    {
+      "trial_id": "dmdb-DB11596_MESH_D000749_1",
+      "drug": "levofolinic acid",
+      "start_curie": "UMLS:C3652543",
+      "bridge": "5-methyltetrahydrofolic acid",
+      "gold_bridge_curies": [
+        "CHEBI:15641"
+      ],
+      "gold_target_curie": "MONDO:0001700",
+      "stratum": "random",
+      "hop_length": 2,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB11596_MESH_D000749_1"
+    },
+    {
+      "trial_id": "dmdb-DB00701_MESH_D015658_1",
+      "drug": "amprenavir",
+      "start_curie": "CHEBI:40050",
+      "bridge": "Protease / Gag-Pol polyprotein / Virion assembly / Human immunodeficiency virus 1",
+      "gold_bridge_curies": [
+        "PR:000013318",
+        "NCBIGene:155348",
+        "REACT:R-HSA-175474",
+        "NCBITaxon:11676"
+      ],
+      "gold_target_curie": "UMLS:C1096045",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00701_MESH_D015658_1"
+    },
+    {
+      "trial_id": "dmdb-DB01685_MESH_D006073_1",
+      "drug": "FYX-051",
+      "start_curie": "UNII:0J877412JV",
+      "bridge": "Xanthine dehydrogenase/oxidase / Broad substrate specificity ATP-binding cassette transporter ABCG2 / Uric Acid / Uric Acid",
+      "gold_bridge_curies": [
+        "NCBIGene:280960",
+        "NCBIGene:26357",
+        "CHEBI:17775",
+        "CHEBI:17775"
+      ],
+      "gold_target_curie": "MONDO:0005393",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB01685_MESH_D006073_1"
+    },
+    {
+      "trial_id": "dmdb-DB02703_MESH_D004927_1",
+      "drug": "fusidic acid",
+      "start_curie": "CHEBI:29013",
+      "bridge": "Elongation factor G / translation / Escherichia coli",
+      "gold_bridge_curies": [
+        "NCBIGene:850758",
+        "REACT:R-HSA-72766",
+        "NCBITaxon:562"
+      ],
+      "gold_target_curie": "MONDO:0020920",
+      "stratum": "random",
+      "hop_length": 4,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB02703_MESH_D004927_1"
+    },
+    {
+      "trial_id": "dmdb-DB00415_MESH_D013203_1",
+      "drug": "ampicillin",
+      "start_curie": "CHEBI:28971",
+      "bridge": "Penicillin binding protein transpeptidase domain / peptidoglycan biosynthetic process / peptidoglycan-based cell wall biogenesis / Staphylococcus aureus",
+      "gold_bridge_curies": [
+        "NCBIGene:944843",
+        "PathWhiz:PW123547",
+        "GO:0009273",
+        "NCBITaxon:1280"
+      ],
+      "gold_target_curie": "MONDO:0024313",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00415_MESH_D013203_1"
+    }
+  ]
+}
