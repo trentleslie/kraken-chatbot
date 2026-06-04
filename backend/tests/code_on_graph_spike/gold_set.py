@@ -7,6 +7,7 @@ delete iteration's headroom; plan finding / R6).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import random
 from pathlib import Path
@@ -28,24 +29,38 @@ async def is_reachable(rest: KestrelREST, drug: str, disease: str, max_hops: int
     return bool(parse_paths(data))
 
 
+async def _evaluate(rest: KestrelREST, rec: DmdbRecord, max_hops: int) -> dict | None:
+    if len(rec.interior) + 1 > max_hops:
+        return None  # gold path longer than the executor cap -> unrecoverable by either arm
+    item = await to_gold_item(rest, rec, stratum="random")
+    if not item:
+        return None
+    if not await is_reachable(rest, item["start_curie"], item["gold_target_curie"], max_hops):
+        return None
+    return item
+
+
 async def build_random_slice(rest: KestrelREST, records: list[DmdbRecord], n: int,
-                             seed: int, max_hops: int) -> list[dict]:
-    """Seeded shuffle, then resolve + reachability-filter until n items survive."""
+                             seed: int, max_hops: int, concurrency: int = 12) -> list[dict]:
+    """Seeded shuffle, then resolve + reachability-filter until n items survive.
+
+    Records are evaluated in parallel chunks for throughput, but survivors are appended
+    in the original shuffled order, so the result is reproducible for a given seed
+    (Kestrel resolution/reachability are deterministic)."""
     shuffled = records[:]
     random.Random(seed).shuffle(shuffled)
     out: list[dict] = []
-    for rec in shuffled:
-        if len(rec.interior) + 1 > max_hops:
-            continue  # gold path longer than the executor cap -> unrecoverable by either arm
-        item = await to_gold_item(rest, rec, stratum="random")
-        if not item:
-            continue
-        if not await is_reachable(rest, item["start_curie"], item["gold_target_curie"], max_hops):
-            continue
-        out.append(item)
-        if len(out) >= n:
-            break
-    return out
+    idx = 0
+    while len(out) < n and idx < len(shuffled):
+        chunk = shuffled[idx:idx + concurrency]
+        idx += len(chunk)
+        results = await asyncio.gather(*[_evaluate(rest, r, max_hops) for r in chunk])
+        for item in results:  # preserve shuffled order within the chunk
+            if item is not None:
+                out.append(item)
+                if len(out) >= n:
+                    break
+    return out[:n]
 
 
 def _anchor_to_item(a) -> dict:
