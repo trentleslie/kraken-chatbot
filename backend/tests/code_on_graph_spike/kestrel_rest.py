@@ -15,6 +15,7 @@ Endpoints used:
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
@@ -50,11 +51,19 @@ class KestrelREST:
     async def __aexit__(self, *exc: object) -> None:
         await self.aclose()
 
-    async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+    async def _post(self, path: str, body: dict[str, Any], _retries: int = 2) -> dict[str, Any]:
         self.kestrel_calls += 1
-        r = await self._client.post(f"{self._base}{path}", json=body, headers=_headers())
-        r.raise_for_status()
-        return r.json()
+        last_exc: Exception | None = None
+        for attempt in range(_retries + 1):
+            try:
+                r = await self._client.post(f"{self._base}{path}", json=body, headers=_headers())
+                r.raise_for_status()
+                return r.json()
+            except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
+                last_exc = exc  # transient — back off and retry
+                await asyncio.sleep(1.0 * (attempt + 1))
+        assert last_exc is not None
+        raise last_exc
 
     async def hybrid_search(self, text: str, limit: int = 5, category: str | None = None) -> list[dict]:
         body: dict[str, Any] = {"search_text": text, "limit": limit}

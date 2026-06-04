@@ -54,9 +54,10 @@ async def build_random_slice(rest: KestrelREST, records: list[DmdbRecord], n: in
     while len(out) < n and idx < len(shuffled):
         chunk = shuffled[idx:idx + concurrency]
         idx += len(chunk)
-        results = await asyncio.gather(*[_evaluate(rest, r, max_hops) for r in chunk])
+        results = await asyncio.gather(*[_evaluate(rest, r, max_hops) for r in chunk],
+                                       return_exceptions=True)
         for item in results:  # preserve shuffled order within the chunk
-            if item is not None:
+            if isinstance(item, dict):  # skip None (filtered) and Exceptions (transient)
                 out.append(item)
                 if len(out) >= n:
                     break
