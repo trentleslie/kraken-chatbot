@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 _ENV = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(_ENV)
 
-from .baseline import run_baseline_all
+from .baseline import run_baseline
 from .gate_recall import evaluate_gate
 from .gold_set import GOLD_SET_PATH
 from .iterate_loop import default_llm_fn, run_iterate_item_k
@@ -37,12 +37,30 @@ def load_gold_items() -> list[dict]:
 
 
 async def run_phase0(rest: KestrelREST, llm_fn, items: list[dict], k: int | None = None,
-                     n_pilot: int = 15) -> dict:
+                     n_pilot: int = 15, progress=None) -> dict:
+    import time
     pilot = await run_pilot(rest, items, n_pilot)
-    baseline_records = await run_baseline_all(rest, items)
-    iterate_records = []
-    for item in items:
-        iterate_records.append(await run_iterate_item_k(rest, item, llm_fn, k))
+    if progress:
+        progress(f"pilot: R0(overall)={pilot['r0']['overall']:.2f} "
+                 f"by_stratum={ {s: round(v, 2) for s, v in pilot['r0']['by_stratum'].items()} } "
+                 f"powered_n={pilot['powered_n']} gate_form={pilot['gate_form']}")
+    baseline_records: list[dict] = []
+    iterate_records: list[dict] = []
+    nb = ni = 0
+    t0 = time.time()
+    for idx, item in enumerate(items, 1):
+        br = await run_baseline(rest, item)
+        ir = await run_iterate_item_k(rest, item, llm_fn, k)
+        baseline_records.append(br)
+        iterate_records.append(ir)
+        nb += int(br["hit"])
+        ni += int(ir["hit"])
+        if progress:
+            mins = (time.time() - t0) / 60
+            progress(f"[{idx}/{len(items)} t+{mins:.0f}m] {str(item.get('stratum'))[:4]:<4} "
+                     f"base={'H' if br['hit'] else '.'} iter={'H' if ir['hit'] else '.'} "
+                     f"| running base={nb}/{idx} iter={ni}/{idx} | gv={ir['grounding_violations']} "
+                     f"var={ir['variance']}")
     scored = score(baseline_records, iterate_records)
     gate = evaluate_gate(scored, pilot, iterate_records)
     return {"pilot": pilot, "gate": gate,
@@ -69,8 +87,11 @@ async def _amain(args) -> int:
     items = load_gold_items()
     if args.limit:
         items = items[: args.limit]
+    print(f"Phase-0 gate: {len(items)} items, k={args.k or 'config'}. Live progress below.\n", flush=True)
     async with KestrelREST() as rest:
-        result = await run_phase0(rest, default_llm_fn, items, k=args.k, n_pilot=min(15, len(items)))
+        result = await run_phase0(rest, default_llm_fn, items, k=args.k,
+                                  n_pilot=min(15, len(items)),
+                                  progress=lambda m: print("  " + m, flush=True))
     _print_report(result)
     if args.out:
         Path(args.out).write_text(json.dumps(result, indent=2, default=str))
