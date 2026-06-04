@@ -163,7 +163,7 @@ LLM emits JSON spec {verb∈whitelist, start, end, max_path_length≤5, predicat
 - [x] **Unit 0.1a: Disease anchors (20) — curated & measured** *(done this session)*
   `gold_set_anchors.json` committed: 10 T2D + 10 AD, direct human CURIEs, difficulty measured live (14 easy / 6 hard). Remaining 0.1 work is `config.py` + `anchors.py` loader/validator below.
 
-- [ ] **Unit 0.1: REST client + frozen config + anchor loader**
+- [x] **Unit 0.1: REST client + frozen config + anchor loader**
 
 **Goal:** The thin REST client, the frozen pre-registration config, and a validating loader for the committed anchors.
 
@@ -187,7 +187,7 @@ LLM emits JSON spec {verb∈whitelist, start, end, max_path_length≤5, predicat
 - Edge: bad-prefix CURIE → validation error, not silent skip.
 - Test: `kestrel_rest` parser extracts `results[].paths[]` correctly (mocked).
 
-- [ ] **Unit 0.2: DrugMechDB random-30 + crosswalk + unified gold set**
+- [x] **Unit 0.2: DrugMechDB random-30 + crosswalk + unified gold set**
 
 **Goal:** Randomly sample 30 DrugMechDB indications, crosswalk to Kestrel CURIEs, reachability-filter, merge with anchors → unified 50.
 
@@ -206,7 +206,7 @@ LLM emits JSON spec {verb∈whitelist, start, end, max_path_length≤5, predicat
 
 **Test scenarios:** Happy: 2-link record → correct extraction. Edge: multi-intermediate → ordered list; branched → DFS/flagged. Edge: 1→2 CHEBI → excluded. Edge: >5-hop or non-Kestrel node-type → excluded stratum. Edge: same seed → identical 30 (reproducibility). Integration: unified set = 50 (or flags shortfall), strata labelled.
 
-- [ ] **Unit 0.3: Static baseline arm + baseline-only pilot**
+- [x] **Unit 0.3: Static baseline arm + baseline-only pilot**
 
 **Goal:** The static arm (REST multi-hop) and R0 (per stratum) / π_D / powered-N.
 
@@ -222,7 +222,7 @@ LLM emits JSON spec {verb∈whitelist, start, end, max_path_length≤5, predicat
 
 **Test scenarios:** Happy: known-easy anchor → baseline returns gold bridge → hit. Edge: empty → miss `terminal_state=empty`. Error: transport error → retried (max 2) → `transport-failed`, not a miss. Happy: pilot computes R0 + powered-N; Monte-Carlo matches closed-form. Edge: R0=86%→relative form, 84%→absolute (frozen at pilot). Edge: N<floor → INCONCLUSIVE.
 
-- [ ] **Unit 0.4: Iterate-loop arm (structured-spec executor, K reruns, live REST)**
+- [x] **Unit 0.4: Iterate-loop arm (structured-spec executor, K reruns, live REST)**
 
 **Goal:** The treatment — JSON-spec query loop over REST with grounding, bounded cost, variance band.
 
@@ -241,7 +241,7 @@ LLM emits JSON spec {verb∈whitelist, start, end, max_path_length≤5, predicat
 
 **Test scenarios:** Happy: loop finds gold bridge → hit, majority-of-K stable. Edge: turn cap → `turn-cap-hit`, miss. Error: malformed/invalid-verb → consumes a turn, re-prompted. Error (R9): unreturned CURIE → grounding-violation (assert `chebi:6801` vs `CHEBI:6801` is grounded). Error: transport error mid-loop → retried outside turn budget; cassette miss → fail-loud. Integration: LLM vs Kestrel counters recorded separately.
 
-- [ ] **Unit 0.5: Recall gate (Phase-0 kill decision)**
+- [x] **Unit 0.5: Recall gate (Phase-0 kill decision)**
 
 **Goal:** Apply the recall-axis gate and decide KILL vs proceed-to-Phase-1.
 
@@ -327,7 +327,8 @@ LLM emits JSON spec {verb∈whitelist, start, end, max_path_length≤5, predicat
 | Well-characterized anchors → low discordance | The 30 random items carry the McNemar discordance; per-stratum lift reporting makes the easy-vs-hard split visible |
 
 ## Documentation / Operational Notes
-- Throwaway, not in CI; run `cd backend && uv run python tests/code_on_graph_spike/run_spike.py`; unit tests `cd backend && uv run python -m pytest tests/code_on_graph_spike/`.
+- Throwaway, not in CI. **Phase-0 kill-test:** `cd backend && uv run python -m tests.code_on_graph_spike.run_phase0 [--limit N --k K]` (exit 0=PROCEED / 1=NO-GO / 2=INCONCLUSIVE). Unit tests: `cd backend && uv run python -m pytest tests/code_on_graph_spike/`. (Phase-1 `run_spike.py` chains Phase 0→1 once built.)
+- **Execution notes (built 2026-06-03):** baseline = one-shot full-depth query (isolates iteration, not depth); crosswalk via Kestrel REST name-resolution (pragmatic v1, not UniChem/MONDO files); cost is advisory (single-call baseline vs multi-turn loop); REST client retries on timeout, random-slice resolution is parallel + fault-tolerant. Random tranche items are 3-bridge/4-hop (hard); the frozen "all gold interior nodes" bridge unit is stringent there — the pilot's per-stratum R0 will reveal if both arms miss most random items (low discordance risk).
 - Phase 1 creates one EITL `custom` campaign — coordinate around its production launch.
 - After verdict, archive `backend/tests/code_on_graph_spike/` to `docs/experiments/` (NO-GO/INCONCLUSIVE) or promote to `assessment/` (PROCEED).
 
