@@ -4,6 +4,18 @@ This is the pre-registration artifact (P1-P5): all thresholds and the random see
 are fixed BEFORE any results are seen. The git commit timestamp on this file is the
 freeze proof (Phase 0 uses a plain committed file; the hash-enforcing manifest is a
 Phase-1 addition). Do not tune any value here in response to observed results.
+
+Re-freeze 2026-06-07 (before the N=100 re-run; see docs/code-on-graph-phase0-results.md).
+Two documented CORRECTIONS were pre-registered after the N=90 run's measurement-artifact
+diagnosis — neither relaxes a decision threshold:
+  - CHANGED: primary bridge unit strict -> any_one (promotes the already-pre-registered
+    secondary; strict retained as a reported sensitivity).
+  - CHANGED: grounding override scope -> finding-level hallucination only (query-argument
+    leakage becomes a reported caveat, matching R9's actual intent).
+  - CHANGED (gold set, committed earlier): n_target 90 -> 100 (>= powered floor, adds
+    power only); DrugMechDB source pinned to a commit SHA.
+  - UNCHANGED: recall_lift_abs (0.15), recall_lift_recover_frac (0.50), alpha (0.05),
+    seed, turn_cap, multi_hop_limit, aggregate_path_budget. The kill bars did not move.
 """
 from __future__ import annotations
 

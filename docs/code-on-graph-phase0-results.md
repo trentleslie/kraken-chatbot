@@ -2,9 +2,16 @@
 
 **Date:** 2026-06-07
 **Spike:** `backend/tests/code_on_graph_spike/` (branch `feat/code-on-graph-spike`)
-**Pre-registration:** `backend/tests/code_on_graph_spike/config.py` (frozen 2026-06-03; git timestamp is the freeze proof)
+**Pre-registration:** `backend/tests/code_on_graph_spike/config.py` (frozen 2026-06-03; re-frozen 2026-06-07 with two documented corrections — see Addendum; git timestamp is the freeze proof)
 **Plan:** `docs/plans/2026-06-03-002-feat-code-on-graph-spike-plan.md` · **Feasibility:** `docs/code-on-graph-feasibility.md`
 **Verdict:** ⚠️ **Not a clean NO-GO and not a clean PROCEED** — significant-but-modest, grounded iteration advantage; the pre-registered *primary* metric was the wrong yardstick for multi-bridge gold.
+
+> **Addendum — 2026-06-07 (superseded numbers).** The N=90 figures below are from the original run and are **retained for the diagnosis**, not as the live verdict. Acting on this diagnosis, two corrections were **pre-registered and implemented** (plan `docs/plans/2026-06-07-001-fix-cog-spike-gate-corrections-plan.md`):
+> 1. **Bridge unit:** primary is now **any-one** (the pre-registered secondary, promoted), strict retained as sensitivity — `config.primary_bridge_unit`.
+> 2. **Grounding override:** now fires only on **finding-level hallucination** (a win that exists only via an ungrounded query); query-argument leakage is a reported caveat (`query_arg_leakage`).
+>
+> The gold set also grew to **N=100** (append-only) and the DrugMechDB source was **pinned**. No kill threshold changed (lift 0.15 / 0.50, α 0.05, seed, turn cap all unchanged). **A fresh N=100 run under the corrected gate will replace the numbers in this document.**
+> Caveat that still holds: even corrected, the N=90 any-one lift (+0.144) sits *below* the 0.15 bar — a "significant-but-sub-threshold → NO-GO" remains a live outcome; the N=100 run may move it.
 
 ---
 
