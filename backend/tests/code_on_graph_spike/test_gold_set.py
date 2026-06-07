@@ -1,7 +1,11 @@
 """Unit 0.2 — random slice + reachability filter + merge (mocked resolver)."""
+import httpx
+import pytest
+
+from tests.code_on_graph_spike import gold_set as gold_set_mod
 from tests.code_on_graph_spike.drugmechdb import DmdbRecord, DmdbInterior
 from tests.code_on_graph_spike.gold_set import (
-    is_reachable, build_random_slice, build_unified,
+    GoldSetBuildError, build_random_slice, build_unified, is_reachable,
 )
 
 
@@ -81,6 +85,64 @@ def test_build_unified_merges_and_dedups():
 
 
 def test_build_unified_rejects_duplicate_ids():
-    import pytest
     with pytest.raises(ValueError):
         build_unified([{"trial_id": "dup", "stratum": "t2d"}], [{"trial_id": "dup", "stratum": "random"}])
+
+
+# --- silent-drop regression: transport failures must not masquerade as non-reachability ---
+
+class FlakyRest(FakeRest):
+    """Like FakeRest, but multi_hop raises a transient ReadTimeout for any start CURIE in
+    `fail_starts` until that start has failed `fail_times` times, then it recovers."""
+    def __init__(self, resolve_map, reachable_pairs, fail_starts, fail_times=10 ** 9):
+        super().__init__(resolve_map, reachable_pairs)
+        self.fail_starts = set(fail_starts)
+        self.fail_times = fail_times
+        self._fails: dict[str, int] = {}
+
+    async def multi_hop(self, start, end, **kw):
+        s = start[0]
+        if s in self.fail_starts and self._fails.get(s, 0) < self.fail_times:
+            self._fails[s] = self._fails.get(s, 0) + 1
+            self.kestrel_calls += 1
+            raise httpx.ReadTimeout("simulated transient")
+        return await super().multi_hop(start, end, **kw)
+
+
+def _all_reachable(n):
+    rm = {f"drug{i}": f"CHEBI:{i}" for i in range(n)}
+    rm.update({f"dis{i}": f"MONDO:{i}" for i in range(n)})
+    rm.update({f"bridge{i}": f"NCBIGene:{i}" for i in range(n)})
+    reach = {(f"CHEBI:{i}", f"MONDO:{i}") for i in range(n)}
+    return rm, reach
+
+
+async def test_build_random_slice_raises_on_persistent_transport_failure(monkeypatch):
+    # Reachability times out forever -> the build must fail loudly, NOT silently return
+    # a short list (the bug: transport errors were dropped as if "not reachable").
+    monkeypatch.setattr(gold_set_mod, "_RETRY_BACKOFF_BASE", 0)
+    records = [_rec(i) for i in range(4)]
+    rm, reach = _all_reachable(4)
+    rest = FlakyRest(rm, reach, fail_starts={f"CHEBI:{i}" for i in range(4)})  # never recover
+    with pytest.raises(GoldSetBuildError):
+        await build_random_slice(rest, records, n=2, seed=1, max_hops=5)
+
+
+async def test_build_random_slice_retries_transient_then_succeeds(monkeypatch):
+    # A transient blip that recovers on retry must not drop the record.
+    monkeypatch.setattr(gold_set_mod, "_RETRY_BACKOFF_BASE", 0)
+    records = [_rec(i) for i in range(4)]
+    rm, reach = _all_reachable(4)
+    rest = FlakyRest(rm, reach, fail_starts={f"CHEBI:{i}" for i in range(4)}, fail_times=1)
+    out = await build_random_slice(rest, records, n=4, seed=1, max_hops=5)
+    assert len(out) == 4
+    assert all(o["start_curie"].startswith("CHEBI:") for o in out)
+
+
+async def test_build_random_slice_genuine_exhaustion_returns_short_not_raise():
+    # No transport errors: a corpus that simply lacks enough reachable items returns a
+    # short list (unchanged behavior), distinct from the transport-failure path.
+    records = [_rec(i) for i in range(2)]
+    rm, reach = _all_reachable(2)
+    out = await build_random_slice(FakeRest(rm, reach), records, n=5, seed=1, max_hops=5)
+    assert len(out) == 2

@@ -26,6 +26,10 @@ from kestrel_backend.graph.nodes.entity_resolution import _canonical_curie
 KESTREL_API_URL = os.getenv("KESTREL_API_URL", "https://kestrel.nathanpricelab.com/api")
 KESTREL_API_KEY = os.getenv("KESTREL_API_KEY", "")
 
+# Transport failures that are worth retrying (vs. a genuine empty/None result).
+# Shared so callers (e.g. the gold-set builder) classify failures the same way `_post` does.
+TRANSIENT_EXC = (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError)
+
 
 def _headers() -> dict[str, str]:
     return {"X-API-Key": os.getenv("KESTREL_API_KEY", "") or KESTREL_API_KEY,
@@ -61,7 +65,7 @@ class KestrelREST:
                 r = await self._client.post(f"{self._base}{path}", json=body, headers=_headers())
                 r.raise_for_status()
                 return r.json()
-            except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
+            except TRANSIENT_EXC as exc:
                 last_exc = exc  # transient — back off and retry
                 await asyncio.sleep(1.0 * (attempt + 1))
         assert last_exc is not None

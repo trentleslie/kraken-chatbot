@@ -16,9 +16,18 @@ from .anchors import load_anchors
 from .config import CONFIG
 from .crosswalk import to_gold_item
 from .drugmechdb import DmdbRecord, all_records
-from .kestrel_rest import KestrelREST, parse_paths
+from .kestrel_rest import TRANSIENT_EXC, KestrelREST, parse_paths
 
 GOLD_SET_PATH = Path(__file__).parent.parent / "fixtures" / "code_on_graph_spike" / "gold_set.json"
+
+# Backoff base between chunk-level transient retries; tests monkeypatch this to 0.
+_RETRY_BACKOFF_BASE = 1.0
+
+
+class GoldSetBuildError(RuntimeError):
+    """A build could not complete reliably because transport failures persisted after
+    retries. Raised instead of silently dropping records (which would let the gold set
+    quietly shrink). Genuine non-reachability is NOT an error — it filters silently."""
 
 
 async def is_reachable(rest: KestrelREST, drug: str, disease: str, max_hops: int) -> bool:
@@ -40,13 +49,47 @@ async def _evaluate(rest: KestrelREST, rec: DmdbRecord, max_hops: int) -> dict |
     return item
 
 
+async def _evaluate_chunk(rest: KestrelREST, chunk: list[DmdbRecord], max_hops: int,
+                          retries: int = 2) -> list[dict | None]:
+    """Evaluate a chunk, returning one result per record in chunk order: a dict
+    (survivor) or None (genuine non-reachability filter). Transient transport failures
+    are retried up to `retries` times; if any record still fails, raise GoldSetBuildError
+    rather than dropping it. Non-transient exceptions (real bugs) propagate immediately."""
+    results: list[dict | None] = [None] * len(chunk)
+    pending = list(range(len(chunk)))
+    for attempt in range(retries + 1):
+        outcomes = await asyncio.gather(*[_evaluate(rest, chunk[i], max_hops) for i in pending],
+                                        return_exceptions=True)
+        still: list[int] = []
+        for i, outcome in zip(pending, outcomes):
+            if isinstance(outcome, TRANSIENT_EXC):
+                still.append(i)  # transient — eligible for another attempt
+            elif isinstance(outcome, BaseException):
+                raise outcome  # non-transient: surface real bugs immediately
+            else:
+                results[i] = outcome  # dict survivor | None filter
+        if not still:
+            return results
+        pending = still
+        if attempt < retries:
+            await asyncio.sleep(_RETRY_BACKOFF_BASE * (attempt + 1))
+    raise GoldSetBuildError(
+        f"{len(pending)} record(s) still failing after {retries} retries (transient "
+        f"transport errors) — refusing to silently drop them and return a short gold "
+        f"set. Re-run when Kestrel is healthy.")
+
+
 async def build_random_slice(rest: KestrelREST, records: list[DmdbRecord], n: int,
                              seed: int, max_hops: int, concurrency: int = 16) -> list[dict]:
     """Seeded shuffle, then resolve + reachability-filter until n items survive.
 
     Records are evaluated in parallel chunks for throughput, but survivors are appended
     in the original shuffled order, so the result is reproducible for a given seed
-    (Kestrel resolution/reachability are deterministic)."""
+    (Kestrel resolution/reachability are deterministic). Transient transport failures are
+    retried and, if persistent, raise GoldSetBuildError — a build never silently returns
+    fewer survivors because Kestrel was flaky. Genuine non-reachability still filters
+    silently (so a corpus that simply lacks enough reachable items returns a short list,
+    unchanged)."""
     shuffled = records[:]
     random.Random(seed).shuffle(shuffled)
     out: list[dict] = []
@@ -54,10 +97,8 @@ async def build_random_slice(rest: KestrelREST, records: list[DmdbRecord], n: in
     while len(out) < n and idx < len(shuffled):
         chunk = shuffled[idx:idx + concurrency]
         idx += len(chunk)
-        results = await asyncio.gather(*[_evaluate(rest, r, max_hops) for r in chunk],
-                                       return_exceptions=True)
-        for item in results:  # preserve shuffled order within the chunk
-            if isinstance(item, dict):  # skip None (filtered) and Exceptions (transient)
+        for item in await _evaluate_chunk(rest, chunk, max_hops):  # shuffled order preserved
+            if isinstance(item, dict):
                 out.append(item)
                 if len(out) >= n:
                     break
