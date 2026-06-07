@@ -42,7 +42,9 @@ def load_gold_items() -> list[dict]:
 
 
 async def run_phase0(rest: KestrelREST, llm_fn, items: list[dict], k: int | None = None,
-                     n_pilot: int = 15, progress=None) -> dict:
+                     n_pilot: int = 15, progress=None, checkpoint=None) -> dict:
+    """`checkpoint(baseline_records, iterate_records, idx)` is invoked after each item so a
+    crash mid-run never discards completed work (the run is hours of live Kestrel + SDK)."""
     import time
     pilot = await run_pilot(rest, items, n_pilot)
     if progress:
@@ -60,6 +62,8 @@ async def run_phase0(rest: KestrelREST, llm_fn, items: list[dict], k: int | None
         iterate_records.append(ir)
         nb += int(br["hit"])
         ni += int(ir["hit"])
+        if checkpoint:
+            checkpoint(baseline_records, iterate_records, idx)
         if progress:
             mins = (time.time() - t0) / 60
             progress(f"[{idx}/{len(items)} t+{mins:.0f}m] {str(item.get('stratum'))[:4]:<4} "
@@ -93,12 +97,7 @@ async def _amain(args) -> int:
     items = load_gold_items()
     if args.limit:
         items = items[: args.limit]
-    print(f"Phase-0 gate: {len(items)} items, k={args.k or 'config'}. Live progress below.\n", flush=True)
-    async with KestrelREST() as rest:
-        result = await run_phase0(rest, default_llm_fn, items, k=args.k,
-                                  n_pilot=min(15, len(items)),
-                                  progress=lambda m: print("  " + m, flush=True))
-    _print_report(result)
+    # Resolve the output path up front so checkpoints and the final result share it.
     # Persist by default — a forgotten flag must never discard an hours-long run.
     if args.out:
         out_path = Path(args.out)
@@ -107,7 +106,24 @@ async def _amain(args) -> int:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         out_path = RUNS_DIR / f"phase0_n{len(items)}_{stamp}.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    ckpt_path = out_path.with_suffix(".partial.json")
+
+    def checkpoint(bl, it, idx):  # crash-safety: keep completed items if the run dies mid-flight
+        ckpt_path.write_text(json.dumps(
+            {"_partial_through": idx, "n_total": len(items),
+             "baseline_records": bl, "iterate_records": it}, indent=2, default=str))
+
+    print(f"Phase-0 gate: {len(items)} items, k={args.k or 'config'}. Live progress below.", flush=True)
+    print(f"  (checkpointing to {ckpt_path.name} after each item)\n", flush=True)
+    async with KestrelREST() as rest:
+        result = await run_phase0(rest, default_llm_fn, items, k=args.k,
+                                  n_pilot=min(15, len(items)),
+                                  progress=lambda m: print("  " + m, flush=True),
+                                  checkpoint=checkpoint)
+    _print_report(result)
     out_path.write_text(json.dumps(result, indent=2, default=str))
+    if ckpt_path.exists():
+        ckpt_path.unlink()  # completed cleanly — drop the partial
     print(f"  results saved → {out_path}", flush=True)
     return _EXIT.get(result["gate"]["verdict"], 2)
 

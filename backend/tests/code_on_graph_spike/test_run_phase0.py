@@ -44,3 +44,12 @@ async def test_orchestrator_chains_pilot_arms_score_gate():
     # both arms recover the gold here -> concordant, no lift
     assert res["gate"]["baseline_recall"] == 1.0
     assert res["gate"]["iterate_recall"] == 1.0
+
+
+async def test_checkpoint_invoked_after_each_item_with_growing_records():
+    seen = []
+    res = await run_phase0(FakeRest(), _llm, ITEMS, k=1, n_pilot=2,
+                           checkpoint=lambda bl, it, idx: seen.append((idx, len(bl), len(it))))
+    assert [s[0] for s in seen] == [1, 2, 3, 4]   # fired after every item, in order
+    assert seen[-1] == (4, 4, 4)                  # records accumulate (no work lost on crash)
+    assert len(res["iterate_records"]) == 4

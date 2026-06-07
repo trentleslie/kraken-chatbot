@@ -12,6 +12,7 @@ The LLM call is injected (`llm_fn`) so tests run without SDK cost.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Awaitable, Callable
@@ -93,14 +94,33 @@ async def _dispatch(rest: KestrelREST, spec: dict) -> list[list[str]]:
     return []
 
 
+SDK_RETRIES = 3       # transient SDK/CLI hiccups (e.g. "Control request timeout: initialize")
+SDK_RETRY_BACKOFF = 3.0
+
+
 async def default_llm_fn(prompt: str, system: str) -> tuple[str, object]:
     """Real LLM turn via the Claude Agent SDK (allowed_tools=[] — data-in-prompt).
-    Imported lazily so the harness/tests don't require the SDK unless run live."""
+    Imported lazily so the harness/tests don't require the SDK unless run live.
+
+    Retries transient SDK failures: the SDK spawns the `claude` CLI as a subprocess
+    and its control-protocol handshake can intermittently time out under repeated
+    invocation. A single such blip must not crash a multi-hour gate run — retry it
+    (a persistent failure still raises, so a real outage fails loud rather than
+    silently fabricating misses)."""
     from kestrel_backend.graph.sdk_utils import query_with_usage
     from claude_agent_sdk import ClaudeAgentOptions
     opts = ClaudeAgentOptions(system_prompt=system, allowed_tools=[], max_turns=1,
                               permission_mode="bypassPermissions")
-    return await query_with_usage(prompt, opts, node_name="cog_spike")
+    last_exc: Exception | None = None
+    for attempt in range(SDK_RETRIES + 1):
+        try:
+            return await query_with_usage(prompt, opts, node_name="cog_spike")
+        except Exception as exc:  # noqa: BLE001 — SDK raises varied transient errors
+            last_exc = exc
+            if attempt < SDK_RETRIES:
+                await asyncio.sleep(SDK_RETRY_BACKOFF * (attempt + 1))
+    assert last_exc is not None
+    raise last_exc
 
 
 def _intermediates_of(accumulated: list[list[str]], start: str, target: str) -> list[str]:
