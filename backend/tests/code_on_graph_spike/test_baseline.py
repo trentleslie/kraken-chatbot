@@ -43,3 +43,14 @@ async def test_transport_failure_is_not_a_miss():
 
     rec = await run_baseline(Boom(), ITEM)
     assert rec["terminal_state"] == "transport-failed" and rec["hit"] is False
+    assert rec["hit_strict"] is False and rec["hit_any"] is False
+
+
+async def test_multi_bridge_any_one_diverges_from_strict():
+    # Two gold interior nodes; the path recovers only one -> strict miss, any-one hit.
+    item = {**ITEM, "gold_bridge_curies": ["NCBIGene:5", "NCBIGene:6"]}
+    rest = FakeRest({("CHEBI:1", "MONDO:1"): [["CHEBI:1", "NCBIGene:5", "MONDO:1"]]})
+    rec = await run_baseline(rest, item)
+    assert rec["hit_strict"] is False  # not ALL interior in one path
+    assert rec["hit_any"] is True      # but ANY interior recovered
+    assert rec["hit"] is True          # primary defaults to any_one

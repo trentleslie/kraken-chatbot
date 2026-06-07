@@ -16,8 +16,10 @@ import json
 import re
 from typing import Awaitable, Callable
 
-from .config import CONFIG
-from .kestrel_rest import KestrelREST, parse_paths, any_path_recovers, is_grounded
+from .config import CONFIG, primary_hit
+from .kestrel_rest import (
+    KestrelREST, any_path_recovers, is_grounded, parse_paths, recovers_any_interior,
+)
 
 # spec verbs the executor accepts (subset of the kestrel_tools whitelist, mapped to REST)
 VERB_WHITELIST = {"multi_hop", "one_hop", "hybrid_search"}
@@ -185,8 +187,12 @@ async def run_iterate_loop(rest: KestrelREST, item: dict, llm_fn: LlmFn) -> dict
     else:
         rec["terminal_state"] = "turn-cap-hit"
 
+    hit_strict = any_path_recovers(accumulated, gold)
+    hit_any = recovers_any_interior(accumulated, gold)
     rec.update(
-        hit=any_path_recovers(accumulated, gold),
+        hit=primary_hit(hit_strict, hit_any),  # mirror of the configured primary bridge unit
+        hit_strict=hit_strict,
+        hit_any=hit_any,
         n_paths=len(accumulated),
         intermediates=_intermediates_of(accumulated, start, target),
         kestrel_calls=rest.kestrel_calls,
@@ -195,17 +201,28 @@ async def run_iterate_loop(rest: KestrelREST, item: dict, llm_fn: LlmFn) -> dict
     return rec
 
 
+def _majority(vals: list[bool]) -> bool:
+    return sum(vals) >= (len(vals) + 1) // 2
+
+
 async def run_iterate_item_k(rest: KestrelREST, item: dict, llm_fn: LlmFn, k: int | None = None) -> dict:
-    """Run the loop K times; per-item hit = majority. Reports the variance band."""
+    """Run the loop K times; per-item hit = majority, computed for BOTH bridge units.
+    Variance (the gate's flap signal) is reported on the configured PRIMARY metric."""
     k = k or CONFIG.k_reruns
     runs = [await run_iterate_loop(rest, item, llm_fn) for _ in range(k)]
-    hits = [r["hit"] for r in runs]
-    majority = sum(hits) >= (len(hits) + 1) // 2
+    strict_runs = [r["hit_strict"] for r in runs]
+    any_runs = [r["hit_any"] for r in runs]
+    hit_strict, hit_any = _majority(strict_runs), _majority(any_runs)
+    primary_runs = any_runs if CONFIG.primary_bridge_unit == "any_one" else strict_runs
     return {
         "trial_id": item["trial_id"], "method": "iterate", "stratum": item.get("stratum"),
-        "hit": majority,
-        "hit_runs": hits,
-        "variance": "stable" if len(set(hits)) == 1 else "flapping",
+        "hit": primary_hit(hit_strict, hit_any),  # primary mirror (drives the verdict)
+        "hit_strict": hit_strict,
+        "hit_any": hit_any,
+        "hit_runs": primary_runs,  # back-compat: runs of the primary metric
+        "hit_strict_runs": strict_runs,
+        "hit_any_runs": any_runs,
+        "variance": "stable" if len(set(primary_runs)) == 1 else "flapping",
         "grounding_violations": sum(r["grounding_violations"] for r in runs),
         "llm_calls": sum(r["llm_calls"] for r in runs),
         "runs": runs,

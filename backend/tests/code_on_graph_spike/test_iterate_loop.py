@@ -133,3 +133,22 @@ async def test_item_k_majority_and_variance_band():
     assert res["hit"] is True
     assert res["variance"] == "stable"
     assert len(res["hit_runs"]) == 3
+
+
+async def test_loop_multi_bridge_any_one_diverges_from_strict():
+    # Two gold interior nodes; the loop's accumulated paths recover only one.
+    item = {**ITEM, "gold_bridge_curies": ["NCBIGene:5", "NCBIGene:6"]}
+    rest = FakeRest({("CHEBI:1", "MONDO:1"): [["CHEBI:1", "NCBIGene:5", "MONDO:1"]]})
+    llm = _query_then_done({"action": "query", "verb": "multi_hop",
+                            "start_node_ids": ["CHEBI:1"], "end_node_ids": ["MONDO:1"], "max_path_length": 3})
+    rec = await run_iterate_loop(rest, item, llm)
+    assert rec["hit_strict"] is False and rec["hit_any"] is True and rec["hit"] is True
+
+
+async def test_item_k_reports_both_bridge_units():
+    rest = FakeRest({("CHEBI:1", "MONDO:1"): [["CHEBI:1", "NCBIGene:5", "MONDO:1"]]})
+    llm = _query_then_done({"action": "query", "verb": "multi_hop",
+                            "start_node_ids": ["CHEBI:1"], "end_node_ids": ["MONDO:1"], "max_path_length": 3})
+    res = await run_iterate_item_k(rest, ITEM, llm, k=3)
+    assert res["hit_strict"] is True and res["hit_any"] is True
+    assert len(res["hit_strict_runs"]) == 3 and len(res["hit_any_runs"]) == 3

@@ -144,7 +144,18 @@ def path_contains_all(path: list[str], gold_bridges: list[str]) -> bool:
 
 
 def any_path_recovers(paths: list[list[str]], gold_bridges: list[str]) -> bool:
+    """Strict bridge unit: some single returned path contains ALL gold interior node(s)."""
     return any(path_contains_all(p, gold_bridges) for p in paths)
+
+
+def recovers_any_interior(paths: list[list[str]], gold_bridges: list[str]) -> bool:
+    """Any-one bridge unit: ANY gold interior CURIE appears in ANY returned path (canonical
+    match). Looser than `any_path_recovers` — the appropriate yardstick for multi-bridge
+    mechanisms where Kestrel rarely holds the exact curated full path (results doc §6)."""
+    if not gold_bridges:
+        return False
+    seen = {_canonical_curie(c) for path in paths for c in path}
+    return any(_canonical_curie(g) in seen for g in gold_bridges)
 
 
 async def is_grounded(rest: KestrelREST, emitted_curie: str, returned_curies: set[str]) -> bool:

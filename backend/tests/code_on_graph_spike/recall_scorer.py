@@ -8,10 +8,14 @@ is biased up (TREC pooling caveat).
 """
 from __future__ import annotations
 
+from .config import CONFIG
 
-def build_table(baseline_records: list[dict], iterate_records: list[dict]) -> dict:
-    bl = {r["trial_id"]: bool(r["hit"]) for r in baseline_records}
-    it = {r["trial_id"]: bool(r["hit"]) for r in iterate_records}
+_HIT_FIELD = {"any_one": "hit_any", "strict": "hit_strict"}
+
+
+def build_table(baseline_records: list[dict], iterate_records: list[dict], field: str = "hit") -> dict:
+    bl = {r["trial_id"]: bool(r[field]) for r in baseline_records}
+    it = {r["trial_id"]: bool(r[field]) for r in iterate_records}
     flap = {r["trial_id"]: (r.get("variance") == "flapping") for r in iterate_records}
     ids = sorted(set(bl) & set(it))
     a = b = c = d = 0
@@ -37,12 +41,29 @@ def build_table(baseline_records: list[dict], iterate_records: list[dict]) -> di
     }
 
 
-def score(baseline_records: list[dict], iterate_records: list[dict]) -> dict:
-    overall = build_table(baseline_records, iterate_records)
+def _tables(baseline_records: list[dict], iterate_records: list[dict], field: str) -> dict:
+    overall = build_table(baseline_records, iterate_records, field)
     strata = sorted({str(r["stratum"]) for r in baseline_records if r.get("stratum")})
     by_stratum = {}
     for s in strata:
         bl_s = [r for r in baseline_records if r.get("stratum") == s]
         it_s = [r for r in iterate_records if r.get("stratum") == s]
-        by_stratum[str(s)] = build_table(bl_s, it_s)
+        by_stratum[str(s)] = build_table(bl_s, it_s, field)
     return {"overall": overall, "by_stratum": by_stratum}
+
+
+def score(baseline_records: list[dict], iterate_records: list[dict]) -> dict:
+    """Score on the configured PRIMARY bridge unit (overall + per stratum), and attach
+    the other unit as a reported sensitivity. The verdict (gate_recall) reads `overall`/
+    `by_stratum`; `sensitivity` is informational."""
+    primary_unit = CONFIG.primary_bridge_unit
+    sensitivity_unit = "strict" if primary_unit == "any_one" else "any_one"
+    primary = _tables(baseline_records, iterate_records, _HIT_FIELD[primary_unit])
+    sens = _tables(baseline_records, iterate_records, _HIT_FIELD[sensitivity_unit])
+    return {
+        "overall": primary["overall"],
+        "by_stratum": primary["by_stratum"],
+        "primary_metric": primary_unit,
+        "sensitivity": {"metric": sensitivity_unit, "overall": sens["overall"],
+                        "by_stratum": sens["by_stratum"]},
+    }

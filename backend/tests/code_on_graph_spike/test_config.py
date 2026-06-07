@@ -29,3 +29,10 @@ def test_multi_hop_limit_is_a_single_frozen_knob_for_both_arms():
 
 def test_a_fresh_instance_uses_the_same_defaults():
     assert SpikeConfig().drugmechdb_sample_seed == CONFIG.drugmechdb_sample_seed
+
+
+def test_corrected_pre_registration_values():
+    # 2026-06-07 corrections: any-one primary bridge unit, N=100, pinned DrugMechDB source.
+    assert CONFIG.primary_bridge_unit == "any_one"
+    assert CONFIG.n_target == 100
+    assert CONFIG.drugmechdb_commit_sha == "aef224217071216748740c10faeb6db8e3f15901"

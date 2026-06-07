@@ -12,9 +12,10 @@ def _make(a, b, c, d, flap_discordant=False, stratum="random"):
     def add(bl_hit, it_hit, flap=False):
         nonlocal i
         tid = f"t{i}"; i += 1
-        bl.append({"trial_id": tid, "hit": bl_hit, "stratum": stratum})
-        it.append({"trial_id": tid, "hit": it_hit, "stratum": stratum,
-                   "variance": "flapping" if flap else "stable",
+        bl.append({"trial_id": tid, "hit": bl_hit, "hit_strict": bl_hit, "hit_any": bl_hit,
+                   "stratum": stratum})
+        it.append({"trial_id": tid, "hit": it_hit, "hit_strict": it_hit, "hit_any": it_hit,
+                   "stratum": stratum, "variance": "flapping" if flap else "stable",
                    "grounding_violations": 0, "llm_calls": 2, "runs": [{"kestrel_calls": 3}]})
 
     for _ in range(a): add(True, True)
@@ -70,3 +71,18 @@ def test_gate_nogo_when_no_lift():
     bl, it = _make(10, 2, 2, 6)  # iterate ties baseline -> not significant, no lift
     g = evaluate_gate(score(bl, it), PILOT_OK, it)
     assert g["verdict"] == "NO-GO"
+
+
+def test_score_primary_any_one_with_strict_sensitivity():
+    # Baseline misses all 4; iterate recovers ANY interior on all 4 but ALL interior on
+    # only 1. Primary (any-one) -> iterate recall 4/4; strict sensitivity -> 1/4.
+    bl = [{"trial_id": f"t{i}", "hit": False, "hit_strict": False, "hit_any": False,
+           "stratum": "random"} for i in range(4)]
+    it = [{"trial_id": f"t{i}", "hit": True, "hit_strict": (i == 0), "hit_any": True,
+           "stratum": "random", "variance": "stable", "grounding_violations": 0,
+           "llm_calls": 1, "runs": [{"kestrel_calls": 1}]} for i in range(4)]
+    s = score(bl, it)
+    assert s["primary_metric"] == "any_one"
+    assert s["overall"]["iterate_recall"] == 1.0
+    assert s["sensitivity"]["metric"] == "strict"
+    assert s["sensitivity"]["overall"]["iterate_recall"] == 0.25

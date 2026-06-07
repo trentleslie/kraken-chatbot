@@ -13,6 +13,14 @@ from pydantic import BaseModel, Field
 class SpikeConfig(BaseModel):
     model_config = {"frozen": True}
 
+    # --- bridge unit (P1; corrected 2026-06-07 — see results doc §6) ---
+    # PRIMARY metric for the verdict. "any_one" = a hit recovers ANY gold interior node
+    # (the pre-registered secondary, promoted to primary because the strict "all interior
+    # in one path" bar is a measurement artifact for multi-bridge DrugMechDB gold). "strict"
+    # is retained as a reported sensitivity. Promotes an already-pre-registered metric — no
+    # new metric invented; no lift/alpha/N threshold changed.
+    primary_bridge_unit: str = Field(default="any_one", description="Primary bridge unit: 'any_one' (default) or 'strict'")
+
     # --- recall gate (P1) ---
     recall_lift_abs: float = Field(default=0.15, description="Absolute recall-lift threshold to proceed")
     recall_lift_recover_frac: float = Field(default=0.50, description="Relative form: recover >=this frac of static's misses")
@@ -48,3 +56,9 @@ class SpikeConfig(BaseModel):
 
 
 CONFIG = SpikeConfig()
+
+
+def primary_hit(hit_strict: bool, hit_any: bool) -> bool:
+    """Select the configured primary bridge-unit value (mirrors into each record's `hit`
+    so pilot R0 and the runner display follow the metric the gate scores on)."""
+    return hit_any if CONFIG.primary_bridge_unit == "any_one" else hit_strict

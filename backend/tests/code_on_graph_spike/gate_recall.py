@@ -56,6 +56,8 @@ def evaluate_gate(score_result: dict, pilot_result: dict, iterate_records: list[
     return {
         "verdict": verdict,
         "gate_form": gate_form,
+        "primary_metric": score_result.get("primary_metric"),
+        "sensitivity": score_result.get("sensitivity"),
         "baseline_recall": tbl["baseline_recall"],
         "iterate_recall": tbl["iterate_recall"],
         "abs_lift": tbl["iterate_recall"] - tbl["baseline_recall"],

@@ -9,8 +9,8 @@ only in the LLM iterate arm).
 """
 from __future__ import annotations
 
-from .config import CONFIG
-from .kestrel_rest import KestrelREST, parse_paths, any_path_recovers
+from .config import CONFIG, primary_hit
+from .kestrel_rest import KestrelREST, any_path_recovers, parse_paths, recovers_any_interior
 
 
 def _intermediates(paths: list[list[str]], start: str, target: str) -> list[str]:
@@ -27,12 +27,16 @@ async def run_baseline(rest: KestrelREST, item: dict) -> dict:
                                     max_path_length=CONFIG.baseline_max_path_length,
                                     limit=CONFIG.multi_hop_limit, mode="full")
     except Exception as exc:  # transport failure is not a method miss (R10)
-        rec.update(hit=False, terminal_state="transport-failed", error=str(exc),
-                   n_paths=0, intermediates=[], kestrel_calls=1)
+        rec.update(hit=False, hit_strict=False, hit_any=False, terminal_state="transport-failed",
+                   error=str(exc), n_paths=0, intermediates=[], kestrel_calls=1)
         return rec
     paths = parse_paths(data)
+    hit_strict = any_path_recovers(paths, gold)
+    hit_any = recovers_any_interior(paths, gold)
     rec.update(
-        hit=any_path_recovers(paths, gold),
+        hit=primary_hit(hit_strict, hit_any),  # mirror of the configured primary bridge unit
+        hit_strict=hit_strict,
+        hit_any=hit_any,
         n_paths=len(paths),
         intermediates=_intermediates(paths, start, target),
         terminal_state="found" if paths else "empty",
