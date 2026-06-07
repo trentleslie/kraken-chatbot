@@ -1,14 +1,14 @@
 {
   "_meta": {
-    "n": 90,
+    "n": 100,
     "anchors": 20,
-    "random": 70,
+    "random": 80,
     "seed": 20260603,
     "max_path_length": 5,
     "strata": {
       "t2d": 10,
       "alzheimers": 10,
-      "random": 70
+      "random": 80
     }
   },
   "items": [
@@ -1494,6 +1494,178 @@
       "difficulty": null,
       "source": "drugmechdb",
       "dmdb_id": "DB00287_MESH_D009798_1"
+    },
+    {
+      "trial_id": "dmdb-DB00438_MESH_D013203_1",
+      "drug": "ceftazidime",
+      "start_curie": "PUBCHEM.COMPOUND:6321415",
+      "bridge": "Penicillin binding protein transpeptidase domain / peptidoglycan biosynthetic process / peptidoglycan-based cell wall biogenesis / Staphylococcus aureus",
+      "gold_bridge_curies": [
+        "NCBIGene:944843",
+        "PathWhiz:PW123547",
+        "GO:0009273",
+        "NCBITaxon:1280"
+      ],
+      "gold_target_curie": "MONDO:0024313",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00438_MESH_D013203_1"
+    },
+    {
+      "trial_id": "dmdb-DB02703_MESH_D003233_1",
+      "drug": "fusidic acid",
+      "start_curie": "CHEBI:29013",
+      "bridge": "Elongation factor G, chloroplastic / translation / Bacteria",
+      "gold_bridge_curies": [
+        "NCBIGene:850758",
+        "REACT:R-HSA-72766",
+        "NCBITaxon:2"
+      ],
+      "gold_target_curie": "MONDO:0005642",
+      "stratum": "random",
+      "hop_length": 4,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB02703_MESH_D003233_1"
+    },
+    {
+      "trial_id": "dmdb-DB12148_MESH_D006475_1",
+      "drug": "menatetrenone",
+      "start_curie": "CHEBI:78277",
+      "bridge": "Vitamin K-dependent gamma-carboxylase / Blood coagulation",
+      "gold_bridge_curies": [
+        "NCBIGene:2677",
+        "GO:0007596"
+      ],
+      "gold_target_curie": "MONDO:0100471",
+      "stratum": "random",
+      "hop_length": 3,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB12148_MESH_D006475_1"
+    },
+    {
+      "trial_id": "dmdb-DB00742_MESH_D009798_1",
+      "drug": "Mannitol",
+      "start_curie": "CHEBI:16899",
+      "bridge": "Hyperosmotic response / Aqueous humor of eyeball",
+      "gold_bridge_curies": [
+        "GO:0006972",
+        "UBERON:0001796"
+      ],
+      "gold_target_curie": "MONDO:0005044",
+      "stratum": "random",
+      "hop_length": 3,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00742_MESH_D009798_1"
+    },
+    {
+      "trial_id": "dmdb-DB01685_MESH_D033461_1",
+      "drug": "FYX-051",
+      "start_curie": "UNII:0J877412JV",
+      "bridge": "Xanthine dehydrogenase/oxidase / Broad substrate specificity ATP-binding cassette transporter ABCG2 / Uric Acid / Uric Acid",
+      "gold_bridge_curies": [
+        "NCBIGene:280960",
+        "NCBIGene:26357",
+        "CHEBI:17775",
+        "CHEBI:17775"
+      ],
+      "gold_target_curie": "HP:0002149",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB01685_MESH_D033461_1"
+    },
+    {
+      "trial_id": "dmdb-DB00603_MESH_D016889_1",
+      "drug": "Medroxyprogesterone",
+      "start_curie": "CHEBI:6715",
+      "bridge": "Progesterone receptor / Progesterone receptor signaling pathway / Cell population proliferation / Endometrium",
+      "gold_bridge_curies": [
+        "NCBIGene:100009094",
+        "GO:0050852",
+        "GO:0008284",
+        "UBERON:0001295"
+      ],
+      "gold_target_curie": "MONDO:0002447",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00603_MESH_D016889_1"
+    },
+    {
+      "trial_id": "dmdb-DB01263_MESH_D003047_1",
+      "drug": "posaconazole",
+      "start_curie": "CHEBI:64355",
+      "bridge": "Lanosterol 14-alpha demethylase (Coccidioides immitis) / Ergosterol biosynthetic process / Cell wall biogenesis / Coccidioides immitis",
+      "gold_bridge_curies": [
+        "NCBIGene:856398",
+        "GO:0006696",
+        "GO:0042546",
+        "UMLS:C0009184"
+      ],
+      "gold_target_curie": "MONDO:0005706",
+      "stratum": "random",
+      "hop_length": 5,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB01263_MESH_D003047_1"
+    },
+    {
+      "trial_id": "dmdb-DB00763_MESH_D006980_1",
+      "drug": "methimazole",
+      "start_curie": "CHEBI:50673",
+      "bridge": "Thyroid peroxidase / thyroid hormone generation / Thyroid Hormones",
+      "gold_bridge_curies": [
+        "NCBIGene:7173",
+        "GO:0006590",
+        "CHEBI:60311"
+      ],
+      "gold_target_curie": "MONDO:0004425",
+      "stratum": "random",
+      "hop_length": 4,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00763_MESH_D006980_1"
+    },
+    {
+      "trial_id": "dmdb-DB09078_MESH_D000077273_4",
+      "drug": "lenvatinib",
+      "start_curie": "CHEBI:85994",
+      "bridge": "Mast/stem cell growth factor receptor Kit / cell population proliferation / malignant cell",
+      "gold_bridge_curies": [
+        "NCBIGene:3815",
+        "GO:0008284",
+        "UMLS:C0334227"
+      ],
+      "gold_target_curie": "MONDO:0005075",
+      "stratum": "random",
+      "hop_length": 4,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB09078_MESH_D000077273_4"
+    },
+    {
+      "trial_id": "dmdb-DB00921_MESH_D059350_2",
+      "drug": "Buprenorphine",
+      "start_curie": "CHEBI:3216",
+      "bridge": "Kappa-type opioid receptor / sensory perception of pain / Pain",
+      "gold_bridge_curies": [
+        "NCBIGene:25601",
+        "GO:0019233",
+        "HP:0012531"
+      ],
+      "gold_target_curie": "MONDO:0024317",
+      "stratum": "random",
+      "hop_length": 4,
+      "difficulty": null,
+      "source": "drugmechdb",
+      "dmdb_id": "DB00921_MESH_D059350_2"
     }
   ]
 }

@@ -1,4 +1,4 @@
-"""Build the unified 50-item gold set: 20 committed anchors + 30 random DrugMechDB.
+"""Build the unified 100-item gold set: 20 committed anchors + 80 random DrugMechDB.
 
 The random slice uses a frozen seed (P5). Reachability is **hop-agnostic** — any path
 ≤ max_path_length connecting drug↔disease — and deliberately NOT the 2-hop baseline

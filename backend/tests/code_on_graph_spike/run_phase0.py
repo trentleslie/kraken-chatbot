@@ -12,9 +12,14 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+# Every run is persisted here by default (a powered run costs hours of live
+# Kestrel + SDK; losing the artifact to a forgotten --out flag is not acceptable).
+RUNS_DIR = Path(__file__).resolve().parent / "runs"
 
 _ENV = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(_ENV)
@@ -93,8 +98,16 @@ async def _amain(args) -> int:
                                   n_pilot=min(15, len(items)),
                                   progress=lambda m: print("  " + m, flush=True))
     _print_report(result)
+    # Persist by default — a forgotten flag must never discard an hours-long run.
     if args.out:
-        Path(args.out).write_text(json.dumps(result, indent=2, default=str))
+        out_path = Path(args.out)
+    else:
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_path = RUNS_DIR / f"phase0_n{len(items)}_{stamp}.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(result, indent=2, default=str))
+    print(f"  results saved → {out_path}", flush=True)
     return _EXIT.get(result["gate"]["verdict"], 2)
 
 
@@ -102,7 +115,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=None, help="cap number of gold items (smoke runs)")
     ap.add_argument("--k", type=int, default=None, help="iterate reruns (default config.k_reruns)")
-    ap.add_argument("--out", type=str, default=None, help="write full result JSON here")
+    ap.add_argument("--out", type=str, default=None,
+                    help="override the result-JSON path (default: runs/phase0_n<N>_<timestamp>.json)")
     return asyncio.run(_amain(ap.parse_args()))
 
 

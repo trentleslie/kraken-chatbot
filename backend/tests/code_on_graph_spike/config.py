@@ -23,7 +23,7 @@ class SpikeConfig(BaseModel):
     mcnemar_exact_primary: bool = Field(default=True, description="Exact binomial McNemar is primary; asymptotic uncorrected is sensitivity")
     pi_d_prior: float = Field(default=0.25, description="Conservative discordance prior for powered-N before the iterate arm exists")
     n_floor: int = Field(default=30, description="Hard floor; below the powered-N -> INCONCLUSIVE, never a kill")
-    n_target: int = Field(default=90, description="Target N = powered-N (90) for 80% power at 15pp, pi_d=0.25: 20 anchors + 70 random")
+    n_target: int = Field(default=100, description="Target N = 100 (20 anchors + 80 random); >= powered-N (90) for 80% power at 15pp, pi_d=0.25 — the extra 10 random only add power, no threshold relaxed")
 
     # --- cost (P3) ---
     turn_cap: int = Field(default=5, description="Hard self-correction turn cap for the iterate loop")
@@ -44,7 +44,7 @@ class SpikeConfig(BaseModel):
 
     # --- gold set reproducibility (P5) ---
     drugmechdb_sample_seed: int = Field(default=20260603, description="Frozen seed for the random-30 DrugMechDB sample")
-    drugmechdb_commit_sha: str = Field(default="UNPINNED", description="Pin DrugMechDB indication_paths.yaml commit SHA in Unit 0.2")
+    drugmechdb_commit_sha: str = Field(default="aef224217071216748740c10faeb6db8e3f15901", description="Pinned DrugMechDB indication_paths.yaml commit (must match drugmechdb.DMDB_COMMIT)")
 
 
 CONFIG = SpikeConfig()

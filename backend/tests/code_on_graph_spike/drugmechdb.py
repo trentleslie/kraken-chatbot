@@ -13,8 +13,13 @@ from pathlib import Path
 import httpx
 import yaml
 
-DMDB_RAW = "https://raw.githubusercontent.com/SuLab/DrugMechDB/main/indication_paths.yaml"
-CACHE = Path(os.getenv("DMDB_CACHE", "/tmp/drugmechdb_indication_paths.yaml"))
+# Pinned to a frozen commit (NOT `main`) for reproducibility — the gold-set sample
+# is only stable if the source records are identical across rebuilds. Keep this SHA
+# in sync with CONFIG.drugmechdb_commit_sha.
+DMDB_COMMIT = "aef224217071216748740c10faeb6db8e3f15901"
+DMDB_RAW = f"https://raw.githubusercontent.com/SuLab/DrugMechDB/{DMDB_COMMIT}/indication_paths.yaml"
+# Cache key includes the SHA so re-pinning invalidates a stale download.
+CACHE = Path(os.getenv("DMDB_CACHE", f"/tmp/drugmechdb_indication_paths_{DMDB_COMMIT[:12]}.yaml"))
 
 
 def fetch_yaml(force: bool = False) -> Path:
