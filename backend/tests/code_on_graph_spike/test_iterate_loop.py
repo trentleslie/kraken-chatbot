@@ -72,6 +72,7 @@ async def test_loop_hit_when_query_recovers_gold():
     rec = await run_iterate_loop(rest, ITEM, llm)
     assert rec["hit"] is True and rec["terminal_state"] == "found"
     assert rec["grounding_violations"] == 0
+    assert rec["finding_level_hallucination"] == 0  # win via the grounded seed
 
 
 async def test_turn_cap_hit_is_miss():
@@ -115,6 +116,21 @@ async def test_grounding_casing_is_not_a_violation():
                             "end_node_ids": ["mondo:1"], "max_path_length": 2})
     rec = await run_iterate_loop(rest, ITEM, llm)
     assert rec["grounding_violations"] == 0
+
+
+async def test_loop_finding_level_hallucination_when_win_needs_ungrounded_query():
+    # Seed recovers nothing; the win comes ONLY from a query with an ungrounded start CURIE.
+    rest = FakeRest({
+        ("CHEBI:1", "MONDO:1"): [],                                          # grounded seed: no win
+        ("CHEBI:9999", "MONDO:1"): [["CHEBI:9999", "NCBIGene:5", "MONDO:1"]],  # ungrounded query: win
+    })
+    llm = _query_then_done({"action": "query", "verb": "multi_hop",
+                            "start_node_ids": ["CHEBI:9999"],  # never returned -> ungrounded
+                            "end_node_ids": ["MONDO:1"], "max_path_length": 3})
+    rec = await run_iterate_loop(rest, ITEM, llm)
+    assert rec["hit"] is True
+    assert rec["grounding_violations"] >= 1
+    assert rec["finding_level_hallucination"] == 1  # the win depended on the ungrounded query
 
 
 async def test_transport_error_mid_loop_does_not_crash():

@@ -126,6 +126,9 @@ async def run_iterate_loop(rest: KestrelREST, item: dict, llm_fn: LlmFn) -> dict
                  "turns": 0, "llm_calls": 0, "grounding_violations": 0}
     returned_curies: set[str] = {start, target}
     accumulated: list[list[str]] = []
+    # Paths returned by GROUNDED queries only (seed + specs with no grounding violation).
+    # Used to detect finding-level hallucination: a win that exists only via ungrounded queries.
+    grounded_accumulated: list[list[str]] = []
     transcript: list[dict] = []
 
     # Turn 0 (automatic): seed with the baseline query so iterate >= baseline by construction;
@@ -136,6 +139,7 @@ async def run_iterate_loop(rest: KestrelREST, item: dict, llm_fn: LlmFn) -> dict
         for p in seed:
             if p not in accumulated and len(accumulated) < CONFIG.aggregate_path_budget:
                 accumulated.append(p)
+                grounded_accumulated.append(p)  # the seed queries the given start/target — grounded
                 returned_curies.update(p)
         transcript.append({"turn": 0, "spec": "seed:multi_hop(start,end,depth=max)", "n_paths": len(seed)})
     except Exception as exc:
@@ -165,9 +169,11 @@ async def run_iterate_loop(rest: KestrelREST, item: dict, llm_fn: LlmFn) -> dict
         if spec.get("verb") not in VERB_WHITELIST:
             prompt = f"verb must be one of {sorted(VERB_WHITELIST)}. Retry with one JSON object."
             continue
+        spec_grounded = True
         for curie in _spec_curies(spec):  # grounding (R9)
             if not await is_grounded(rest, curie, returned_curies):
                 rec["grounding_violations"] += 1
+                spec_grounded = False  # this query referenced an ungrounded CURIE
         try:
             paths = await _dispatch(rest, spec)
         except Exception as exc:
@@ -179,6 +185,8 @@ async def run_iterate_loop(rest: KestrelREST, item: dict, llm_fn: LlmFn) -> dict
         for p in paths:
             if p not in accumulated and len(accumulated) < CONFIG.aggregate_path_budget:
                 accumulated.append(p)
+                if spec_grounded:
+                    grounded_accumulated.append(p)
                 returned_curies.update(p)
                 added += 1
         transcript.append({"turn": turn + 1, "spec": spec, "n_paths": len(paths), "added": added})
@@ -189,10 +197,18 @@ async def run_iterate_loop(rest: KestrelREST, item: dict, llm_fn: LlmFn) -> dict
 
     hit_strict = any_path_recovers(accumulated, gold)
     hit_any = recovers_any_interior(accumulated, gold)
+    # Finding-level grounding (R9, corrected): does the win survive if we DROP paths from
+    # ungrounded queries? If the hit exists only via an ungrounded query, it is a
+    # finding-level hallucination (hard-fail). Query-arg leakage that did NOT drive the win
+    # stays in grounding_violations (a reported caveat, not a kill).
+    hit_full = primary_hit(hit_strict, hit_any)
+    hit_grounded = primary_hit(any_path_recovers(grounded_accumulated, gold),
+                               recovers_any_interior(grounded_accumulated, gold))
     rec.update(
-        hit=primary_hit(hit_strict, hit_any),  # mirror of the configured primary bridge unit
+        hit=hit_full,  # mirror of the configured primary bridge unit
         hit_strict=hit_strict,
         hit_any=hit_any,
+        finding_level_hallucination=int(hit_full and not hit_grounded),
         n_paths=len(accumulated),
         intermediates=_intermediates_of(accumulated, start, target),
         kestrel_calls=rest.kestrel_calls,
@@ -223,7 +239,8 @@ async def run_iterate_item_k(rest: KestrelREST, item: dict, llm_fn: LlmFn, k: in
         "hit_strict_runs": strict_runs,
         "hit_any_runs": any_runs,
         "variance": "stable" if len(set(primary_runs)) == 1 else "flapping",
-        "grounding_violations": sum(r["grounding_violations"] for r in runs),
+        "grounding_violations": sum(r["grounding_violations"] for r in runs),  # query-arg leakage (caveat)
+        "finding_level_hallucinations": sum(r.get("finding_level_hallucination", 0) for r in runs),
         "llm_calls": sum(r["llm_calls"] for r in runs),
         "runs": runs,
     }

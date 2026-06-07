@@ -2,7 +2,11 @@
 
 Verdict lattice (recall is the kill axis; cost is advisory, not a hard gate — a
 single-call baseline vs a multi-turn loop makes a hard cost ratio meaningless):
-  hallucinated-CURIE > 0                      -> NO-GO (override; the contract is non-negotiable)
+  finding-level hallucination > 0             -> NO-GO (override; a win that exists only
+                                                 via an ungrounded query — the contract is
+                                                 non-negotiable. Query-arg leakage that did
+                                                 NOT drive a win is reported as a caveat,
+                                                 not a kill — see results doc §5.)
   N < powered-N                               -> INCONCLUSIVE (never a kill below power)
   discordant items flapped across K reruns    -> INCONCLUSIVE (McNemar verdict unstable)
   recall lift below threshold OR McNemar n.s. -> NO-GO (the idea is killed)
@@ -35,14 +39,18 @@ def evaluate_gate(score_result: dict, pilot_result: dict, iterate_records: list[
     significant = (mcn.pvalue < CONFIG.alpha) and (c > b)  # iterate must be the winning direction
     lift_ok = _lift_meets_threshold(tbl, gate_form)
 
-    hallucinated = sum(int(r.get("grounding_violations", 0)) for r in iterate_records)
+    # Finding-level hallucination = a win that exists only via an ungrounded query (hard-fail).
+    # Query-arg leakage = ungrounded CURIEs emitted as query args that did NOT drive a win
+    # (reported caveat, not a kill).
+    finding_hallucinations = sum(int(r.get("finding_level_hallucinations", 0)) for r in iterate_records)
+    query_arg_leakage = sum(int(r.get("grounding_violations", 0)) for r in iterate_records)
     powered_n = pilot_result.get("powered_n", CONFIG.n_floor)
 
     # advisory cost (not a kill): actual loop calls vs baseline (1 call/item)
     loop_kestrel = sum(int(run.get("kestrel_calls", 0)) for r in iterate_records for run in r.get("runs", []))
     loop_llm = sum(int(r.get("llm_calls", 0)) for r in iterate_records)
 
-    if hallucinated > 0:
+    if finding_hallucinations > 0:
         verdict = "NO-GO"
     elif tbl["n"] < powered_n:
         verdict = "INCONCLUSIVE"
@@ -65,7 +73,8 @@ def evaluate_gate(score_result: dict, pilot_result: dict, iterate_records: list[
         "mcnemar_statistic": float(mcn.statistic),
         "significant": significant,
         "lift_meets_threshold": lift_ok,
-        "hallucinated_curies": hallucinated,
+        "finding_level_hallucinations": finding_hallucinations,
+        "query_arg_leakage": query_arg_leakage,
         "n": tbl["n"],
         "powered_n": powered_n,
         "discordant": {"b_baseline_only": b, "c_iterate_only": c, "concordant_both_hit": a, "concordant_both_miss": d},

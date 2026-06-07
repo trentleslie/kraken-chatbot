@@ -82,7 +82,8 @@ def _print_report(result: dict) -> None:
           f"abs lift: {g['abs_lift']:+.2f}")
     print(f"  McNemar: b={g['discordant']['b_baseline_only']} c={g['discordant']['c_iterate_only']} "
           f"p={g['mcnemar_p']:.4f}  significant={g['significant']}")
-    print(f"  hallucinated CURIEs: {g['hallucinated_curies']}   cost(advisory): {g['cost_advisory']}")
+    print(f"  finding-level hallucinations: {g['finding_level_hallucinations']}   "
+          f"query-arg leakage (caveat): {g['query_arg_leakage']}   cost(advisory): {g['cost_advisory']}")
     print(f"  per-stratum lift: " + ", ".join(
         f"{s}: {t['baseline_recall']:.2f}->{t['iterate_recall']:.2f}" for s, t in g["per_stratum"].items()))
     print(f"\n  VERDICT: {g['verdict']}\n")

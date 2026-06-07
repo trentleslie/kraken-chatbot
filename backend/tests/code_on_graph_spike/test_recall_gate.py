@@ -48,11 +48,21 @@ def test_gate_proceeds_on_significant_lift():
     assert g["significant"] and g["lift_meets_threshold"]
 
 
-def test_gate_hallucinated_curie_is_nogo_override():
+def test_gate_query_arg_leakage_is_caveat_not_nogo():
+    # Query-argument leakage that did NOT drive a win is reported, not a kill (corrected R9).
     bl, it = _make(5, 1, 12, 2)
-    it[0]["grounding_violations"] = 1
+    it[0]["grounding_violations"] = 3  # leakage on a non-winning-dependent item
     g = evaluate_gate(score(bl, it), PILOT_OK, it)
-    assert g["verdict"] == "NO-GO" and g["hallucinated_curies"] == 1
+    assert g["verdict"] == "PROCEED-TO-PHASE-1"
+    assert g["query_arg_leakage"] == 3 and g["finding_level_hallucinations"] == 0
+
+
+def test_gate_finding_level_hallucination_is_nogo_override():
+    # A win that exists only via an ungrounded query is a hard NO-GO.
+    bl, it = _make(5, 1, 12, 2)
+    it[0]["finding_level_hallucinations"] = 1
+    g = evaluate_gate(score(bl, it), PILOT_OK, it)
+    assert g["verdict"] == "NO-GO" and g["finding_level_hallucinations"] == 1
 
 
 def test_gate_inconclusive_below_powered_n():
