@@ -47,6 +47,7 @@ class SpikeConfig(BaseModel):
 
     # --- cost (P3) ---
     turn_cap: int = Field(default=5, description="Hard self-correction turn cap for the iterate loop")
+    stagnation_patience: int = Field(default=2, description="Early-exit: stop after this many consecutive turns that add 0 new paths (Phase-1 arm efficiency — turn_cap stays the hard ceiling). The N=100 run predates this; a run that uses it is a fresh pre-registration.")
     per_turn_kestrel_call_cap: int = Field(default=8, description="Frozen from principle (not pilot): max Kestrel calls per loop turn")
     cost_ceiling_mult: float = Field(default=3.0, description="Worst-case loop cost must be <= this x baseline")
 

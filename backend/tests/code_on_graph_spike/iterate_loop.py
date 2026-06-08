@@ -144,6 +144,7 @@ async def run_iterate_loop(rest: KestrelREST, item: dict, llm_fn: LlmFn) -> dict
     gold = item["gold_bridge_curies"]
     rec: dict = {"trial_id": item["trial_id"], "method": "iterate", "stratum": item.get("stratum"),
                  "turns": 0, "llm_calls": 0, "grounding_violations": 0}
+    calls_at_start = rest.kestrel_calls  # record THIS loop's delta — rest.kestrel_calls is cumulative/shared
     returned_curies: set[str] = {start, target}
     accumulated: list[list[str]] = []
     # Paths returned by GROUNDED queries only (seed + specs with no grounding violation).
@@ -166,6 +167,7 @@ async def run_iterate_loop(rest: KestrelREST, item: dict, llm_fn: LlmFn) -> dict
         rec.setdefault("errors", []).append(f"seed: {exc}")
 
     queried = False
+    stale = 0  # consecutive query turns that added 0 new paths (drives the early-exit)
     prompt = _turn_prompt(start, target, accumulated,
                           "This is the result of a broad initial query. Refine to surface ADDITIONAL "
                           "bridge nodes that connect START to END (predicate filter, deeper hops, or "
@@ -210,6 +212,13 @@ async def run_iterate_loop(rest: KestrelREST, item: dict, llm_fn: LlmFn) -> dict
                 returned_curies.update(p)
                 added += 1
         transcript.append({"turn": turn + 1, "spec": spec, "n_paths": len(paths), "added": added})
+        # Early-exit: if refinement keeps surfacing nothing new, stop rather than burning the
+        # full turn budget (every N=100 loop ran to the cap — pure wasted cost). turn_cap stays
+        # the hard ceiling. NOTE: this changes the iterate arm; a run using it re-pre-registers.
+        stale = stale + 1 if added == 0 else 0
+        if queried and stale >= CONFIG.stagnation_patience:
+            rec["terminal_state"] = "stagnated"
+            break
         prompt = _turn_prompt(start, target, accumulated,
                               f"That query added {added} new paths. Refine further or finish.")
     else:
@@ -231,7 +240,7 @@ async def run_iterate_loop(rest: KestrelREST, item: dict, llm_fn: LlmFn) -> dict
         finding_level_hallucination=int(hit_full and not hit_grounded),
         n_paths=len(accumulated),
         intermediates=_intermediates_of(accumulated, start, target),
-        kestrel_calls=rest.kestrel_calls,
+        kestrel_calls=rest.kestrel_calls - calls_at_start,  # this loop's calls, not the cumulative total
         transcript=transcript,
     )
     return rec

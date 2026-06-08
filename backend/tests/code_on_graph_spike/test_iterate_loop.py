@@ -75,14 +75,29 @@ async def test_loop_hit_when_query_recovers_gold():
     assert rec["finding_level_hallucination"] == 0  # win via the grounded seed
 
 
-async def test_turn_cap_hit_is_miss():
+async def test_stagnation_early_exit_is_miss():
+    # Refinement that keeps returning the same (already-seen) path stagnates and stops
+    # before the turn cap — still a miss when gold is absent.
     rest = FakeRest({("CHEBI:1", "MONDO:1"): [["CHEBI:1", "NCBIGene:5", "MONDO:1"]]})
     gold_absent = {**ITEM, "gold_bridge_curies": ["NCBIGene:9999"]}
     llm = _always({"action": "query", "verb": "multi_hop",
                    "start_node_ids": ["CHEBI:1"], "end_node_ids": ["MONDO:1"], "max_path_length": 3})
     rec = await run_iterate_loop(rest, gold_absent, llm)
-    assert rec["terminal_state"] == "turn-cap-hit" and rec["hit"] is False
-    assert rec["turns"] == CONFIG.turn_cap
+    assert rec["hit"] is False
+    assert rec["terminal_state"] == "stagnated"
+    assert rec["turns"] == CONFIG.stagnation_patience < CONFIG.turn_cap  # stopped early
+
+
+async def test_kestrel_calls_is_per_loop_delta_not_cumulative():
+    # rest.kestrel_calls is a shared cumulative counter; each loop must report only ITS OWN
+    # calls, else cost sums across reruns/items balloon (the N=100 cost_advisory overcount).
+    rest = FakeRest({("CHEBI:1", "MONDO:1"): [["CHEBI:1", "NCBIGene:5", "MONDO:1"]]})
+    llm = _query_then_done({"action": "query", "verb": "multi_hop",
+                            "start_node_ids": ["CHEBI:1"], "end_node_ids": ["MONDO:1"], "max_path_length": 3})
+    r1 = await run_iterate_loop(rest, ITEM, llm)
+    r2 = await run_iterate_loop(rest, ITEM, llm)  # same rest -> cumulative counter keeps climbing
+    assert r1["kestrel_calls"] == r2["kestrel_calls"]  # identical loops -> identical per-loop cost
+    assert 0 < r1["kestrel_calls"] < 50                # a single loop's calls, not a running total
 
 
 async def test_invalid_verb_is_reprompted_then_recovers():
