@@ -33,7 +33,8 @@ from ...exa_client import (
     extract_doi_from_url, extract_year_from_date
 )
 from ...pubmed_client import (
-    search_papers as pubmed_search_papers, PubMedSearchError
+    search_papers as pubmed_search_papers, PubMedSearchError,
+    fetch_abstracts as pubmed_fetch_abstracts, normalize_pmid,
 )
 
 from ..pipeline_config import get_pipeline_config
@@ -442,6 +443,7 @@ async def create_literature_from_s2(paper: dict, hypothesis_claim: str) -> Liter
             else classify_relationship(paper, hypothesis_claim)
         ),
         key_passage=extract_key_passage(paper, hypothesis_claim),
+        abstract=paper.get("abstract") or None,  # already fetched by S2; previously discarded
         citation_count=paper.get("citationCount") or 0,
         source="s2",
     )
@@ -528,6 +530,11 @@ def merge_literature(
         merged_citation_count = best.citation_count
         merged_key_passage = best.key_passage
         merged_doi = best.doi
+        # Abstract bodies are only set on S2 entries at this point, and S2 is the
+        # lowest-priority source — so the body usually lives on a lower-priority
+        # duplicate. Carry it onto `best` (same pattern as key_passage) so it
+        # survives dedup; otherwise the S2 "free win" is silently dropped here.
+        merged_abstract = best.abstract
 
         for other in papers[1:]:
             if other.citation_count > merged_citation_count:
@@ -536,11 +543,14 @@ def merge_literature(
                 merged_key_passage = other.key_passage
             if not merged_doi and other.doi:
                 merged_doi = other.doi
+            if not merged_abstract and other.abstract:
+                merged_abstract = other.abstract
 
         # Create merged result if any fields changed
         if (merged_citation_count != best.citation_count or
             merged_key_passage != best.key_passage or
-            merged_doi != best.doi):
+            merged_doi != best.doi or
+            merged_abstract != best.abstract):
             best = LiteratureSupport(
                 paper_id=best.paper_id,
                 title=best.title,
@@ -551,6 +561,7 @@ def merge_literature(
                 relevance_score=best.relevance_score,
                 relationship=best.relationship,
                 key_passage=merged_key_passage,
+                abstract=merged_abstract,
                 citation_count=merged_citation_count,
                 source=best.source,
             )
@@ -1037,6 +1048,74 @@ def ground_hypothesis_kg(
     return hypothesis, False
 
 
+def _pmid_for_lit(lit: LiteratureSupport) -> str | None:
+    """
+    Best-effort bare PMID for a literature entry, or None.
+
+    Sources: a 'PMID:'-prefixed paper_id (kg/pubmed), or a PubMed URL. S2/OpenAlex/Exa
+    entries usually have no PMID and are skipped (S2 already carries its abstract inline).
+    """
+    if lit.paper_id.startswith("PMID:"):
+        pmid = normalize_pmid(lit.paper_id)
+        return pmid if pmid.isdigit() else None
+    if lit.url and "pubmed.ncbi.nlm.nih.gov" in lit.url:
+        m = re.search(r"pubmed\.ncbi\.nlm\.nih\.gov/(\d+)", lit.url)
+        if m:
+            return m.group(1)
+    return None
+
+
+async def backfill_abstracts(hypotheses: list[Hypothesis]) -> tuple[list[Hypothesis], int]:
+    """
+    Fill in `abstract` bodies for grounded papers that have a PMID but no abstract.
+
+    Idempotent: entries that already carry an `abstract` (e.g. from S2) are skipped, so
+    re-running fetches nothing new. PMIDs are deduplicated across all hypotheses, so each
+    is fetched from EFetch at most once per run. Best-effort: a PMID with no abstract (or a
+    fetch failure) leaves the entry unchanged.
+
+    Returns:
+        (updated hypotheses, number of literature entries filled)
+    """
+    # Collect the distinct PMIDs that still need a body.
+    needed: set[str] = set()
+    for h in hypotheses:
+        for lit in h.literature_support:
+            if lit.abstract:
+                continue
+            pmid = _pmid_for_lit(lit)
+            if pmid:
+                needed.add(pmid)
+
+    if not needed:
+        return hypotheses, 0
+
+    abstracts = await pubmed_fetch_abstracts(sorted(needed))
+    if not abstracts:
+        return hypotheses, 0
+
+    # Rewrite frozen entries with the fetched body where one was found.
+    filled = 0
+    updated_hypotheses: list[Hypothesis] = []
+    for h in hypotheses:
+        new_support: list[LiteratureSupport] = []
+        changed = False
+        for lit in h.literature_support:
+            pmid = None if lit.abstract else _pmid_for_lit(lit)
+            body = abstracts.get(pmid) if pmid else None
+            if body:
+                new_support.append(lit.model_copy(update={"abstract": body}))
+                filled += 1
+                changed = True
+            else:
+                new_support.append(lit)
+        updated_hypotheses.append(
+            h.model_copy(update={"literature_support": new_support}) if changed else h
+        )
+
+    return updated_hypotheses, filled
+
+
 @validate_state(LiteratureGroundingInput, LiteratureGroundingOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
@@ -1129,6 +1208,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     # Add ungrounded hypotheses
     grounded.extend(remaining)
+
+    # Backfill abstract bodies for PMID-bearing papers that lack one (S2 already
+    # carries its abstract inline; this fills kg/pubmed entries via EFetch). Idempotent
+    # and best-effort — failures leave entries unchanged.
+    grounded, abstracts_filled = await backfill_abstracts(grounded)
+    if abstracts_filled:
+        logger.info("Abstract backfill: filled %d literature entries via EFetch", abstracts_filled)
 
     # Count papers found by source (after deduplication)
     papers_found = sum(len(h.literature_support) for h in grounded)
