@@ -4,16 +4,34 @@
 **Spike:** `backend/tests/code_on_graph_spike/` (branch `feat/code-on-graph-spike`)
 **Pre-registration:** `backend/tests/code_on_graph_spike/config.py` (frozen 2026-06-03; re-frozen 2026-06-07 with two documented corrections — see Addendum; git timestamp is the freeze proof)
 **Plan:** `docs/plans/2026-06-03-002-feat-code-on-graph-spike-plan.md` · **Feasibility:** `docs/code-on-graph-feasibility.md`
-**Verdict:** ⚠️ **Not a clean NO-GO and not a clean PROCEED** — significant-but-modest, grounded iteration advantage; the pre-registered *primary* metric was the wrong yardstick for multi-bridge gold.
-
-> **Addendum — 2026-06-07 (superseded numbers).** The N=90 figures below are from the original run and are **retained for the diagnosis**, not as the live verdict. Acting on this diagnosis, two corrections were **pre-registered and implemented** (plan `docs/plans/2026-06-07-001-fix-cog-spike-gate-corrections-plan.md`):
-> 1. **Bridge unit:** primary is now **any-one** (the pre-registered secondary, promoted), strict retained as sensitivity — `config.primary_bridge_unit`.
-> 2. **Grounding override:** now fires only on **finding-level hallucination** (a win that exists only via an ungrounded query); query-argument leakage is a reported caveat (`query_arg_leakage`).
->
-> The gold set also grew to **N=100** (append-only) and the DrugMechDB source was **pinned**. No kill threshold changed (lift 0.15 / 0.50, α 0.05, seed, turn cap all unchanged). **A fresh N=100 run under the corrected gate will replace the numbers in this document.**
-> Caveat that still holds: even corrected, the N=90 any-one lift (+0.144) sits *below* the 0.15 bar — a "significant-but-sub-threshold → NO-GO" remains a live outcome; the N=100 run may move it.
+**Verdict (N=100, corrected gate — authoritative):** ⚠️ **INCONCLUSIVE** — a significant, grounded iteration advantage that lands **just short of the pre-registered magnitude bar**, with one unstable (flapping) discordant pair. The idea is *not* killed; it is sub-threshold and measurement-unstable.
 
 ---
+
+## N=100 Result — corrected gate (authoritative, 2026-06-07)
+
+Run artifact: `backend/tests/code_on_graph_spike/runs/phase0_n100_20260607-132709.json` (full power: N=100 ≥ powered-90). Two corrections were pre-registered and implemented before this run (plan `docs/plans/2026-06-07-001-fix-cog-spike-gate-corrections-plan.md`): **any-one** primary bridge unit (strict kept as sensitivity); grounding override scoped to **finding-level** only (query-arg leakage → caveat). No kill threshold changed (lift 0.15/0.50, α 0.05, seed, turn cap). Gold set grew to N=100 (append-only) and DrugMechDB was pinned.
+
+| Metric | baseline | iterate | lift | McNemar |
+|---|---|---|---|---|
+| **Any-one (primary)** | 0.37 | **0.50** | **+0.13** | b=0, c=13, **p=0.00024 (sig.)** |
+| **Strict (sensitivity)** | 0.19 | 0.22 | +0.03 | b=0, c=3 |
+
+**Per stratum (any-one):** alzheimers 1.00→1.00 · **t2d 0.70→1.00 (+0.30)** · **random 0.25→0.375 (+0.125, the hard 3-bridge tranche)**. Strict random: 0.025→0.025 (both arms fail ~all 80 deep paths — confirms the strict bar is the wrong yardstick).
+
+**Grounding:** **finding-level hallucinations = 0** — no win depended on an ungrounded query. 48 query-argument-leakage events, all caveat-level (the Unit 4 correction, empirically validated). **Cost (advisory):** ~291.8K loop Kestrel calls, 1,500 loop LLM calls vs 100 baseline calls.
+
+### Verdict reasoning — why INCONCLUSIVE, not NO-GO or PROCEED
+- **Significance: yes.** Iterate never loses (b=0), wins 13 discordant, p=0.0002 — strongest on t2d (+30%) and the hard random tranche.
+- **Magnitude: no.** Any-one lift +0.13 is **below the 0.15 PROCEED bar** (`lift_meets_threshold = False`). Absent the flap below, the verdict would be **NO-GO on magnitude**, not PROCEED.
+- **Stability: no.** Exactly **one discordant pair flapped** across the K=3 reruns (`dmdb-DB00792_MESH_D012223_1`; 3 items flapped total, 1 discordant). The frozen lattice routes any flapping discordant pair to **INCONCLUSIVE** (unstable McNemar) *before* the lift check — so INCONCLUSIVE is the emitted verdict.
+
+### What it means
+The corrected gate **replicates the N=90 diagnosis at full power**: iterative query-refinement genuinely and significantly recovers bridge nodes the static plan misses, grounded, with the largest gains on harder cases — but the effect is **moderate and just under the pre-registered bar**, and the no-temperature-control non-determinism leaves the discordant signal unstable. The honest call is **promising-but-sub-threshold**, not a kill. To convert this into a clean PROCEED/NO-GO, a Phase-1 run should (a) stabilize the arm (temperature 0 and/or larger K to remove flapping) and (b) decide whether a ~+0.13 grounded recall lift justifies the L+ build — the magnitude question is now the crux, not the metric or the grounding.
+
+---
+
+> **Note.** The sections below are the **original N=90 run**, retained for the measurement-artifact diagnosis that motivated the corrections above. Their numbers are **superseded** by the N=100 result.
 
 ## TL;DR
 
