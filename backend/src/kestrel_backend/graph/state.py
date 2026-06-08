@@ -234,6 +234,11 @@ class LiteratureSupport(BaseModel):
         "supporting", description="How paper relates to hypothesis"
     )
     key_passage: str = Field(default="", description="Most relevant passage from abstract")
+    abstract: str | None = Field(
+        default=None,
+        description="Full abstract body, when fetched (S2 inline or PubMed EFetch). "
+        "None when unavailable. Consumed by downstream literature-scoring mechanisms.",
+    )
     citation_count: int = Field(default=0, ge=0, description="Citation count for credibility weighting")
     source: Literal["kg", "openalex", "s2", "exa", "pubmed"] = Field(
         default="s2", description="Source of this literature reference"

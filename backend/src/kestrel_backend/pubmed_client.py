@@ -17,6 +17,11 @@ import re
 from typing import Any
 
 import httpx
+# defusedxml hardens against XXE / billion-laughs / quadratic-blowup in the
+# EFetch XML, which arrives over the network. Same API as xml.etree.ElementTree.
+import defusedxml.ElementTree as ET
+from defusedxml.common import DefusedXmlException
+from xml.etree.ElementTree import Element, ParseError
 
 logger = logging.getLogger(__name__)
 
@@ -232,3 +237,119 @@ def format_authors_from_summary(paper: dict) -> str:
     if len(authors) > 1:
         return f"{first_author} et al."
     return first_author
+
+
+def normalize_pmid(pmid: str) -> str:
+    """Strip a 'PMID:' prefix and surrounding whitespace, returning the bare digits."""
+    return pmid.replace("PMID:", "").strip()
+
+
+def _parse_efetch_abstracts(xml_text: str) -> dict[str, str]:
+    """
+    Parse an EFetch PubMed XML payload into {pmid: abstract_text}.
+
+    Structured abstracts split the body across multiple <AbstractText> elements,
+    each optionally carrying a Label (e.g. BACKGROUND, METHODS). We join the
+    segments in document order, prefixing labels when present. PMIDs with no
+    abstract are omitted from the result.
+
+    Args:
+        xml_text: Raw EFetch XML response body.
+
+    Returns:
+        Dict mapping bare PMID string to concatenated abstract text.
+    """
+    abstracts: dict[str, str] = {}
+    try:
+        root = ET.fromstring(xml_text)
+    except (ParseError, DefusedXmlException) as e:
+        logger.error("PubMed EFetch XML parse/safety error: %s", e)
+        return abstracts
+
+    for article in root.iter("PubmedArticle"):
+        pmid_el: Element | None = article.find("./MedlineCitation/PMID")
+        pmid = (pmid_el.text or "").strip() if pmid_el is not None else ""
+        if not pmid:
+            continue
+
+        segments: list[str] = []
+        for at in article.iter("AbstractText"):
+            text = "".join(at.itertext()).strip()  # flatten inline markup (e.g. <i>, <sup>)
+            if not text:
+                continue
+            label = (at.get("Label") or "").strip()
+            segments.append(f"{label}: {text}" if label else text)
+
+        if segments:
+            abstracts[pmid] = "\n".join(segments)
+
+    return abstracts
+
+
+async def _efetch_batch(pmids: list[str]) -> dict[str, str]:
+    """Fetch one batch of abstracts via EFetch (XML). Returns {} on failure."""
+    params: dict[str, Any] = {
+        "db": "pubmed",
+        "id": ",".join(pmids),
+        "retmode": "xml",
+        "rettype": "abstract",
+    }
+    if NCBI_API_KEY:
+        params["api_key"] = NCBI_API_KEY
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            await asyncio.sleep(PUBMED_DELAY)  # Rate limit (same policy as ESearch/ESummary)
+            response = await client.get(f"{EUTILS_BASE}/efetch.fcgi", params=params)
+            response.raise_for_status()
+            return _parse_efetch_abstracts(response.text)
+        except httpx.HTTPStatusError as e:
+            logger.error("PubMed EFetch HTTP error: %s", e)
+            return {}
+        except Exception as e:
+            logger.error("PubMed EFetch failed: %s", e)
+            return {}
+
+
+async def fetch_abstracts(pmids: list[str], batch_size: int = 200) -> dict[str, str]:
+    """
+    Fetch abstract bodies for a list of PMIDs via EFetch.
+
+    ESummary (used by ``search_papers``) returns metadata only; abstract bodies
+    require EFetch. PMIDs may be passed with or without a 'PMID:' prefix; the
+    returned dict is keyed by the bare numeric PMID. PMIDs without an abstract
+    (or that fail to fetch) are simply absent from the result — callers treat a
+    missing key as "no abstract available".
+
+    Reuses the module's NCBI rate-limit policy (PUBMED_SEMAPHORE / PUBMED_DELAY /
+    NCBI_API_KEY). Input is deduplicated so each PMID is fetched at most once.
+
+    Args:
+        pmids: PMID strings (bare or 'PMID:'-prefixed).
+        batch_size: Max PMIDs per EFetch request (NCBI tolerates a few hundred).
+
+    Returns:
+        Dict mapping bare PMID string to abstract text.
+    """
+    # Normalize, validate (numeric only), and dedupe while preserving order.
+    seen: set[str] = set()
+    clean: list[str] = []
+    for raw in pmids:
+        pmid = normalize_pmid(str(raw))
+        if pmid.isdigit() and pmid not in seen:
+            seen.add(pmid)
+            clean.append(pmid)
+
+    if not clean:
+        return {}
+
+    results: dict[str, str] = {}
+    async with PUBMED_SEMAPHORE:
+        for i in range(0, len(clean), batch_size):
+            batch = clean[i:i + batch_size]
+            results.update(await _efetch_batch(batch))
+
+    logger.info(
+        "PubMed EFetch: %d abstracts retrieved for %d PMIDs", len(results), len(clean)
+    )
+    return results

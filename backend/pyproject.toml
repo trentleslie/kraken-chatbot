@@ -23,6 +23,7 @@ dependencies = [
     "psycopg2-binary>=2.9.0",
     "PyJWT[crypto]>=2.8.0",
     "ftfy>=6.3.1",
+    "defusedxml>=0.7.1",  # safe parsing of PubMed EFetch XML (XXE / billion-laughs)
 ]
 
 [dependency-groups]
