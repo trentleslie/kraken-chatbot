@@ -34,6 +34,7 @@ dev = [
     "respx>=0.22.0",
     "scipy>=1.14.0", # Used by PR5 scorer (Spearman correlation)
     "langgraph-cli[inmem]>=0.4.24",
+    "statsmodels>=0.14.6",
 ]
 
 [tool.pytest.ini_options]

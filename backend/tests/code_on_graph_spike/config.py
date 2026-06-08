@@ -1,0 +1,77 @@
+"""Frozen pre-registration config for the code-on-graph spike (Phase 0).
+
+This is the pre-registration artifact (P1-P5): all thresholds and the random seed
+are fixed BEFORE any results are seen. The git commit timestamp on this file is the
+freeze proof (Phase 0 uses a plain committed file; the hash-enforcing manifest is a
+Phase-1 addition). Do not tune any value here in response to observed results.
+
+Re-freeze 2026-06-07 (before the N=100 re-run; see docs/code-on-graph-phase0-results.md).
+Two documented CORRECTIONS were pre-registered after the N=90 run's measurement-artifact
+diagnosis — neither relaxes a decision threshold:
+  - CHANGED: primary bridge unit strict -> any_one (promotes the already-pre-registered
+    secondary; strict retained as a reported sensitivity).
+  - CHANGED: grounding override scope -> finding-level hallucination only (query-argument
+    leakage becomes a reported caveat, matching R9's actual intent).
+  - CHANGED (gold set, committed earlier): n_target 90 -> 100 (>= powered floor, adds
+    power only); DrugMechDB source pinned to a commit SHA.
+  - UNCHANGED: recall_lift_abs (0.15), recall_lift_recover_frac (0.50), alpha (0.05),
+    seed, turn_cap, multi_hop_limit, aggregate_path_budget. The kill bars did not move.
+"""
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+
+class SpikeConfig(BaseModel):
+    model_config = {"frozen": True}
+
+    # --- bridge unit (P1; corrected 2026-06-07 — see results doc §6) ---
+    # PRIMARY metric for the verdict. "any_one" = a hit recovers ANY gold interior node
+    # (the pre-registered secondary, promoted to primary because the strict "all interior
+    # in one path" bar is a measurement artifact for multi-bridge DrugMechDB gold). "strict"
+    # is retained as a reported sensitivity. Promotes an already-pre-registered metric — no
+    # new metric invented; no lift/alpha/N threshold changed.
+    primary_bridge_unit: str = Field(default="any_one", description="Primary bridge unit: 'any_one' (default) or 'strict'")
+
+    # --- recall gate (P1) ---
+    recall_lift_abs: float = Field(default=0.15, description="Absolute recall-lift threshold to proceed")
+    recall_lift_recover_frac: float = Field(default=0.50, description="Relative form: recover >=this frac of static's misses")
+    r0_relative_switch: float = Field(default=0.85, description="If baseline recall R0 > this, the absolute form is unattainable -> use relative form")
+
+    # --- significance (P2) ---
+    alpha: float = Field(default=0.05, description="McNemar two-sided alpha")
+    mcnemar_exact_primary: bool = Field(default=True, description="Exact binomial McNemar is primary; asymptotic uncorrected is sensitivity")
+    pi_d_prior: float = Field(default=0.25, description="Conservative discordance prior for powered-N before the iterate arm exists")
+    n_floor: int = Field(default=30, description="Hard floor; below the powered-N -> INCONCLUSIVE, never a kill")
+    n_target: int = Field(default=100, description="Target N = 100 (20 anchors + 80 random); >= powered-N (90) for 80% power at 15pp, pi_d=0.25 — the extra 10 random only add power, no threshold relaxed")
+
+    # --- cost (P3) ---
+    turn_cap: int = Field(default=5, description="Hard self-correction turn cap for the iterate loop")
+    stagnation_patience: int = Field(default=2, description="Early-exit: stop after this many consecutive turns that add 0 new paths (Phase-1 arm efficiency — turn_cap stays the hard ceiling). The N=100 run predates this; a run that uses it is a fresh pre-registration.")
+    per_turn_kestrel_call_cap: int = Field(default=8, description="Frozen from principle (not pilot): max Kestrel calls per loop turn")
+    cost_ceiling_mult: float = Field(default=3.0, description="Worst-case loop cost must be <= this x baseline")
+
+    # --- evidence budget (finding #2) ---
+    multi_hop_limit: int = Field(default=100, description="FROZEN: per-query /multi-hop limit, applied identically to BOTH arms")
+    baseline_max_path_length: int = Field(default=5, description="Static baseline = ONE-SHOT query at full depth (== iterate reach), so the comparison isolates iteration, not search depth; not a shallow 2-hop")
+    max_path_length: int = Field(default=5, description="Executor cap; also the reachability-filter hop bound")
+    aggregate_path_budget: int = Field(default=600, description="Loop's CUMULATIVE distinct-path cap = (turn_cap+1) x per-query limit. The loop seeds with the baseline (100) then accumulates from up to 5 TARGETED refinement queries — surfacing gold paths the single broad top-100 buried IS the mechanism under test. Fairness is bounded by the turn cap (cost), not a shared budget.")
+
+    # --- variance band (no temperature control) ---
+    k_reruns: int = Field(default=3, ge=1, description="Per-item reruns; hit = majority of K")
+
+    # --- precision (Phase 1, P5) ---
+    kappa_floor: float = Field(default=0.6, description="Inter-rater kappa floor; below -> precision INCONCLUSIVE")
+
+    # --- gold set reproducibility (P5) ---
+    drugmechdb_sample_seed: int = Field(default=20260603, description="Frozen seed for the random-30 DrugMechDB sample")
+    drugmechdb_commit_sha: str = Field(default="aef224217071216748740c10faeb6db8e3f15901", description="Pinned DrugMechDB indication_paths.yaml commit (must match drugmechdb.DMDB_COMMIT)")
+
+
+CONFIG = SpikeConfig()
+
+
+def primary_hit(hit_strict: bool, hit_any: bool) -> bool:
+    """Select the configured primary bridge-unit value (mirrors into each record's `hit`
+    so pilot R0 and the runner display follow the metric the gate scores on)."""
+    return hit_any if CONFIG.primary_bridge_unit == "any_one" else hit_strict
