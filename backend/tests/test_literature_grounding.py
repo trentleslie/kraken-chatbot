@@ -669,6 +669,42 @@ class TestMergeLiterature:
         # PubMed has higher priority than OpenAlex
         assert result[0].source == "pubmed"
 
+    def test_merge_preserves_s2_abstract_from_lower_priority_duplicate(self):
+        """Abstract on a lower-priority S2 duplicate must survive onto the best entry.
+
+        S2 is the lowest-priority source and the only one carrying an abstract at
+        merge time, so the body typically lives on the lower-priority duplicate.
+        Regression for the silent-drop bug (PR #69 review).
+        """
+        pubmed = LiteratureSupport(
+            paper_id="PMID:777", title="Shared", authors="A", year=2024,
+            doi="10.1/shared", relevance_score=0.9, source="pubmed",
+        )
+        s2 = LiteratureSupport(
+            paper_id="S2:abc", title="Shared", authors="A", year=2024,
+            doi="10.1/shared", relevance_score=0.85, source="s2",
+            abstract="full S2 abstract body",
+        )
+        result = lit_grounding_module.merge_literature([pubmed, s2])
+        assert len(result) == 1
+        assert result[0].source == "pubmed"          # higher priority wins
+        assert result[0].abstract == "full S2 abstract body"  # but abstract survives
+
+    def test_merge_keeps_best_abstract_when_present(self):
+        """A best-source abstract is not clobbered by an abstract-less duplicate."""
+        s2_best = LiteratureSupport(
+            paper_id="PMID:888", title="Shared2", authors="A", year=2024,
+            relevance_score=0.9, source="pubmed", abstract="best body",
+        )
+        other = LiteratureSupport(
+            paper_id="PMID:888", title="Shared2", authors="A", year=2024,
+            relevance_score=0.85, source="openalex", citation_count=99,
+        )
+        result = lit_grounding_module.merge_literature([s2_best, other])
+        assert len(result) == 1
+        assert result[0].abstract == "best body"
+        assert result[0].citation_count == 99  # complementary merge still works
+
     def test_merge_deduplicates_by_title_year(self):
         """Test that papers with same title+year are deduplicated."""
         lit1 = LiteratureSupport(

@@ -530,6 +530,11 @@ def merge_literature(
         merged_citation_count = best.citation_count
         merged_key_passage = best.key_passage
         merged_doi = best.doi
+        # Abstract bodies are only set on S2 entries at this point, and S2 is the
+        # lowest-priority source — so the body usually lives on a lower-priority
+        # duplicate. Carry it onto `best` (same pattern as key_passage) so it
+        # survives dedup; otherwise the S2 "free win" is silently dropped here.
+        merged_abstract = best.abstract
 
         for other in papers[1:]:
             if other.citation_count > merged_citation_count:
@@ -538,11 +543,14 @@ def merge_literature(
                 merged_key_passage = other.key_passage
             if not merged_doi and other.doi:
                 merged_doi = other.doi
+            if not merged_abstract and other.abstract:
+                merged_abstract = other.abstract
 
         # Create merged result if any fields changed
         if (merged_citation_count != best.citation_count or
             merged_key_passage != best.key_passage or
-            merged_doi != best.doi):
+            merged_doi != best.doi or
+            merged_abstract != best.abstract):
             best = LiteratureSupport(
                 paper_id=best.paper_id,
                 title=best.title,
@@ -553,6 +561,7 @@ def merge_literature(
                 relevance_score=best.relevance_score,
                 relationship=best.relationship,
                 key_passage=merged_key_passage,
+                abstract=merged_abstract,
                 citation_count=merged_citation_count,
                 source=best.source,
             )

@@ -343,10 +343,14 @@ async def fetch_abstracts(pmids: list[str], batch_size: int = 200) -> dict[str, 
     if not clean:
         return {}
 
+    # Acquire the semaphore per batch (one EFetch request = one logical unit, as
+    # search_papers does) rather than holding it across the whole loop — otherwise
+    # a large PMID set starves concurrent pipeline invocations sharing this
+    # module-level semaphore for the full duration.
     results: dict[str, str] = {}
-    async with PUBMED_SEMAPHORE:
-        for i in range(0, len(clean), batch_size):
-            batch = clean[i:i + batch_size]
+    for i in range(0, len(clean), batch_size):
+        batch = clean[i:i + batch_size]
+        async with PUBMED_SEMAPHORE:
             results.update(await _efetch_batch(batch))
 
     logger.info(
