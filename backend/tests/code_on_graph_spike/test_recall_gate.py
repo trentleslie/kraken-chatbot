@@ -83,6 +83,16 @@ def test_gate_nogo_when_no_lift():
     assert g["verdict"] == "NO-GO"
 
 
+def test_absolute_gate_does_not_fall_through_to_relative():
+    # Greptile P1: under the "absolute" form, a sub-threshold abs_lift must NOT pass via the
+    # relative recover_frac. a=75,b=0,c=13,d=12 -> abs_lift=0.13 (<0.15) but recover_frac
+    # =13/25=0.52 (>=0.50). The old fall-through would have returned a spurious PROCEED.
+    bl, it = _make(75, 0, 13, 12)
+    g = evaluate_gate(score(bl, it), {"gate_form": "absolute", "powered_n": 90}, it)
+    assert g["lift_meets_threshold"] is False
+    assert g["verdict"] == "NO-GO"
+
+
 def test_score_primary_any_one_with_strict_sensitivity():
     # Baseline misses all 4; iterate recovers ANY interior on all 4 but ALL interior on
     # only 1. Primary (any-one) -> iterate recall 4/4; strict sensitivity -> 1/4.

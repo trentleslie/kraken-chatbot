@@ -132,8 +132,11 @@ def build_unified(anchors_items: list[dict], random_items: list[dict]) -> dict:
 async def build_and_write(rest: KestrelREST, n_random: int | None = None) -> dict:
     n_random = n_random if n_random is not None else (CONFIG.n_target - 20)
     anchors = [_anchor_to_item(a) for a in load_anchors()]
+    # all_records() may do a blocking ~8MB HTTP download on a cold cache — run it off the
+    # event loop so it doesn't stall the concurrent _evaluate_chunk work that follows. [Greptile P2]
+    records = await asyncio.to_thread(all_records)
     random_items = await build_random_slice(
-        rest, all_records(), n=n_random, seed=CONFIG.drugmechdb_sample_seed, max_hops=CONFIG.max_path_length)
+        rest, records, n=n_random, seed=CONFIG.drugmechdb_sample_seed, max_hops=CONFIG.max_path_length)
     unified = build_unified(anchors, random_items)
     GOLD_SET_PATH.write_text(json.dumps(unified, indent=2))
     return unified

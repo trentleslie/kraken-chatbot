@@ -10,7 +10,9 @@ Endpoints used:
   POST /hybrid-search  {search_text, limit, category?}  -> {name: [{id, score, neighbors_count, ...}]}
   POST /multi-hop      {start_node_ids, end_node_ids, max_path_length, min_path_length, limit, mode}
                        -> {"results": [{..., "paths": [[curie, ...], ...]}]}
-  POST /one-hop        {start_node_ids, mode:"preview", limit} -> {results_count: int}
+  POST /one-hop        mode:"preview" -> {results_count: int}  (degree, see `degree()`)
+                       mode:"full"    -> {"results": [{end_node_id|id, ...}, ...]}  (neighbor list,
+                       parsed by iterate_loop._dispatch; exercised live in the N=100 run)
   POST /get-nodes      {curies} -> {curie: {equivalent_ids: [...], ...}}
 """
 from __future__ import annotations
@@ -58,9 +60,9 @@ class KestrelREST:
         await self.aclose()
 
     async def _post(self, path: str, body: dict[str, Any], _retries: int = 2) -> dict[str, Any]:
-        self.kestrel_calls += 1
         last_exc: Exception | None = None
         for attempt in range(_retries + 1):
+            self.kestrel_calls += 1  # each attempt is a real HTTP call — count retries too [Greptile P2]
             try:
                 r = await self._client.post(f"{self._base}{path}", json=body, headers=_headers())
                 r.raise_for_status()

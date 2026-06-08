@@ -3,7 +3,7 @@ import json
 
 from tests.code_on_graph_spike.config import CONFIG
 from tests.code_on_graph_spike.iterate_loop import (
-    run_iterate_loop, run_iterate_item_k, _extract_spec, _spec_curies,
+    run_iterate_loop, run_iterate_item_k, _extract_spec, _spec_curies, _dispatch,
 )
 
 ITEM = {"trial_id": "x", "start_curie": "CHEBI:1", "gold_target_curie": "MONDO:1",
@@ -61,6 +61,20 @@ def test_extract_spec_tolerates_prose():
 def test_spec_curies_collects_endpoints():
     spec = {"start_node_ids": ["CHEBI:1"], "end_node_ids": ["MONDO:1", "MONDO:2"]}
     assert _spec_curies(spec) == ["CHEBI:1", "MONDO:1", "MONDO:2"]
+
+
+async def test_dispatch_one_hop_parses_full_neighbors():
+    # Greptile P2: lock the /one-hop mode="full" response shape the loop relies on
+    # (neighbors as 2-node paths; end_node_id, falling back to id).
+    class FakeRestOneHop:
+        kestrel_calls = 0
+
+        async def _post(self, path, body):
+            assert path == "/one-hop" and body["mode"] == "full"
+            return {"results": [{"end_node_id": "NCBIGene:1"}, {"id": "NCBIGene:2"}, {"x": "skip"}]}
+
+    paths = await _dispatch(FakeRestOneHop(), {"verb": "one_hop", "start_node_ids": ["CHEBI:1"]})
+    assert paths == [["CHEBI:1", "NCBIGene:1"], ["CHEBI:1", "NCBIGene:2"]]
 
 
 # --- loop behavior ---

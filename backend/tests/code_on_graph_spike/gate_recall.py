@@ -20,10 +20,13 @@ from .config import CONFIG
 
 
 def _lift_meets_threshold(tbl: dict, gate_form: str) -> bool:
+    # The pilot picks ONE form (absolute when R0 <= r0_relative_switch, else relative);
+    # they are mutually exclusive. Return the chosen form definitively — do NOT let a
+    # sub-threshold absolute lift fall through to the relative criterion (that turned
+    # "absolute" into a spurious OR-gate). [Greptile P1]
     abs_lift = tbl["iterate_recall"] - tbl["baseline_recall"]
     if gate_form == "absolute":
-        if abs_lift >= CONFIG.recall_lift_abs:
-            return True
+        return abs_lift >= CONFIG.recall_lift_abs
     # relative form: fraction of the baseline's MISSES that iterate recovered
     static_misses = tbl["c"] + tbl["d"]
     recover_frac = (tbl["c"] / static_misses) if static_misses else 0.0
