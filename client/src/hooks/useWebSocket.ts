@@ -13,6 +13,12 @@ import type {
 
 const WS_URL = import.meta.env.VITE_WS_URL || "";
 
+// Stable no-op token getter used when Clerk auth is disabled (local dev). Defined
+// at module scope so its identity is constant across renders — the connect effect
+// lists getToken in its deps, so an inline stub recreated each render would thrash
+// the socket (reconnect storm → "Insufficient resources").
+const NOOP_GET_TOKEN = async (): Promise<string | null> => null;
+
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
 const MAX_CONNECT_ATTEMPTS_BEFORE_DEMO = 3;
 
@@ -220,8 +226,16 @@ export function useWebSocket() {
   const [agentMode, setAgentMode] = useState<AgentMode>("classic");
   const [pipelineProgress, setPipelineProgress] = useState<PipelineProgress | null>(null);
 
-  // Clerk auth: get fresh session token for WebSocket connections
-  const { getToken, isSignedIn } = useAuth();
+  // Clerk auth: get fresh session token for WebSocket connections.
+  // When Clerk isn't configured (local dev / no publishable key) there's no
+  // ClerkProvider mounted, so useAuth() would throw. Fall back to an
+  // unauthenticated stub. VITE_CLERK_PUBLISHABLE_KEY is a build-time constant,
+  // so this branch is stable across renders (no conditional-hooks violation).
+  const clerkConfigured = !!import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const { getToken, isSignedIn } = clerkConfigured
+    ? useAuth()
+    : { getToken: NOOP_GET_TOKEN, isSignedIn: false };
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptRef = useRef(0);

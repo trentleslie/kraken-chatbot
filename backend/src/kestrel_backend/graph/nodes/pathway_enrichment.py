@@ -253,19 +253,31 @@ async def find_two_hop_shared_neighbors(
                 continue
 
             data = json.loads(json_text)
-            paths = data.get("paths", data) if isinstance(data, dict) else data
-
-            if not isinstance(paths, list):
+            # Kestrel's multi-hop response is {"results": [...], "nodes": {...},
+            # "edges": {...}} — there is NO top-level "paths" key. Each result item
+            # carries its own node sequences under result["paths"] (lists of CURIE
+            # strings) plus a terminal result["end_node_id"]. Collect every node this
+            # entity can reach (deduped per input), drop the start node, then count it
+            # as ONE input connection so the >=2 filter below means "reachable from 2+
+            # distinct input entities" (not "appeared on 2+ paths").
+            results = data.get("results", []) if isinstance(data, dict) else []
+            if not isinstance(results, list):
                 continue
 
-            # Count unique neighbors reached in these paths
-            for path_data in paths:
-                nodes = path_data.get("nodes", [])
-                # Count all intermediate and terminal nodes (exclude the start node)
-                for node in nodes[1:]:
-                    if node not in neighbor_counts:
-                        neighbor_counts[node] = 0
-                    neighbor_counts[node] += 1
+            reached: set[str] = set()
+            for res in results:
+                if not isinstance(res, dict):
+                    continue
+                end_id = res.get("end_node_id")
+                if isinstance(end_id, str) and end_id:
+                    reached.add(end_id)
+                for path in res.get("paths", []):
+                    if isinstance(path, list):
+                        reached.update(n for n in path if isinstance(n, str))
+
+            reached.discard(curie)  # exclude the start node itself
+            for node in reached:
+                neighbor_counts[node] = neighbor_counts.get(node, 0) + 1
 
         except json.JSONDecodeError as e:
             logger.error("Failed to parse multi_hop_query result for %s: %s", curie, str(e))

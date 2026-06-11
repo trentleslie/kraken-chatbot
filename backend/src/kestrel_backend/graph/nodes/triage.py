@@ -73,7 +73,6 @@ async def count_edges_via_api(entity: EntityResolution) -> NoveltyScore | None:
             result = await call_kestrel_tool("one_hop_query", {
                 "start_node_ids": curie,
                 "mode": "preview",
-                "direction": "both",
                 "limit": 10000,  # High limit to get accurate count
             })
 

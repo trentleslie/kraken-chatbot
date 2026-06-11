@@ -54,7 +54,7 @@ const ALLOWED_UX_DOMAINS = rawFrontendDomains.split(",").map((d: string) => d.tr
 const rawFrontendEmails = (import.meta.env.VITE_ALLOWED_EMAILS as string | undefined) || "";
 const ALLOWED_UX_EMAILS = new Set(rawFrontendEmails.split(",").map((e: string) => e.trim().toLowerCase()).filter(Boolean));
 
-function ProtectedRoute({ component: Component }: { component: React.ComponentType }) {
+function ClerkProtectedRoute({ component: Component }: { component: React.ComponentType }) {
   const { user, isLoaded, isSignedIn } = useUser();
 
   if (!isLoaded) return null;
@@ -74,6 +74,16 @@ function ProtectedRoute({ component: Component }: { component: React.ComponentTy
   }
 
   return <Component />;
+}
+
+// When Clerk isn't configured (local dev / no publishable key), no ClerkProvider
+// is mounted, so calling useUser() would throw. In that case bypass auth and
+// render the route directly. `clerkPubKey` is a build-time constant, so this
+// branch is stable across renders (no conditional-hooks violation), and prod —
+// which always sets the key — is unaffected.
+function ProtectedRoute({ component: Component }: { component: React.ComponentType }) {
+  if (!clerkPubKey) return <Component />;
+  return <ClerkProtectedRoute component={Component} />;
 }
 
 function Router() {
