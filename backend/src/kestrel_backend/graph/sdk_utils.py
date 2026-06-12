@@ -47,6 +47,21 @@ def _get_langfuse():
         _langfuse = None
     return _langfuse
 
+
+def reset_langfuse_singleton() -> None:
+    """Clear the resolved-once Langfuse client so the next call re-reads settings.
+
+    The client is resolved once and cached (a disabled/keyless env caches None). That
+    cache is independent of ``get_settings``'s LRU cache, so any caller that flips
+    ``LANGFUSE_*`` at runtime (e.g. ``assessment/runner.py`` forcing
+    ``LANGFUSE_ENABLED=false``) must reset BOTH — call this alongside
+    ``get_settings.cache_clear()`` or a stale client survives the override.
+    """
+    global _langfuse, _langfuse_resolved
+    _langfuse = None
+    _langfuse_resolved = False
+
+
 # Centralized SDK availability check — single try/except for all nodes
 try:
     from claude_agent_sdk import (  # noqa: F401

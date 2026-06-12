@@ -26,11 +26,20 @@ from xml.etree.ElementTree import Element, ParseError
 logger = logging.getLogger(__name__)
 
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
-NCBI_API_KEY = os.getenv("NCBI_API_KEY", "")
 
-# Rate limiting: 3 req/s without key, 10 req/s with key
+# Rate limiting: 3 req/s without key, 10 req/s with key.
 PUBMED_SEMAPHORE = asyncio.Semaphore(2)  # Conservative concurrent requests
-PUBMED_DELAY = 0.35 if not NCBI_API_KEY else 0.1  # Delay between requests
+
+
+def _ncbi_api_key() -> str:
+    """Read NCBI_API_KEY at call time, not import time — so a `.env` loaded after this
+    module is first imported (tests, scripts) is still honored."""
+    return os.getenv("NCBI_API_KEY", "")
+
+
+def _pubmed_delay() -> float:
+    """0.1s (~10 req/s) with an API key, else 0.35s (~3 req/s)."""
+    return 0.1 if _ncbi_api_key() else 0.35
 
 
 class PubMedSearchError(Exception):
@@ -77,12 +86,13 @@ async def _esearch(query: str, limit: int) -> list[str]:
         "retmax": limit,
         "sort": "relevance",
     }
-    if NCBI_API_KEY:
-        params["api_key"] = NCBI_API_KEY
+    api_key = _ncbi_api_key()
+    if api_key:
+        params["api_key"] = api_key
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            await asyncio.sleep(PUBMED_DELAY)  # Rate limit
+            await asyncio.sleep(_pubmed_delay())  # Rate limit
             response = await client.get(
                 f"{EUTILS_BASE}/esearch.fcgi",
                 params=params,
@@ -123,12 +133,13 @@ async def _esummary(pmids: list[str]) -> list[dict[str, Any]]:
         "id": ",".join(pmids),
         "retmode": "json",
     }
-    if NCBI_API_KEY:
-        params["api_key"] = NCBI_API_KEY
+    api_key = _ncbi_api_key()
+    if api_key:
+        params["api_key"] = api_key
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            await asyncio.sleep(PUBMED_DELAY)  # Rate limit
+            await asyncio.sleep(_pubmed_delay())  # Rate limit
             response = await client.get(
                 f"{EUTILS_BASE}/esummary.fcgi",
                 params=params,
@@ -294,12 +305,13 @@ async def _efetch_batch(pmids: list[str]) -> dict[str, str]:
         "retmode": "xml",
         "rettype": "abstract",
     }
-    if NCBI_API_KEY:
-        params["api_key"] = NCBI_API_KEY
+    api_key = _ncbi_api_key()
+    if api_key:
+        params["api_key"] = api_key
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            await asyncio.sleep(PUBMED_DELAY)  # Rate limit (same policy as ESearch/ESummary)
+            await asyncio.sleep(_pubmed_delay())  # Rate limit (same policy as ESearch/ESummary)
             response = await client.get(f"{EUTILS_BASE}/efetch.fcgi", params=params)
             response.raise_for_status()
             return _parse_efetch_abstracts(response.text)
@@ -321,8 +333,8 @@ async def fetch_abstracts(pmids: list[str], batch_size: int = 200) -> dict[str, 
     (or that fail to fetch) are simply absent from the result — callers treat a
     missing key as "no abstract available".
 
-    Reuses the module's NCBI rate-limit policy (PUBMED_SEMAPHORE / PUBMED_DELAY /
-    NCBI_API_KEY). Input is deduplicated so each PMID is fetched at most once.
+    Reuses the module's NCBI rate-limit policy (PUBMED_SEMAPHORE / _pubmed_delay() /
+    _ncbi_api_key()). Input is deduplicated so each PMID is fetched at most once.
 
     Args:
         pmids: PMID strings (bare or 'PMID:'-prefixed).

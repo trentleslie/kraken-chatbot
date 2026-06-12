@@ -169,10 +169,13 @@ async def main():
     # LANGFUSE_* keys present do not flood the observability project with assessment traces.
     os.environ["LANGFUSE_ENABLED"] = "false"
     # get_settings() is @lru_cache'd; clear it so the override above is read fresh even if a
-    # prior import already cached langfuse_enabled=True before main() ran.
+    # prior import already cached langfuse_enabled=True before main() ran. The Langfuse client is
+    # cached separately in sdk_utils, so reset it too or a stale client survives the override.
     from ..config import get_settings
+    from ..graph.sdk_utils import reset_langfuse_singleton
 
     get_settings.cache_clear()
+    reset_langfuse_singleton()
 
     parser = argparse.ArgumentParser(description="Run pipeline assessment")
     parser.add_argument("--queries", type=str, required=True, help="Path to queries.json")
