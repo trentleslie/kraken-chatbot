@@ -226,11 +226,17 @@ export function useWebSocket() {
   const [agentMode, setAgentMode] = useState<AgentMode>("classic");
   const [pipelineProgress, setPipelineProgress] = useState<PipelineProgress | null>(null);
 
-  // Clerk auth: get fresh session token for WebSocket connections.
+  // Clerk auth: get a fresh session token for WebSocket connections.
   // When Clerk isn't configured (local dev / no publishable key) there's no
-  // ClerkProvider mounted, so useAuth() would throw. Fall back to an
-  // unauthenticated stub. VITE_CLERK_PUBLISHABLE_KEY is a build-time constant,
-  // so this branch is stable across renders (no conditional-hooks violation).
+  // ClerkProvider mounted, so useAuth() would throw — hence the fallback stub.
+  //
+  // NOTE: this IS a conditional hook call (the eslint-disable below is real, not
+  // cosmetic). It is rules-of-hooks-safe ONLY because VITE_CLERK_PUBLISHABLE_KEY is a
+  // build-time constant: `clerkConfigured` cannot change between renders, so the hook
+  // order is fixed for the life of the bundle. Do NOT copy this with a runtime-variable
+  // condition — that would be a genuine hooks-ordering bug. The clean fix (deferred) is
+  // to call useAuth() in an App-level provider that only mounts under ClerkProvider and
+  // pass { getToken, isSignedIn } down, so this hook is never called conditionally.
   const clerkConfigured = !!import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const { getToken, isSignedIn } = clerkConfigured
