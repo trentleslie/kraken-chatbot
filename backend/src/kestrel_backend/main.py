@@ -6,7 +6,7 @@ import logging
 import operator
 import time
 from collections import defaultdict
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, ExitStack
 from typing import List, Tuple, Any, get_type_hints, get_args, get_origin
 from uuid import UUID
 
@@ -167,6 +167,15 @@ async def lifespan(app: FastAPI):
     # Shutdown
     await close_http_client()
     await close_db()
+    # Flush queued Langfuse spans so a deploy/restart doesn't drop in-flight traces.
+    # Export is async/background during requests; flush() drains the queue at shutdown.
+    # No-op when Langfuse is disabled. Never let a flush failure block shutdown.
+    _lf = _get_pipeline_langfuse()
+    if _lf is not None:
+        try:
+            _lf.flush()
+        except Exception as e:
+            logger.warning("Langfuse flush on shutdown failed: %s", e)
     logger.info("Shutting down Kestrel Backend")
 
 
@@ -380,7 +389,9 @@ async def submit_feedback(request: Request, auth: dict = Depends(get_current_use
         try:
             # Convert feedback_type to Langfuse score value (1 for positive, 0 for negative)
             score_value = 1 if feedback_type == "positive" else 0
-            langfuse.score(
+            # Langfuse v3: create_score() (v2's .score() was removed; the old call threw an
+            # AttributeError that was swallowed below, so scoring was silently dead).
+            langfuse.create_score(
                 trace_id=trace_id,
                 name="user_feedback",
                 value=score_value,
@@ -500,20 +511,54 @@ async def handle_pipeline_mode(
 
     langfuse = _get_pipeline_langfuse()
     trace = None
+    handler = None
     node_spans: dict[str, Any] = {}
+    span_stack = ExitStack()
 
     # Get conversation_id for session tracking
     conv_id = conversation_ids.get(connection_id)
     session_id = str(conv_id) if conv_id else None
 
     if langfuse:
-        trace = langfuse.start_span(
-            name="discovery_pipeline",
-            input={"query": content, "connection_id": connection_id},
-            metadata={"mode": "pipeline", "version": "2.0"},
-        )
-        if session_id:
-            trace.update_trace(session_id=session_id)
+        try:
+            from langfuse import propagate_attributes
+            from langfuse.langchain import CallbackHandler
+
+            # Real LangGraph CallbackHandler → graph-accurate node spans. The enclosing
+            # current-span makes the trace the active OTel context, so the handler's node spans
+            # AND the per-node generations created in sdk_utils.query_with_usage() nest under it.
+            # Phase A (plan Unit 4): the manual node_* spans below are kept temporarily for
+            # side-by-side nesting verification on dev; Phase B removes them once confirmed.
+            handler = CallbackHandler()
+            trace = span_stack.enter_context(
+                langfuse.start_as_current_observation(
+                    as_type="span",
+                    name="discovery_pipeline",
+                    input={"query": content, "connection_id": connection_id},
+                    metadata={"mode": "pipeline", "version": "2.0"},
+                )
+            )
+            # Trace-level attributes (v3: not settable on the CallbackHandler constructor).
+            # metadata values must be strings (Dict[str, str]).
+            span_stack.enter_context(
+                propagate_attributes(
+                    trace_name="discovery_pipeline",
+                    session_id=session_id,
+                    tags=["pipeline"],
+                    metadata={"mode": "pipeline", "version": "2.0"},
+                )
+            )
+        except Exception as e:
+            # Tracing setup must never break the request. Release any partially-entered
+            # context managers and degrade to no tracing (handler=None → no callbacks) so the
+            # client still gets a response instead of a hung socket.
+            logger.warning("Langfuse trace setup failed; tracing disabled for this request: %s", e)
+            span_stack.close()
+            handler = None
+            trace = None
+
+    # Attach the handler only when Langfuse is enabled; None = no callbacks (degrade cleanly).
+    pipeline_config = {"callbacks": [handler]} if handler is not None else None
 
     try:
         history = conversation_history.get(connection_id, [])
@@ -521,6 +566,7 @@ async def handle_pipeline_mode(
         async for event in stream_discovery(
             query=content,
             conversation_history=list(history),
+            config=pipeline_config,
         ):
             if event["type"] != "node_update":
                 continue
@@ -602,7 +648,9 @@ async def handle_pipeline_mode(
             "model": "claude-sonnet-4-20250514",
         }
         if trace:
-            pipeline_complete_kwargs["trace_id"] = trace.id
+            # trace.trace_id is the trace identifier (trace.id is the span id) — the
+            # /api/feedback create_score() call scores by trace_id, so send that.
+            pipeline_complete_kwargs["trace_id"] = trace.trace_id
 
         logger.info(
             "Pipeline complete in %.1fs — entities=%d, resolved=%d, hypotheses=%d",
@@ -624,8 +672,8 @@ async def handle_pipeline_mode(
                 },
                 metadata={"status": "completed"},
             )
-            trace.end()
-            langfuse.flush()
+            # The trace span ends via span_stack.close() in finally; the background export
+            # thread delivers it. No per-request flush (flush runs on app shutdown).
 
         history = conversation_history[connection_id]
         history.append(("user", content))
@@ -682,8 +730,7 @@ async def handle_pipeline_mode(
                 output={"error": str(e)},
                 metadata={"status": "failed"},
             )
-            trace.end()
-            langfuse.flush()
+            # Trace span ends via span_stack.close() in finally below.
 
         error_msg = ErrorMessage(
             message=f"Pipeline error: {str(e)}. Try Classic mode for this query.",
@@ -691,6 +738,10 @@ async def handle_pipeline_mode(
         )
         await websocket.send_text(error_msg.model_dump_json())
         await websocket.send_text(DoneMessage().model_dump_json())
+    finally:
+        # Ends the enclosing trace span (and resets the active OTel context). Background
+        # export delivers it; no per-request flush. No-op when Langfuse is disabled.
+        span_stack.close()
 
 
 @app.websocket("/ws/chat")

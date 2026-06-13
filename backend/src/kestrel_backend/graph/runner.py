@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 async def run_discovery(
     query: str,
     conversation_history: list[tuple[str, str]] | None = None,
+    config: dict[str, Any] | None = None,
 ) -> DiscoveryState:
     """
     Run the discovery workflow and return final state.
@@ -25,6 +26,8 @@ async def run_discovery(
     Args:
         query: User's input query
         conversation_history: Optional list of (role, content) tuples
+        config: Optional LangGraph RunnableConfig (e.g. {"callbacks": [handler]}) passed
+            through to the graph. The caller owns it; this module stays observability-agnostic.
 
     Returns:
         Final DiscoveryState with synthesis_report populated
@@ -36,13 +39,14 @@ async def run_discovery(
         "conversation_history": conversation_history or [],
     }
 
-    result = await graph.ainvoke(initial_state)
+    result = await graph.ainvoke(initial_state, config=config)
     return result
 
 
 async def stream_discovery(
     query: str,
     conversation_history: list[tuple[str, str]] | None = None,
+    config: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """
     Stream discovery workflow events for real-time updates.
@@ -53,6 +57,8 @@ async def stream_discovery(
     Args:
         query: User's input query
         conversation_history: Optional list of (role, content) tuples
+        config: Optional LangGraph RunnableConfig (e.g. {"callbacks": [handler]}) passed
+            through to the graph. The caller owns it; this module stays observability-agnostic.
 
     Yields:
         Event dicts with type, node, and node_output fields
@@ -68,7 +74,7 @@ async def stream_discovery(
         "conversation_history": conversation_history or [],
     }
 
-    async for event in graph.astream(initial_state, stream_mode="updates"):
+    async for event in graph.astream(initial_state, stream_mode="updates", config=config):
         for node_name, node_output in event.items():
             yield {
                 "type": "node_update",

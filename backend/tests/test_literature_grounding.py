@@ -78,6 +78,13 @@ sys.modules["kestrel_backend.exa_client"] = mock_exa_client
 mock_pubmed_client = types.ModuleType("kestrel_backend.pubmed_client")
 mock_pubmed_client.search_papers = None
 mock_pubmed_client.PubMedSearchError = Exception
+# Backfill (issue: abstract-body fetch) imports these into the node namespace.
+# Provide a real normalize_pmid (pure) and a default async fetch stub that returns
+# nothing; backfill tests monkeypatch lit_grounding_module.pubmed_fetch_abstracts.
+mock_pubmed_client.normalize_pmid = lambda pmid: str(pmid).replace("PMID:", "").strip()
+async def _stub_fetch_abstracts(pmids, batch_size=200):
+    return {}
+mock_pubmed_client.fetch_abstracts = _stub_fetch_abstracts
 sys.modules["kestrel_backend.pubmed_client"] = mock_pubmed_client
 
 # Now import build_references_table from the real module
@@ -661,6 +668,42 @@ class TestMergeLiterature:
         assert len(result) == 1
         # PubMed has higher priority than OpenAlex
         assert result[0].source == "pubmed"
+
+    def test_merge_preserves_s2_abstract_from_lower_priority_duplicate(self):
+        """Abstract on a lower-priority S2 duplicate must survive onto the best entry.
+
+        S2 is the lowest-priority source and the only one carrying an abstract at
+        merge time, so the body typically lives on the lower-priority duplicate.
+        Regression for the silent-drop bug (PR #69 review).
+        """
+        pubmed = LiteratureSupport(
+            paper_id="PMID:777", title="Shared", authors="A", year=2024,
+            doi="10.1/shared", relevance_score=0.9, source="pubmed",
+        )
+        s2 = LiteratureSupport(
+            paper_id="S2:abc", title="Shared", authors="A", year=2024,
+            doi="10.1/shared", relevance_score=0.85, source="s2",
+            abstract="full S2 abstract body",
+        )
+        result = lit_grounding_module.merge_literature([pubmed, s2])
+        assert len(result) == 1
+        assert result[0].source == "pubmed"          # higher priority wins
+        assert result[0].abstract == "full S2 abstract body"  # but abstract survives
+
+    def test_merge_keeps_best_abstract_when_present(self):
+        """A best-source abstract is not clobbered by an abstract-less duplicate."""
+        s2_best = LiteratureSupport(
+            paper_id="PMID:888", title="Shared2", authors="A", year=2024,
+            relevance_score=0.9, source="pubmed", abstract="best body",
+        )
+        other = LiteratureSupport(
+            paper_id="PMID:888", title="Shared2", authors="A", year=2024,
+            relevance_score=0.85, source="openalex", citation_count=99,
+        )
+        result = lit_grounding_module.merge_literature([s2_best, other])
+        assert len(result) == 1
+        assert result[0].abstract == "best body"
+        assert result[0].citation_count == 99  # complementary merge still works
 
     def test_merge_deduplicates_by_title_year(self):
         """Test that papers with same title+year are deduplicated."""
@@ -1299,3 +1342,262 @@ class TestGetPaperKey:
         )
         key = _get_paper_key(lit)
         assert key == f"title:{'a' * 100}:2024"
+
+
+# =============================================================================
+# Abstract-body fetch + cache (spike: feat/literature-abstract-fetch)
+# =============================================================================
+
+import src.kestrel_backend.pubmed_client as pmc
+
+backfill_abstracts = lit_grounding_module.backfill_abstracts
+_pmid_for_lit = lit_grounding_module._pmid_for_lit
+
+
+def _make_hypothesis(title, literature):
+    """Minimal valid Hypothesis with the given literature_support."""
+    return Hypothesis(
+        title=title, tier=2, claim=f"{title} claim",
+        supporting_entities=["CURIE:1"], structural_logic="logic",
+        validation_steps=["step"], literature_support=literature,
+    )
+
+
+# Realistic EFetch XML: one simple abstract, one structured (labelled) abstract,
+# one article with no abstract at all.
+_EFETCH_XML = """<?xml version="1.0"?>
+<PubmedArticleSet>
+  <PubmedArticle>
+    <MedlineCitation>
+      <PMID Version="1">111</PMID>
+      <Article>
+        <Abstract>
+          <AbstractText>Metformin activates AMPK in hepatocytes.</AbstractText>
+        </Abstract>
+      </Article>
+    </MedlineCitation>
+  </PubmedArticle>
+  <PubmedArticle>
+    <MedlineCitation>
+      <PMID Version="1">222</PMID>
+      <Article>
+        <Abstract>
+          <AbstractText Label="BACKGROUND">Type 2 diabetes is common.</AbstractText>
+          <AbstractText Label="RESULTS">BCAAs rose <sup>2</sup>-fold in cases.</AbstractText>
+        </Abstract>
+      </Article>
+    </MedlineCitation>
+  </PubmedArticle>
+  <PubmedArticle>
+    <MedlineCitation>
+      <PMID Version="1">333</PMID>
+      <Article><ArticleTitle>No abstract here</ArticleTitle></Article>
+    </MedlineCitation>
+  </PubmedArticle>
+</PubmedArticleSet>"""
+
+
+class TestEFetchAbstractParsing:
+    """pubmed_client._parse_efetch_abstracts XML handling."""
+
+    def test_simple_abstract(self):
+        result = pmc._parse_efetch_abstracts(_EFETCH_XML)
+        assert result["111"] == "Metformin activates AMPK in hepatocytes."
+
+    def test_structured_abstract_joins_labelled_segments(self):
+        result = pmc._parse_efetch_abstracts(_EFETCH_XML)
+        # Labels are prefixed; inline markup (<sup>) is flattened into text.
+        assert result["222"] == (
+            "BACKGROUND: Type 2 diabetes is common.\n"
+            "RESULTS: BCAAs rose 2-fold in cases."
+        )
+
+    def test_pmid_without_abstract_is_omitted(self):
+        result = pmc._parse_efetch_abstracts(_EFETCH_XML)
+        assert "333" not in result
+
+    def test_malformed_xml_returns_empty(self):
+        assert pmc._parse_efetch_abstracts("<not valid xml") == {}
+
+
+class TestNormalizePmid:
+    def test_strips_prefix_and_whitespace(self):
+        assert pmc.normalize_pmid(" PMID:12345 ") == "12345"
+
+    def test_bare_pmid_unchanged(self):
+        assert pmc.normalize_pmid("12345") == "12345"
+
+
+class TestFetchAbstracts:
+    """pubmed_client.fetch_abstracts: dedup, normalize, batch — no network."""
+
+    @pytest.mark.asyncio
+    async def test_dedupes_and_normalizes_pmids(self, monkeypatch):
+        seen_batches = []
+
+        async def fake_efetch_batch(batch):
+            seen_batches.append(list(batch))
+            return {p: f"abstract-{p}" for p in batch}
+
+        monkeypatch.setattr(pmc, "_efetch_batch", fake_efetch_batch)
+
+        # Duplicates (bare + prefixed), one non-numeric junk PMID.
+        result = await pmc.fetch_abstracts(["PMID:111", "111", "222", "abc"])
+
+        assert result == {"111": "abstract-111", "222": "abstract-222"}
+        # 111 fetched once; "abc" dropped.
+        flat = [p for b in seen_batches for p in b]
+        assert sorted(flat) == ["111", "222"]
+
+    @pytest.mark.asyncio
+    async def test_empty_input_skips_fetch(self, monkeypatch):
+        called = False
+
+        async def fake_efetch_batch(batch):
+            nonlocal called
+            called = True
+            return {}
+
+        monkeypatch.setattr(pmc, "_efetch_batch", fake_efetch_batch)
+        assert await pmc.fetch_abstracts(["xyz", "PMID:"]) == {}
+        assert called is False
+
+    @pytest.mark.asyncio
+    async def test_batches_respect_batch_size(self, monkeypatch):
+        seen_batches = []
+
+        async def fake_efetch_batch(batch):
+            seen_batches.append(list(batch))
+            return {p: "a" for p in batch}
+
+        monkeypatch.setattr(pmc, "_efetch_batch", fake_efetch_batch)
+        await pmc.fetch_abstracts([str(i) for i in range(5)], batch_size=2)
+        assert [len(b) for b in seen_batches] == [2, 2, 1]
+
+
+class TestLiteratureSupportAbstractField:
+    def test_default_none(self):
+        lit = LiteratureSupport(paper_id="PMID:1", title="t", authors="a", year=2024)
+        assert lit.abstract is None
+
+    def test_accepts_body(self):
+        lit = LiteratureSupport(
+            paper_id="PMID:1", title="t", authors="a", year=2024,
+            abstract="full body",
+        )
+        assert lit.abstract == "full body"
+
+
+class TestPmidForLit:
+    def test_from_prefixed_paper_id(self):
+        lit = LiteratureSupport(paper_id="PMID:42", title="t", authors="a", year=2024)
+        assert _pmid_for_lit(lit) == "42"
+
+    def test_from_pubmed_url(self):
+        lit = LiteratureSupport(
+            paper_id="S2:abc", title="t", authors="a", year=2024,
+            url="https://pubmed.ncbi.nlm.nih.gov/99/",
+        )
+        assert _pmid_for_lit(lit) == "99"
+
+    def test_none_when_no_pmid(self):
+        lit = LiteratureSupport(
+            paper_id="openalex:W1", title="t", authors="a", year=2024,
+            doi="10.1/x", url="https://doi.org/10.1/x",
+        )
+        assert _pmid_for_lit(lit) is None
+
+
+class TestBackfillAbstracts:
+    """backfill_abstracts: idempotency, cross-hypothesis dedup, best-effort."""
+
+    @pytest.mark.asyncio
+    async def test_fills_missing_and_skips_present(self, monkeypatch):
+        calls = []
+
+        async def fake_fetch(pmids, batch_size=200):
+            calls.append(sorted(pmids))
+            return {"111": "body-111", "222": "body-222"}
+
+        monkeypatch.setattr(lit_grounding_module, "pubmed_fetch_abstracts", fake_fetch)
+
+        already = LiteratureSupport(
+            paper_id="S2:x", title="t", authors="a", year=2024,
+            abstract="s2 inline body", source="s2",
+        )
+        need1 = LiteratureSupport(paper_id="PMID:111", title="t", authors="a", year=2024, source="kg")
+        need2 = LiteratureSupport(paper_id="PMID:222", title="t", authors="a", year=2024, source="pubmed")
+
+        hyps = [
+            _make_hypothesis("H1", [already, need1]),
+            _make_hypothesis("H2", [need2]),
+        ]
+
+        updated, filled = await backfill_abstracts(hyps)
+
+        assert filled == 2
+        # S2 entry already had abstract → not re-fetched.
+        assert calls == [["111", "222"]]
+        # Bodies attached; S2 entry untouched.
+        h1_lits = {l.paper_id: l for l in updated[0].literature_support}
+        assert h1_lits["S2:x"].abstract == "s2 inline body"
+        assert h1_lits["PMID:111"].abstract == "body-111"
+        assert updated[1].literature_support[0].abstract == "body-222"
+
+    @pytest.mark.asyncio
+    async def test_idempotent_second_pass_fetches_nothing(self, monkeypatch):
+        call_count = 0
+
+        async def fake_fetch(pmids, batch_size=200):
+            nonlocal call_count
+            call_count += 1
+            return {"111": "body-111"}
+
+        monkeypatch.setattr(lit_grounding_module, "pubmed_fetch_abstracts", fake_fetch)
+
+        need = LiteratureSupport(paper_id="PMID:111", title="t", authors="a", year=2024, source="kg")
+        hyps = [_make_hypothesis("H1", [need])]
+
+        updated, filled = await backfill_abstracts(hyps)
+        assert filled == 1 and call_count == 1
+
+        # Re-running over the now-filled output collects no PMIDs → no fetch.
+        updated2, filled2 = await backfill_abstracts(updated)
+        assert filled2 == 0 and call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_dedups_pmid_across_hypotheses(self, monkeypatch):
+        async def fake_fetch(pmids, batch_size=200):
+            # Same PMID cited by two hypotheses must appear once.
+            assert sorted(pmids) == ["111"]
+            return {"111": "body-111"}
+
+        monkeypatch.setattr(lit_grounding_module, "pubmed_fetch_abstracts", fake_fetch)
+
+        lit_a = LiteratureSupport(paper_id="PMID:111", title="t", authors="a", year=2024, source="kg")
+        lit_b = LiteratureSupport(paper_id="PMID:111", title="t", authors="a", year=2024, source="kg")
+        hyps = [_make_hypothesis("H1", [lit_a]), _make_hypothesis("H2", [lit_b])]
+
+        updated, filled = await backfill_abstracts(hyps)
+        assert filled == 2  # both entries filled from the single fetched body
+
+    @pytest.mark.asyncio
+    async def test_best_effort_when_no_pmids(self, monkeypatch):
+        called = False
+
+        async def fake_fetch(pmids, batch_size=200):
+            nonlocal called
+            called = True
+            return {}
+
+        monkeypatch.setattr(lit_grounding_module, "pubmed_fetch_abstracts", fake_fetch)
+
+        no_pmid = LiteratureSupport(
+            paper_id="openalex:W1", title="t", authors="a", year=2024,
+            doi="10.1/x", url="https://doi.org/10.1/x", source="openalex",
+        )
+        hyps = [_make_hypothesis("H1", [no_pmid])]
+
+        updated, filled = await backfill_abstracts(hyps)
+        assert filled == 0 and called is False
+        assert updated[0].literature_support[0].abstract is None

@@ -1,0 +1,32 @@
+{
+  "_README": "Curated, KG-verified canonical CURIEs for a small high-confidence subset of each frailty module's analytes, used as the entity-resolution recall ground truth (checks.py::check_entity_resolution_recall, exact match). Selection rule mirrors tests/fixtures/entity_resolution_hard_variants.json: genes -> the well-connected HUMAN NCBIGene node (not the higher-scored ortholog hybrid_search returns for a bare symbol); metabolites -> the canonical CHEBI node (not the higher-scored FOODON/MESH hit). Verified against the live Kestrel KG via hybrid_search on 2026-06-03. Recall MAY legitimately fail here if the pipeline resolves to a non-canonical node (e.g. taurine->FOODON) -- that is a real, intended quality signal, not a bad fixture. Consumed by generate_frailty_prompts.py (values become each case's expected_curies). Format: {Module: {analyte_display_name: CURIE}}.",
+  "Brown": {
+    "LDLR": "NCBIGene:3949",
+    "HGF": "NCBIGene:3082",
+    "FABP4": "NCBIGene:2167",
+    "IGFBP1": "NCBIGene:3484"
+  },
+  "Blue": {
+    "TNFRSF1A": "NCBIGene:7132",
+    "IL18BP": "NCBIGene:10068",
+    "pseudouridine": "CHEBI:17802"
+  },
+  "Turquoise": {
+    "SIRT2": "NCBIGene:22933",
+    "DKK1": "NCBIGene:22943",
+    "IL7": "NCBIGene:3574",
+    "maltose": "CHEBI:17306",
+    "taurine": "CHEBI:15891"
+  },
+  "Black": {
+    "palmitate": "CHEBI:15756",
+    "linoleate": "CHEBI:17351",
+    "palmitoleate": "CHEBI:32372"
+  },
+  "Green": {
+    "cholesterol": "CHEBI:16113"
+  },
+  "Midnightblue": {
+    "urea": "CHEBI:16199"
+  }
+}

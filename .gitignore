@@ -4,6 +4,7 @@ dist
 server/public
 vite.config.ts.*
 *.tar.gz
+.idea
 
 # Python backend
 backend/.venv/
@@ -23,3 +24,6 @@ tmp/
 
 # Large vendored review PDF (~10MB) — kept local; small reference PDFs are tracked
 docs/references/biomedical-link-prediction-methods-and-evidence.pdf
+
+# code-on-graph spike: ignore transient per-item checkpoints (final result JSONs are tracked)
+backend/tests/code_on_graph_spike/runs/*.partial.json
