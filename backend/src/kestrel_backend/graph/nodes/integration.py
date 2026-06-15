@@ -308,9 +308,8 @@ def parse_multi_hop_result(
     for path in parsed["paths"][:10]:  # Limit to top 10 paths
         curies = path["curies"]
         names = path["names"]
+        # parse_kestrel_response guarantees len(curies) >= 2, so hop_count >= 1 here.
         hop_count = len(curies) - 1
-        if hop_count < 1:
-            continue
         path_description = f"{cat1_short} → {cat2_short} ({hop_count} hops)"
         tier = 2 if hop_count <= 2 else 3
         significance = f"Path connects {names[0]} to {names[-1]}"
