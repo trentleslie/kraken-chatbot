@@ -33,7 +33,7 @@ class TestMultiHopQueryWrapper:
         """Test singly-pinned mode (start nodes only)."""
         with patch('src.kestrel_backend.kestrel_client.call_kestrel_tool', new_callable=AsyncMock) as mock_call:
             mock_call.return_value = {
-                "content": [{"type": "text", "text": '{"paths": []}'}],
+                "content": [{"type": "text", "text": '{"results": []}'}],
                 "isError": False,
             }
 
@@ -43,12 +43,12 @@ class TestMultiHopQueryWrapper:
                 limit=10,
             )
 
-            # Verify the call was made correctly
+            # Verify the call was made correctly. The wrapper maps max_hops -> max_path_length.
             mock_call.assert_called_once()
             call_args = mock_call.call_args[0]
             assert call_args[0] == "multi_hop_query"
             assert call_args[1]["start_node_ids"] == ["CHEBI:17234"]
-            assert call_args[1]["max_hops"] == 2
+            assert call_args[1]["max_path_length"] == 2
             assert call_args[1]["limit"] == 10
             assert "end_node_ids" not in call_args[1]
 
@@ -59,7 +59,7 @@ class TestMultiHopQueryWrapper:
         """Test doubly-pinned mode (start and end nodes)."""
         with patch('src.kestrel_backend.kestrel_client.call_kestrel_tool', new_callable=AsyncMock) as mock_call:
             mock_call.return_value = {
-                "content": [{"type": "text", "text": '{"paths": []}'}],
+                "content": [{"type": "text", "text": '{"results": []}'}],
                 "isError": False,
             }
 
@@ -72,7 +72,7 @@ class TestMultiHopQueryWrapper:
             call_args = mock_call.call_args[0]
             assert call_args[1]["start_node_ids"] == ["CHEBI:17234"]
             assert call_args[1]["end_node_ids"] == ["MONDO:0005148"]
-            assert call_args[1]["max_hops"] == 3
+            assert call_args[1]["max_path_length"] == 3
 
     @pytest.mark.asyncio
     async def test_validation_max_hops(self):
@@ -160,15 +160,16 @@ class TestDetectBridgesViaAPI:
 
         with patch('src.kestrel_backend.graph.nodes.integration.multi_hop_query', new_callable=AsyncMock) as mock_mhq:
             # Mock a successful path response
+            # Real Kestrel shape: results -> per-result paths (CURIE-string lists) + end_node_id;
+            # names from the top-level nodes dict (NOT a per-path {nodes,predicates} dict).
             mock_mhq.return_value = {
                 "content": [{
                     "type": "text",
                     "text": json.dumps({
-                        "paths": [{
-                            "nodes": ["CHEBI:17234", "HGNC:6081"],
-                            "predicates": ["biolink:affects"],
-                            "node_names": ["glucose", "INS"],
-                        }]
+                        "results": [{"end_node_id": "HGNC:6081",
+                                     "paths": [["CHEBI:17234", "HGNC:6081"]]}],
+                        "nodes": {"CHEBI:17234": {"name": "glucose"},
+                                  "HGNC:6081": {"name": "INS"}},
                     })
                 }],
                 "isError": False,
@@ -177,7 +178,7 @@ class TestDetectBridgesViaAPI:
             bridges, errors = await detect_bridges_via_api(entities, max_hops=2)
 
             assert len(bridges) == 1
-            assert bridges[0].tier == 2  # 2-hop path
+            assert bridges[0].tier == 2  # 1-hop path (<=2 hops) -> tier 2
             assert "CHEBI:17234" in bridges[0].entities
             assert "HGNC:6081" in bridges[0].entities
 
@@ -191,11 +192,15 @@ class TestParseMultiHopResult:
             "content": [{
                 "type": "text",
                 "text": json.dumps({
-                    "paths": [{
-                        "nodes": ["CHEBI:17234", "HGNC:6081", "MONDO:0005148"],
-                        "predicates": ["biolink:affects", "biolink:associated_with"],
-                        "node_names": ["glucose", "INS", "type 2 diabetes"],
-                    }]
+                    "results": [{
+                        "end_node_id": "MONDO:0005148",
+                        "paths": [["CHEBI:17234", "HGNC:6081", "MONDO:0005148"]],
+                    }],
+                    "nodes": {
+                        "CHEBI:17234": {"name": "glucose"},
+                        "HGNC:6081": {"name": "INS"},
+                        "MONDO:0005148": {"name": "type 2 diabetes"},
+                    },
                 })
             }]
         }
@@ -289,15 +294,15 @@ class TestValidateBridgeHypotheses:
         )
 
         with patch('src.kestrel_backend.graph.nodes.synthesis.multi_hop_query', new_callable=AsyncMock) as mock_mhq:
-            # Mock successful validation
+            # Mock successful validation — real shape with a reachable path.
             mock_mhq.return_value = {
                 "content": [{
                     "type": "text",
                     "text": json.dumps({
-                        "paths": [{
-                            "nodes": ["CHEBI:17234", "HGNC:6081"],
-                            "predicates": ["biolink:affects"],
-                        }]
+                        "results": [{"end_node_id": "HGNC:6081",
+                                     "paths": [["CHEBI:17234", "HGNC:6081"]]}],
+                        "nodes": {"CHEBI:17234": {"name": "glucose"},
+                                  "HGNC:6081": {"name": "INS"}},
                     })
                 }],
                 "isError": False,
@@ -324,11 +329,11 @@ class TestValidateBridgeHypotheses:
         )
 
         with patch('src.kestrel_backend.graph.nodes.synthesis.multi_hop_query', new_callable=AsyncMock) as mock_mhq:
-            # Mock no paths found
+            # Mock no paths found (real empty shape).
             mock_mhq.return_value = {
                 "content": [{
                     "type": "text",
-                    "text": json.dumps({"paths": []})
+                    "text": json.dumps({"results": []})
                 }],
                 "isError": False,
             }
@@ -366,27 +371,27 @@ class TestFindTwoHopSharedNeighbors:
             # Mock responses for two entities sharing a neighbor
             def mock_response(start_node_ids, **kwargs):
                 if start_node_ids == ["CHEBI:17234"]:
-                    # Glucose connects to HGNC:6081 (INS) in 2 hops
+                    # Glucose reaches GO:0005737 and HGNC:6081 (real shape: CURIE-list path).
                     return {
                         "content": [{
                             "type": "text",
                             "text": json.dumps({
-                                "paths": [{
-                                    "nodes": ["CHEBI:17234", "GO:0005737", "HGNC:6081"],
-                                }]
+                                "results": [{"end_node_id": "HGNC:6081",
+                                             "paths": [["CHEBI:17234", "GO:0005737", "HGNC:6081"]]}],
+                                "nodes": {},
                             })
                         }],
                         "isError": False,
                     }
                 elif start_node_ids == ["CHEBI:28757"]:
-                    # Fructose also connects to HGNC:6081 (INS) in 2 hops
+                    # Fructose also reaches GO:0005737 and HGNC:6081.
                     return {
                         "content": [{
                             "type": "text",
                             "text": json.dumps({
-                                "paths": [{
-                                    "nodes": ["CHEBI:28757", "GO:0005737", "HGNC:6081"],
-                                }]
+                                "results": [{"end_node_id": "HGNC:6081",
+                                             "paths": [["CHEBI:28757", "GO:0005737", "HGNC:6081"]]}],
+                                "nodes": {},
                             })
                         }],
                         "isError": False,
@@ -416,9 +421,9 @@ class TestFindTwoHopSharedNeighbors:
                         "content": [{
                             "type": "text",
                             "text": json.dumps({
-                                "paths": [{
-                                    "nodes": ["CHEBI:17234", "UNIQUE:001"],
-                                }]
+                                "results": [{"end_node_id": "UNIQUE:001",
+                                             "paths": [["CHEBI:17234", "UNIQUE:001"]]}],
+                                "nodes": {},
                             })
                         }],
                         "isError": False,
@@ -428,9 +433,9 @@ class TestFindTwoHopSharedNeighbors:
                         "content": [{
                             "type": "text",
                             "text": json.dumps({
-                                "paths": [{
-                                    "nodes": ["CHEBI:28757", "UNIQUE:002"],
-                                }]
+                                "results": [{"end_node_id": "UNIQUE:002",
+                                             "paths": [["CHEBI:28757", "UNIQUE:002"]]}],
+                                "nodes": {},
                             })
                         }],
                         "isError": False,
