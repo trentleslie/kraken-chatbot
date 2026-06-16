@@ -68,6 +68,17 @@ async def search_papers(
         return await _esummary(pmids)
 
 
+async def search_pmids(query: str, retmax: int = 50) -> list[str]:
+    """Return the bare PMID list for a query (relevance-sorted; sort is hardcoded in _esearch).
+
+    Public wrapper around the private _esearch: ``search_papers`` returns ESummary metadata
+    dicts, but bridge-grounding co-occurrence retrieval needs only the PMID strings. Acquires
+    PUBMED_SEMAPHORE like ``search_papers`` does.
+    """
+    async with PUBMED_SEMAPHORE:
+        return await _esearch(query, retmax)
+
+
 async def _esearch(query: str, limit: int) -> list[str]:
     """
     Get PMIDs matching query via ESearch.
