@@ -137,7 +137,7 @@ class TestRunPrepass:
         assert len(out["resolved_entities"]) == 1
         assert out["resolved_entities"][0].method != "biomapper"
 
-    async def test_flag_on_hit_uses_biomapper_and_skips_tier1(self, monkeypatch):
+    async def test_flag_on_hit_uses_biomapper_and_skips_tier1(self, monkeypatch, caplog):
         _enable_biomapper(monkeypatch)
         async def fake_bm(name, hint, base_url=None):
             return _biomapper_result()
@@ -149,11 +149,16 @@ class TestRunPrepass:
             return _gn_envelope(args["curies"], _human_gene_node(args["curies"]))
         monkeypatch.setattr(entity_resolution, "call_kestrel_tool", fake_kestrel)
         state = {"raw_entities": ["TNFRSF1A"], "entity_type_hints": {"TNFRSF1A": "gene"}, "entity_aliases": {}}
-        out = await run(state)
+        with caplog.at_level("INFO", logger=entity_resolution.logger.name):
+            out = await run(state)
         er = out["resolved_entities"][0]
         assert er.method == "biomapper"
         assert er.curie == "NCBIGene:7132"
         assert "hybrid_search" not in seen_tools
+        # Greptile fix: the completion log breaks out biomapper and does NOT inflate tier2.
+        completion = next(m for m in caplog.messages if m.startswith("Completed entity_resolution"))
+        assert "biomapper=1" in completion
+        assert "tier1=0" in completion and "tier2=0" in completion
 
     async def test_flag_on_no_hint_skips_biomapper(self, monkeypatch):
         _enable_biomapper(monkeypatch)

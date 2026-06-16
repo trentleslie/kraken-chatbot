@@ -861,9 +861,10 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     duration = time.time() - start
     rate = 100 * len(resolved) / len(final_results) if final_results else 0
 
-    # Count by tier
+    # Count by tier. Subtract biomapper (pre-pass) too, else the tier2 count is inflated by the
+    # pre-resolver's hits once the flag is on.
     alias_resolved = sum(1 for r in final_results if r.method and r.method.startswith("alias:"))
-    llm_resolved = len(resolved) - tier1_resolved - alias_resolved
+    llm_resolved = len(resolved) - tier1_resolved - alias_resolved - biomapper_resolved
 
     if failed:
         failed_names = [r.raw_name for r in failed[:5]]
@@ -873,8 +874,9 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         )
 
     logger.info(
-        "Completed entity_resolution in %.1fs — resolved=%d (tier1=%d, alias=%d, tier2=%d), failed=%d (%.0f%%)",
-        duration, len(resolved), tier1_resolved, alias_resolved, llm_resolved, len(failed), rate
+        "Completed entity_resolution in %.1fs — resolved=%d (tier1=%d, biomapper=%d, alias=%d, tier2=%d), failed=%d (%.0f%%)",
+        duration, len(resolved), tier1_resolved, biomapper_resolved, alias_resolved, llm_resolved,
+        len(failed), rate
     )
 
     result = {
