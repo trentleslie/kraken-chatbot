@@ -3,6 +3,7 @@ import { Header } from "@/components/Header";
 import { ChatArea } from "@/components/ChatArea";
 import { ChatInput } from "@/components/ChatInput";
 import { ModeToggle } from "@/components/ModeToggle";
+import { BiomapperEnvToggle } from "@/components/BiomapperEnvToggle";
 import { PipelineProgress } from "@/components/PipelineProgress";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import type { ErrorMessage } from "@/types/messages";
@@ -16,6 +17,8 @@ export default function ChatPage() {
     conversationId,
     agentMode,
     setAgentMode,
+    biomapperEnv,
+    setBiomapperEnv,
     pipelineProgress,
     sendMessage,
     clearMessages,
@@ -53,12 +56,20 @@ export default function ChatPage() {
       />
       
       {/* Mode Toggle - below header, above messages */}
-      <div className="px-4 py-2 border-b flex justify-center">
+      <div className="px-4 py-2 border-b flex items-center justify-center gap-4">
         <ModeToggle
           mode={agentMode}
           onModeChange={setAgentMode}
           disabled={isAgentResponding}
         />
+        {/* Biomapper prod/dev API toggle — only relevant to the discovery pipeline's resolver. */}
+        {agentMode === "pipeline" && (
+          <BiomapperEnvToggle
+            env={biomapperEnv}
+            onEnvChange={setBiomapperEnv}
+            disabled={isAgentResponding}
+          />
+        )}
       </div>
 
       <ChatArea

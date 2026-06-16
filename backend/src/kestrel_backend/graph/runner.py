@@ -47,6 +47,7 @@ async def stream_discovery(
     query: str,
     conversation_history: list[tuple[str, str]] | None = None,
     config: dict[str, Any] | None = None,
+    biomapper_env: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """
     Stream discovery workflow events for real-time updates.
@@ -72,6 +73,7 @@ async def stream_discovery(
     initial_state: DiscoveryState = {
         "raw_query": query,
         "conversation_history": conversation_history or [],
+        "biomapper_env": biomapper_env,
     }
 
     async for event in graph.astream(initial_state, stream_mode="updates", config=config):

@@ -30,8 +30,13 @@ class EntityResolution(BaseModel):
     resolved_name: str | None = Field(None, description="Canonical name from KG")
     category: str | None = Field(None, description="Biolink category (e.g., biolink:ChemicalEntity)")
     confidence: float = Field(0.0, ge=0.0, le=1.0, description="Resolution confidence score")
-    method: Literal["exact", "fuzzy", "semantic", "failed"] = Field(
-        "failed", description="Resolution method used"
+    # Free string, not a Literal: admits "biomapper" (pre-resolver) and the pre-existing
+    # f"alias:{alias}" value the Tier-1.5 path constructs (which raised ValidationError against
+    # the old Literal — a live crash on its success branch). "failed" remains the sentinel triage
+    # routes to cold_start; readers use == "failed" / startswith("alias:"), both still valid.
+    method: str = Field(
+        "failed",
+        description='Resolution method: "exact"|"fuzzy"|"semantic"|"failed"|"biomapper"|"alias:<name>"',
     )
 
 
@@ -326,6 +331,7 @@ class DiscoveryState(TypedDict, total=False):
     query_type: Literal["retrieval", "discovery", "hybrid"]
     raw_entities: list[str]  # Extracted entity names before resolution
     conversation_history: list[tuple[str, str]]  # (role, content) pairs
+    biomapper_env: str | None  # prod/dev biomapper2 API toggle ("production"|"dev"); None = default
 
     # === Study Context (for longitudinal analysis) ===
     is_longitudinal: bool
