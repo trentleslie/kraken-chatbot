@@ -45,37 +45,48 @@ class ChainSpec:
 
 
 # The panel. Positives are well-established mechanisms; negatives are famously refuted; the hard
-# negative has two individually-plausible legs that do NOT compose into a mechanism. Middle-node
-# names are the O2 lever — tune from the measured off_topic rate during the run.
+# negative has two individually-plausible legs that do NOT compose into a mechanism.
+#
+# Middle-node names were chosen (O2) so BOTH legs clear the >=5-labeled floor — verified by an
+# ESearch pool-size probe (all legs returned >=15 co-occurrence PMIDs at retmax=80) BEFORE the
+# labeling run. This is the "rework retrieval" the first Tier A run (20260616T014211Z, not_evaluable
+# from sparse mediators like "intestinal inflammation"/"estrogen receptor signaling") prescribed.
+# The pre-registered thresholds (above) are UNCHANGED — only the retrieval was fixed.
 PANEL: list[ChainSpec] = [
     ChainSpec(
-        "hpv_e7_cervical_cancer", "positive",
-        ("NCBITaxon:10566", "PR:000007377", "MONDO:0002974"),
-        ("Human papillomavirus", "E7 oncoprotein", "cervical carcinoma"),
+        "hpv_dysplasia_cervical_cancer", "positive",
+        ("NCBITaxon:10566", "MONDO:0006143", "MONDO:0002974"),
+        ("human papillomavirus", "cervical dysplasia", "cervical cancer"),
         ("biolink:causes", "biolink:contributes_to"),
     ),
     ChainSpec(
-        "hpylori_caga_peptic_ulcer", "positive",
-        ("NCBITaxon:210", "PR:000022342", "MONDO:0004247"),
-        ("Helicobacter pylori", "CagA protein", "peptic ulcer"),
+        "hpylori_gastritis_peptic_ulcer", "positive",
+        ("NCBITaxon:210", "MONDO:0004966", "MONDO:0004247"),
+        ("Helicobacter pylori", "chronic gastritis", "peptic ulcer"),
         ("biolink:causes", "biolink:contributes_to"),
     ),
     ChainSpec(
-        "mmr_inflammation_autism", "negative",
-        ("VO:0000737", "HP:0002037", "MONDO:0005260"),
-        ("MMR vaccine", "intestinal inflammation", "autism"),
+        "mmr_bowel_autism", "negative",
+        ("VO:0000737", "MONDO:0005265", "MONDO:0005260"),
+        ("MMR vaccine", "bowel disease", "autism"),
         ("biolink:related_to", "biolink:related_to"),
     ),
     ChainSpec(
         "hrt_estrogen_chd", "negative",
-        ("CHEBI:50113", "GO:0030520", "MONDO:0005010"),
-        ("hormone replacement therapy", "estrogen receptor signaling", "coronary heart disease"),
+        ("CHEBI:50113", "CHEBI:50114", "MONDO:0005010"),
+        ("hormone replacement therapy", "estrogen", "coronary heart disease"),
+        ("biolink:affects", "biolink:related_to"),
+    ),
+    ChainSpec(
+        "betacarotene_oxidative_lung_cancer", "negative",
+        ("CHEBI:17579", "GO:0006979", "MONDO:0008903"),
+        ("beta-carotene", "oxidative stress", "lung cancer"),
         ("biolink:affects", "biolink:related_to"),
     ),
     ChainSpec(
         "coffee_caffeine_pancreatic_cancer", "hard_negative",
-        ("CHEBI:27732", "CHEBI:27732", "MONDO:0005192"),
-        ("coffee consumption", "caffeine metabolism", "pancreatic cancer"),
+        ("FOODON:00001286", "CHEBI:27732", "MONDO:0005192"),
+        ("coffee", "caffeine", "pancreatic cancer"),
         ("biolink:related_to", "biolink:related_to"),
     ),
 ]
