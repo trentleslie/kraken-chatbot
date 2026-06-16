@@ -1,4 +1,4 @@
-# Kestrel/Translator conflation: GH1 (NCBIGene:2688) is the SOMATROPIN drug node, not the gene
+# Kestrel/Translator gene-drug conflation: biologic genes unreachable by symbol (GH1, CTLA4, GBA1)
 
 > Updated 2026-06-16 after live investigation. This ticket originally described `GH1` as a hybrid-search *recall gap* (the human node "absent from the candidate set"). Direct node inspection shows the cause is more specific and more actionable: the node is not missing from the graph, it has been **conflated** into a multi-type drug node, which is why no gene-symbol query retrieves it.
 
