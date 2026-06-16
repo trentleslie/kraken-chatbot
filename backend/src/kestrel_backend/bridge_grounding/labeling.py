@@ -1,9 +1,12 @@
 """U3↔U4 glue: LLM labeling adapter for one leg's abstract pool.
 
-The SDK call is a thin wrapper; the JSON parsing and tally are pure and unit-tested. The Claude
-Agent SDK (ClaudeAgentOptions) exposes no `temperature` field, so determinism cannot be pinned via
-temp=0 — reproducibility comes from pinning the model and snapshotting the per-abstract labels to
-disk (the scoring is then recomputable from frozen labels). See plan U8.
+The SDK call is a thin wrapper; the JSON parsing and tally are pure and unit-tested.
+
+Reproducibility caveats (verified empirically in this env): the Claude Agent SDK exposes no
+`temperature`, AND setting `ClaudeAgentOptions(model=...)` — prefixed or bare — breaks the bundled
+CLI subprocess (exit 1), so the model cannot be pinned via the SDK either. The CLI uses its
+configured default model. Reproducibility therefore rests solely on snapshotting the per-abstract
+labels to disk (scoring is recomputable from frozen labels). See plan U8.
 """
 
 import json
@@ -96,11 +99,13 @@ async def label_leg_via_sdk(
     from ..graph.sdk_utils import ClaudeAgentOptions, query_with_usage
 
     _ = leg_label_schema()  # schema documents the contract; embedded via json_output_instruction
+    # NOTE: do NOT set options.model — empirically, setting it (prefixed OR bare) breaks the
+    # bundled Claude Code CLI subprocess in this environment (exit 1); synthesis.py omits it too.
+    # The CLI uses its configured default model; `model` here only labels the usage record.
     options = ClaudeAgentOptions(
         system_prompt=LABELING_SYSTEM_PROMPT,
         allowed_tools=[],
         max_turns=1,
-        model=model,
     )
     text, usage = await query_with_usage(
         leg_prompt + json_output_instruction(), options, node_name=node_name, model_name=model)
