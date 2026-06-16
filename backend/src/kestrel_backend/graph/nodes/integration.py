@@ -313,11 +313,17 @@ def parse_multi_hop_result(
         path_description = f"{cat1_short} → {cat2_short} ({hop_count} hops)"
         tier = 2 if hop_count <= 2 else 3
         significance = f"Path connects {names[0]} to {names[-1]}"
+        # Hop-aligned predicates + orientation from the KG edges (parse_kestrel_response, U0).
+        # `predicates` is parallel to hops (== len(curies) - 1); "" / None where no edge was found.
+        hop_preds = path.get("predicates", [])
+        predicates = [(p.get("predicate") or "") for p in hop_preds]
+        predicate_directions = [p.get("forward") for p in hop_preds]
         bridges.append(Bridge(
             path_description=path_description,
             entities=curies,
             entity_names=names,
-            predicates=[],  # predicate-per-hop derivation deferred (edges/edge_schema mapping)
+            predicates=predicates,
+            predicate_directions=predicate_directions,
             tier=tier,
             novelty="known",  # From KG, not inferred
             significance=significance,

@@ -172,6 +172,12 @@ class Bridge(BaseModel):
     entities: list[str] = Field(..., description="CURIEs along the path")
     entity_names: list[str] = Field(default_factory=list, description="Names along the path")
     predicates: list[str] = Field(default_factory=list, description="Predicate at each hop")
+    predicate_directions: list[bool | None] = Field(
+        default_factory=list,
+        description="Per-hop orientation parallel to predicates: True if the KG edge runs "
+        "subject→object along the path (forward), False if reversed, None if no edge found. "
+        "Populated for multi-hop bridges; empty for subgraph/legacy bridges.",
+    )
     tier: Literal[2, 3] = Field(3, description="Evidence tier (2=moderate, 3=speculative)")
     novelty: Literal["known", "inferred"] = Field("inferred", description="Known from KG or inferred")
     significance: str = Field(..., description="Why this bridge matters for the study")

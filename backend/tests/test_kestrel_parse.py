@@ -104,3 +104,112 @@ def test_missing_node_name_falls_back_to_curie():
     })
     r = parse_kestrel_response(env)
     assert r["paths"][0]["names"] == ["named", "GO:1"]
+
+
+# ---------------------------------------------------------------------------
+# Per-hop predicate derivation (U0 — resolves O3). The multi_hop response carries
+# `edges` (edge-id -> compact tuple) + `edge_schema` (column order). Each path gains a
+# `predicates` list (one entry per hop) with the predicate and its orientation vs the path.
+# ---------------------------------------------------------------------------
+
+# Canonical column order per the kestrel-api skill.
+SCHEMA = ["subject", "predicate", "object", "qualifiers", "primary_knowledge_source",
+          "supporting_sources", "aggregator_knowledge_source", "knowledge_level",
+          "agent_type", "id"]
+
+
+def _edge(subject, predicate, obj, eid=1):
+    """Build a compact edge tuple in SCHEMA column order."""
+    return [subject, predicate, obj, [], "infores:x", [], "infores:y", "knowledge_assertion",
+            "manual_agent", eid]
+
+
+def test_predicates_forward_two_hops():
+    env = _envelope({
+        "results": [{"end_node_id": "C", "paths": [["A", "B", "C"]], "edge_ids": [10, 11]}],
+        "nodes": {"A": {"name": "a"}, "B": {"name": "b"}, "C": {"name": "c"}},
+        "edge_schema": SCHEMA,
+        "edges": {"10": _edge("A", "biolink:affects", "B", 10),
+                  "11": _edge("B", "biolink:causes", "C", 11)},
+    })
+    preds = parse_kestrel_response(env)["paths"][0]["predicates"]
+    assert preds == [
+        {"predicate": "biolink:affects", "forward": True},
+        {"predicate": "biolink:causes", "forward": True},
+    ]
+
+
+def test_predicate_reverse_orientation_recovered():
+    # Edge stored B->A for the A->B hop: predicate recorded, forward=False (the direction signal).
+    env = _envelope({
+        "results": [{"end_node_id": "B", "paths": [["A", "B"]], "edge_ids": [5]}],
+        "nodes": {"A": {"name": "a"}, "B": {"name": "b"}},
+        "edge_schema": SCHEMA,
+        "edges": {"5": _edge("B", "biolink:treats", "A", 5)},
+    })
+    preds = parse_kestrel_response(env)["paths"][0]["predicates"]
+    assert preds == [{"predicate": "biolink:treats", "forward": False}]
+
+
+def test_predicate_indices_read_from_edge_schema_not_hardcoded():
+    # Reorder the schema so predicate is NOT at index 1; derivation must still be correct.
+    schema = ["id", "object", "subject", "predicate"]
+    env = _envelope({
+        "results": [{"end_node_id": "B", "paths": [["A", "B"]], "edge_ids": [1]}],
+        "nodes": {"A": {"name": "a"}, "B": {"name": "b"}},
+        "edge_schema": schema,
+        "edges": {"1": [1, "B", "A", "biolink:related_to"]},  # id, object=B, subject=A, predicate
+    })
+    preds = parse_kestrel_response(env)["paths"][0]["predicates"]
+    assert preds == [{"predicate": "biolink:related_to", "forward": True}]
+
+
+def test_predicate_missing_edge_is_none_no_positional_shift():
+    # Only the second hop has an edge; the first hop must be None (not shifted into position 0).
+    env = _envelope({
+        "results": [{"end_node_id": "C", "paths": [["A", "B", "C"]], "edge_ids": [2]}],
+        "nodes": {"A": {"name": "a"}, "B": {"name": "b"}, "C": {"name": "c"}},
+        "edge_schema": SCHEMA,
+        "edges": {"2": _edge("B", "biolink:causes", "C", 2)},
+    })
+    preds = parse_kestrel_response(env)["paths"][0]["predicates"]
+    assert preds == [
+        {"predicate": None, "forward": None},
+        {"predicate": "biolink:causes", "forward": True},
+    ]
+
+
+def test_predicate_multiple_edges_deterministic_primary():
+    # Two forward edges for the same pair -> pick the lexicographically smallest predicate.
+    env = _envelope({
+        "results": [{"end_node_id": "B", "paths": [["A", "B"]], "edge_ids": [1, 2]}],
+        "nodes": {"A": {"name": "a"}, "B": {"name": "b"}},
+        "edge_schema": SCHEMA,
+        "edges": {"1": _edge("A", "biolink:related_to", "B", 1),
+                  "2": _edge("A", "biolink:affects", "B", 2)},
+    })
+    preds = parse_kestrel_response(env)["paths"][0]["predicates"]
+    assert preds == [{"predicate": "biolink:affects", "forward": True}]  # 'affects' < 'related_to'
+
+
+def test_predicates_empty_edges_all_none_length_preserved():
+    # No edges/edge_schema (the existing REAL-style shape) -> predicates is all-None, len = hops.
+    env = _envelope({
+        "results": [{"end_node_id": "C", "paths": [["A", "B", "C"]]}],
+        "nodes": {"A": {"name": "a"}, "B": {"name": "b"}, "C": {"name": "c"}},
+        "edges": {},
+    })
+    preds = parse_kestrel_response(env)["paths"][0]["predicates"]
+    assert preds == [{"predicate": None, "forward": None}, {"predicate": None, "forward": None}]
+
+
+def test_predicate_edge_ids_scope_falls_back_to_all_when_unresolved():
+    # edge_ids reference ids absent from the edges dict -> fall back to scanning all edges.
+    env = _envelope({
+        "results": [{"end_node_id": "B", "paths": [["A", "B"]], "edge_ids": [999]}],
+        "nodes": {"A": {"name": "a"}, "B": {"name": "b"}},
+        "edge_schema": SCHEMA,
+        "edges": {"7": _edge("A", "biolink:affects", "B", 7)},  # key 7, not 999
+    })
+    preds = parse_kestrel_response(env)["paths"][0]["predicates"]
+    assert preds == [{"predicate": "biolink:affects", "forward": True}]
