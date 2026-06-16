@@ -2,6 +2,9 @@ export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "re
 
 export type AgentMode = "classic" | "pipeline";
 
+// Which biomapper2 API the discovery pipeline's entity resolution targets (prod/dev toggle).
+export type BiomapperEnv = "production" | "dev";
+
 export type UserMessage = {
   id: string;
   type: "user";

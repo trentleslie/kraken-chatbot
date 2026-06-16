@@ -27,3 +27,6 @@ docs/references/biomedical-link-prediction-methods-and-evidence.pdf
 
 # code-on-graph spike: ignore transient per-item checkpoints (final result JSONs are tracked)
 backend/tests/code_on_graph_spike/runs/*.partial.json
+
+# Biomapper eval run artifacts (timestamped; persisted by default)
+backend/src/kestrel_backend/evals/**/runs/

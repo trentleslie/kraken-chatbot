@@ -80,6 +80,57 @@ class PathwayEnrichmentConfig(BaseModel):
     )
 
 
+class BiomapperConfig(BaseModel):
+    """Configuration for the Biomapper pre-resolver in entity_resolution.
+
+    Default-off feature flag plus the namespace/species policy knobs the pre-resolver
+    needs. Secrets (BIOMAPPER_API_KEY / BIOMAPPER_BASE_URL) live in config.Settings, not
+    here — this model is never sourced from environment variables. See
+    docs/plans/2026-06-11-001-feat-biomapper-entity-resolution-plan.md (Unit 1).
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Default-off flag: when True, entity_resolution resolves each hinted "
+        "entity via Biomapper first (namespace/species-correct CURIE), confirms it in Kestrel, "
+        "and falls back to the Kestrel Tier 1/1.5/2 path on any miss. Flag-off behavior is "
+        "byte-identical to today. Mirrors the multi_hop_enabled / subgraph_enabled demo-slice "
+        "flags; a follow-up PR flips it after the gold-set eval confirms improvement.",
+    )
+    namespace_preference: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "gene": ["HGNC", "NCBIGene", "UniProtKB"],
+            "protein": ["HGNC", "NCBIGene", "UniProtKB"],
+            "metabolite": ["CHEBI", "HMDB", "RM", "LM"],
+        },
+        description="Per-class ordered namespace preference for reconciling a Biomapper CURIE "
+        "against the Kestrel KG (R5: explicit config, not implicit ranking). Genes/proteins "
+        "anchor on HGNC (human-only by construction; Kestrel normalizes HGNC/UniProt/NCBIGene to "
+        "the same human node and keys edges on NCBIGene — verified 2026-06-15). Metabolite order "
+        "(CHEBI-first) is the starting hypothesis; confirm which namespace Kestrel keys metabolite "
+        "edges on at impl.",
+    )
+    species_default: str = Field(
+        default="human",
+        description="Default species for resolution (R5: explicit). For genes/proteins, "
+        "humanness is enforced at confirmation time by the HGNC-marker gate in Unit 3 (an HGNC "
+        "equivalent id is required), not by an implicit Biomapper default — so this field is "
+        "documentation/metabolite-relevant.",
+    )
+    http_concurrency: int = Field(
+        default=8,
+        description="Max concurrent Biomapper HTTP calls (its own semaphore, independent of the "
+        "entity_resolution SDK semaphore=1) — bounds fan-out without serializing, avoiding the "
+        "throttling-as-no-match gotcha.",
+    )
+    node_timeout_seconds: float = Field(
+        default=30.0,
+        description="Per-entity asyncio.wait_for timeout around each Biomapper map_entity call. "
+        "A stalled call falls back to Kestrel for that entity only; already-resolved entities are "
+        "retained (caps added latency at ~http_concurrency × this).",
+    )
+
+
 class EntityResolutionConfig(BaseModel):
     """Configuration for the entity_resolution node."""
 
@@ -95,6 +146,10 @@ class EntityResolutionConfig(BaseModel):
     tier1_min_score: float = Field(
         default=0.6,
         description="Minimum API resolution score to accept a tier-1 match.",
+    )
+    biomapper: BiomapperConfig = Field(
+        default_factory=BiomapperConfig,
+        description="Biomapper pre-resolver config (default-off flag + namespace/species policy).",
     )
 
 
