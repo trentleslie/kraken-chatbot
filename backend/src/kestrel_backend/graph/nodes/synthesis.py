@@ -14,7 +14,6 @@ systematic review data showing that approximately 18% of computational predictio
 progress to clinical investigation.
 """
 
-import json
 import logging
 import time
 from typing import Any
@@ -25,7 +24,7 @@ from ..state import (
     Hypothesis
 )
 from ...literature_utils import format_pmid_link
-from ...kestrel_client import multi_hop_query
+from ...kestrel_client import multi_hop_query, parse_kestrel_response
 from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
 from ..state_contracts import validate_state, SynthesisInput, SynthesisOutput
 
@@ -887,21 +886,13 @@ async def validate_bridge_hypotheses(bridges: list[Bridge]) -> list[Bridge]:
                 validated_bridges.append(bridge)
                 continue
 
-            # Check if we got any paths back
-            content = result.get("content", [])
-            if not content:
-                validated_bridges.append(bridge)
-                continue
+            # Check if we got any paths back. Use the shared helper — the real response is
+            # {"results":[{"paths":[[curie,...]]}], ...} with NO top-level "paths" key. The old
+            # data.get("paths", data) fell back to the whole dict (always truthy) and upgraded
+            # EVERY bridge to Tier 2 on garbage; the helper returns n_paths=0 on a no-path result.
+            parsed = parse_kestrel_response(result)
 
-            json_text = content[0].get("text", "")
-            if not json_text:
-                validated_bridges.append(bridge)
-                continue
-
-            data = json.loads(json_text)
-            paths = data.get("paths", data) if isinstance(data, dict) else data
-
-            if paths and len(paths) > 0:
+            if parsed["n_paths"] > 0:
                 # Path verified! Upgrade to Tier 2
                 logger.info(
                     "validate_bridge_hypotheses: VALIDATED %s -> %s, upgrading to Tier 2",

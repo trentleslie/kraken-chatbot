@@ -411,3 +411,85 @@ async def multi_hop_query(
         arguments["mode"] = mode
 
     return await call_kestrel_tool("multi_hop_query", arguments)
+
+
+def parse_kestrel_response(envelope: dict[str, Any]) -> dict[str, Any]:
+    """Parse a multi_hop_query / subgraph_query MCP envelope into normalized paths.
+
+    Replaces the drift-prone ``data.get("paths", data)`` parse that shipped to prod in
+    three nodes for ~3.5 months. The real response (see .claude/skills/kestrel-api) has NO
+    top-level ``"paths"`` key — it is ``{"results": [...], "nodes": {...}, "edges": {...}}``
+    where each ``result["paths"]`` is a list of **CURIE-string lists** (not dicts).
+
+    FAILS LOUDLY: on a missing/mis-shaped ``results`` (or a bad envelope) it returns an
+    EMPTY path set and logs — it NEVER falls back to the raw dict (the silent-fallback bug).
+
+    Args:
+        envelope: the MCP tool result ``{"content": [{"text": "<json>"}], "isError": ...}``.
+
+    Returns:
+        ``{"paths": [{"curies": [...], "names": [...], "end_node_id": str,
+        "degree": int, "score": float}], "nodes": {curie: {...}},
+        "end_node_ids": [str, ...], "n_paths": int}`` — ``end_node_ids`` lists every result's
+        ``end_node_id`` (order-preserving, deduped), for callers that need reachable end-nodes
+        rather than full paths (e.g. pathway_enrichment's shared-neighbor counting).
+    """
+    empty = {"paths": [], "nodes": {}, "end_node_ids": [], "n_paths": 0}
+    try:
+        content = envelope.get("content", []) if isinstance(envelope, dict) else []
+        if not content:
+            return empty
+        json_text = content[0].get("text", "")
+        if not json_text:
+            return empty
+        data = json.loads(json_text)
+    except (json.JSONDecodeError, AttributeError, IndexError, TypeError) as e:
+        logger.warning("parse_kestrel_response: bad envelope (%s)", e)
+        return empty
+
+    if not isinstance(data, dict):
+        logger.warning("parse_kestrel_response: inner data not a dict: %s", type(data).__name__)
+        return empty
+
+    results = data.get("results", [])
+    if not isinstance(results, list):
+        logger.warning("parse_kestrel_response: 'results' not a list (keys=%s)", list(data)[:5])
+        return empty
+
+    nodes = data.get("nodes", {})
+    if not isinstance(nodes, dict):
+        nodes = {}
+
+    def _name(curie: str) -> str:
+        info = nodes.get(curie)
+        if isinstance(info, dict) and info.get("name"):
+            return str(info["name"])
+        return curie
+
+    parsed_paths: list[dict[str, Any]] = []
+    end_node_ids: list[str] = []
+    seen_ends: set[str] = set()
+    for res in results:
+        if not isinstance(res, dict):
+            continue
+        end_id = res.get("end_node_id")
+        if isinstance(end_id, str) and end_id and end_id not in seen_ends:
+            seen_ends.add(end_id)
+            end_node_ids.append(end_id)
+        for path in res.get("paths", []) or []:
+            # A path is a list of CURIE strings. Reject the old dict shape loudly.
+            if not isinstance(path, list) or len(path) < 2:
+                continue
+            curies = [c for c in path if isinstance(c, str)]
+            if len(curies) < 2:
+                continue
+            parsed_paths.append({
+                "curies": curies,
+                "names": [_name(c) for c in curies],
+                "end_node_id": res.get("end_node_id", curies[-1]),
+                "degree": res.get("degree", 0),
+                "score": res.get("score", 0.0),
+            })
+
+    return {"paths": parsed_paths, "nodes": nodes,
+            "end_node_ids": end_node_ids, "n_paths": len(parsed_paths)}
