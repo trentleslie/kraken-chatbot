@@ -1,11 +1,22 @@
 ---
 title: "feat: Bridge-Grounding v2 — KG-Provenance Gate + LLM Confirmation"
 type: feat
-status: active
+status: superseded
 date: 2026-06-17
 origin: docs/brainstorms/2026-06-17-bridge-grounding-v2-kg-provenance-requirements.md
 deepened: 2026-06-17
+superseded_by: backend/assessment_data/BRIDGE_GROUNDING_V2_FINDINGS.md
 ---
+
+> **⛔ SUPERSEDED (2026-06-17).** Document-review + three Kestrel probes showed this scorer's signal is
+> **weak and sparse**: only 23% of real bridge legs are curated-causal, the graded chain score
+> separates real-vs-spurious at only **AUC 0.61**, and combining with literature backing did not help
+> (popularity trap). The initial "6/6 validation" over-claimed — it tested direct curated drug→disease
+> edges, not the legs of discovered bridges. **Reframed from a mechanism-confidence SCORE to a
+> deterministic evidence-provenance LABEL** (no LLM, no calibration gate). See
+> `backend/assessment_data/BRIDGE_GROUNDING_V2_FINDINGS.md`. The KG-provenance *extraction* (U0/U1 reuse,
+> leg edge knowledge_level/agent_type/predicate) carries forward to the reframe; the scoring/gate/Phase-2
+> units below do not. Retained for the provenance-extraction design and the negative-result record.
 
 # feat: Bridge-Grounding v2 — KG-Provenance Gate + LLM Confirmation
 
