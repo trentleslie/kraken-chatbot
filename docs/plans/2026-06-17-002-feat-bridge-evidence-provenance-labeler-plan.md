@@ -143,7 +143,7 @@ evidence_tier(edge):                                          # deterministic; n
 
 ## Implementation Units
 
-- [ ] **L1: Provenance classification + per-leg labeler**
+- [x] **L1: Provenance classification + per-leg labeler** — DONE (commit 3885f05; 30 unit tests + verified live)
 
 **Goal:** Productionize the probe's logic: classify an edge's evidence tier, fetch a leg's edges and
 take the best tier, and compose a bridge chain-summary label.
