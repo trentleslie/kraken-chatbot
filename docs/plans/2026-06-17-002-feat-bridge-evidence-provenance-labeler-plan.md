@@ -3,6 +3,7 @@ title: "feat: Bridge Evidence-Provenance Labeler"
 type: feat
 status: active
 date: 2026-06-17
+deepened: 2026-06-17
 origin: backend/assessment_data/BRIDGE_GROUNDING_V2_FINDINGS.md
 ---
 
@@ -62,17 +63,25 @@ provenance label the data *can* support deterministically.
   per-leg-fetch logic to productionize** (`pred_class`, `is_curated`, the one_hop-full leg read). These
   probes ARE the labeler in script form.
 - `backend/src/kestrel_backend/kestrel_client.py` — `call_kestrel_tool`. Per-leg edges via
-  `call_kestrel_tool("one_hop_query", {"start_node_ids": A, "end_node_ids": B, "mode": "full"})` returns
-  rich edge **dicts** (`predicate`, `knowledge_level`, `agent_type`, `primary_knowledge_source`). **Do
-  NOT use `multi_hop_query(max_path_length=1)`** — Kestrel rejects it (must be ≥2).
+  `call_kestrel_tool("one_hop_query", {"start_node_ids": X, "mode": "full"})` then **filter the
+  returned `edges` dict client-side to those touching Y** — this is the call the working probe used
+  (`kg_provenance_probe.py` `direct_edges`). **Server-side `end_node_ids` on `one_hop_query` is
+  UNVERIFIED** — adopt the start-only + post-filter approach, or spike-confirm `end_node_ids` first;
+  do NOT rely on it as written. Full-mode edges are rich **dicts** with `predicate`, `knowledge_level`,
+  `agent_type`, `subject`, `object` (verified); `primary_knowledge_source` is expected but not yet
+  exercised by the probes — confirm it is present in the dict during L1. **Do NOT use
+  `multi_hop_query(max_path_length=1)`** — Kestrel rejects it (must be ≥2).
 - `backend/src/kestrel_backend/graph/state.py` — `Bridge` (frozen; `predicates`/`predicate_directions`
   from U0), `BridgeGrounding`/`LegSummary` (U1), `grounded_bridges` (no-reducer), `bridge_grounding_errors`.
 - `backend/src/kestrel_backend/graph/state_contracts.py` — `BridgeGroundingInput/Output` + registry (U1).
 - `docs/plans/2026-06-08-002-feat-bridge-grounding-scorer-plan.md` U5 — the before-synthesis node-wiring
   design (reroute `temporal/integration → bridge_grounding → synthesis`, full graph only; default-off;
   synthesis renders; `protocol.total_nodes` 10→11; `NODE_STATUS_MESSAGES` entry). Substrate-independent.
-- `backend/src/kestrel_backend/graph/nodes/integration.py` — produces the ordered multi-hop bridges
-  (`predicates`/`predicate_directions` populated by U0); exclude subgraph bridges (path_description shape).
+- `backend/src/kestrel_backend/graph/nodes/integration.py` — produces ordered multi-hop bridges
+  (`predicates`/`predicate_directions` populated by U0) AND subgraph "connecting" bridges. **Discriminator
+  (robust, documented at `state.py` Bridge docstring): `predicate_directions` is non-empty ONLY for
+  multi-hop bridges** (subgraph leaves it `[]`); use `predicate_directions != []` (or `len(entities)==3
+  and predicate_directions`) to select scoreable bridges — prefer this over matching `path_description`.
 
 ### Institutional Learnings
 
@@ -117,8 +126,9 @@ provenance label the data *can* support deterministically.
 
 ```
 bridge (ordered A→B→C, multi-hop only):
-  for each leg (A,B), (B,C):
-     edges = one_hop_query(start=X, end=Y, mode=full)         # rich dicts; ALL X-Y candidate edges
+  for each leg (X,Y):
+     all_edges = one_hop_query(start_node_ids=X, mode=full)   # start-only (the PROVEN probe call)
+     edges     = [e for e in all_edges if Y in (e.subject, e.object)]   # client-side filter to Y
      tier  = best over edges of evidence_tier(edge)           # curated-causal > curated-assoc >
                                                               #   curated-neutral > text-mined > none
   chain_label = summarize(leg1_tier, leg2_tier)               # "both legs curated-causal" … "no KG edge"
@@ -150,8 +160,13 @@ take the best tier, and compose a bridge chain-summary label.
 
 **Approach:**
 - Lift `pred_class`/`is_curated`/the one_hop-full leg read from `assessment_data/kg_bridge_leg_probe.py`.
-- `evidence_tier` is a pure function over an edge dict; `leg_tier` does the fetch + best-of-candidates;
-  `bridge_label` maps the two leg tiers to a named chain summary (vocabulary settled here).
+  **Use that probe's predicate-class set** (the two probes differ — `biolink:treats`/`applied_to_treat`
+  are **associative** there, causal in `kg_provenance_probe.py`; treat them as associative so a
+  curated drug→disease `treats` edge is NOT counted as a curated-causal *mechanism* — see the v2
+  finding that `treats`-as-causal inflated coverage).
+- `evidence_tier` is a pure function over an edge dict; `leg_tier` does the start-only one_hop-full
+  fetch + client-side filter to the target curie + best-of-candidates; `bridge_label` maps the two leg
+  tiers to a named chain summary (vocabulary settled here).
 - Best-tier ordering: curated-causal > curated-associative > curated-neutral > text-mined > none.
 
 **Execution note:** Implement the pure classifiers (`predicate_class`/`evidence_tier`/`bridge_label`)
@@ -167,8 +182,8 @@ test-first; the fetch (`leg_tier`) is a thin Kestrel wrapper tested with a mocke
 - Boundary: a leg with no edges → `none`.
 - Happy (compose): (curated-causal, curated-causal) → "both legs curated-causal"; (curated-causal, none)
   → "one leg unsupported"; (none, none) → "no KG edge".
-- Integration: `leg_tier` calls `one_hop_query` with `start_node_ids`/`end_node_ids`/`mode:full`
-  (mocked) and reads dict edges.
+- Integration: `leg_tier` calls `one_hop_query` with `start_node_ids`/`mode:full` (mocked), then
+  filters the returned dict edges client-side to those touching the target curie.
 
 - [ ] **L2: BridgeGrounding model adaptation (provenance label fields)**
 
@@ -181,12 +196,16 @@ test-first; the fetch (`leg_tier`) is a thin Kestrel wrapper tested with a mocke
 **Files:**
 - Modify: `backend/src/kestrel_backend/graph/state.py` — `LegSummary` carries `from_curie`/`to_curie`/
   `predicate`/`evidence_tier`/`knowledge_level`/`agent_type`/`source`; `BridgeGrounding` carries
-  `legs`/`label` (chain summary), drops the score fields (or leaves them optional/null). Additive,
-  backward-compatible, frozen-model + `model_copy` attach pattern unchanged.
-- Test: `backend/tests/test_bridge_grounding_models.py` (extend U1's tests).
+  `legs`/`label` (chain summary). **Not fully additive:** `BridgeGrounding.support_fraction` and
+  `decision` are currently **required** — to carry only `legs`+`label`, make them optional/defaulted or
+  remove them (the score is gone). The frozen-model + `model_copy` attach pattern is unchanged.
+- Test: `backend/tests/test_bridge_grounding_models.py` (rewrite U1's tests — they construct
+  `BridgeGrounding(support_fraction=…, decision=…)` and will break on the field change).
 
 **Approach:** Reuse the no-reducer `grounded_bridges` key, the contracts, and the `entities`-tuple join
-from U1 unchanged. This is a field swap on existing frozen models.
+from U1 unchanged. **Runtime-safe:** no production reader and none of the v1 scorer modules import
+`BridgeGrounding`/`LegSummary` (they operate on raw dicts) — the only breakage is
+`test_bridge_grounding_models.py`, rewritten here.
 
 **Test scenarios:**
 - Happy: a provenance `BridgeGrounding` (legs + label) round-trips (frozen, additive-safe serialization).
@@ -244,6 +263,32 @@ degrades it (label `none`/error in `bridge_grounding_errors`), node still return
 | Most real bridges label `text-mined`/`none` (only ~23% legs curated-causal) | This is the honest, intended behavior — the label reports what evidence exists; it does not claim mechanism. Not a bug |
 | Per-leg `one_hop_query` full fetches add Kestrel load | Bounded by `max_scored_bridges` + default-off; optimize to carry provenance on the `Bridge` (deferred) only if needed |
 | Chain-summary label vocabulary churns | Settle the vocabulary in L1 against real bridge output before wiring L3 |
+
+## Phased Delivery
+
+The entity-resolution fix is a hard accuracy blocker with no committed timeline, and the node ships
+default-off, so the in-pipeline node (L3) buys nothing observable until that fix lands. Sequence
+accordingly so value ships now without premature graph surgery:
+
+### Phase 1 (now) — L1 only: the deterministic labeler + eval
+Build L1 (the pure `evidence_tier`/`predicate_class`/`bridge_label` classifiers + the per-leg
+`leg_tier` fetch) and run it as **eval tooling** over real discovered bridges (reuse the
+`kg_bridge_leg_probe` harness) to confirm the label distribution is sensible. This delivers the honest
+provenance signal immediately, with zero changes to the production graph, the state model, or synthesis.
+
+### Phase 2 (gated on the resolution fix being in a known release) — L2 + L3
+Adapt the model (L2) and wire the node + synthesis rendering + enablement (L3) only once the resolution
+fix is landing, since the in-pipeline label is both useless and inaccurate before then. **Trigger:** the
+biomapper/kraken resolution fix (`docs/wiki/entity-resolution-namespace-fix.outline.md`) is merged and
+verified; until then L2/L3 stay unbuilt rather than wired-but-disabled. Trim `BridgeGroundingConfig` to
+what actually varies at runtime (`enabled`, per-leg fetch limit) — the exclude-subgraph behavior is a
+fixed requirement, not a toggle.
+
+**Superseded-apparatus cleanup:** the v1 (U0–U4 + harness) and v2 (superseded) scorer code remains on
+the branch as the negative-result record. Decide its disposition when this work goes to a PR against
+`dev` — either delete the scorer/LLM/co-occurrence modules (`bridge_grounding/{retrieval,prompts,
+labeling,scoring,panel}.py` + their tests) or keep them explicitly as eval-only, so a reviewer is not
+left navigating three scoring paths.
 
 ## Documentation / Operational Notes
 
