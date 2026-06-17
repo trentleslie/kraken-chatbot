@@ -69,8 +69,10 @@ def score_chain(
     fracs: list[float] = [ls.support_fraction or 0.0 for ls in leg_scores]
     weak_idx = min(range(len(fracs)), key=lambda i: fracs[i])  # first-min on ties
     headline = fracs[weak_idx]
-    # Stronger leg = the max fraction (ties → the other index); for a 1-leg chain, no strong leg.
-    strong_idx = max(range(len(fracs)), key=lambda i: fracs[i])
+    # Stronger leg = the max fraction; for a 1-leg chain, no strong leg. weak_idx is first-min, so
+    # scan the range in REVERSE to make ties pick the OTHER index (else equal-fraction legs would
+    # collapse strong_idx onto weak_idx and silently drop the secondary key).
+    strong_idx = max(range(len(fracs) - 1, -1, -1), key=lambda i: fracs[i])
     if len(leg_scores) > 1 and strong_idx != weak_idx:
         strong_fraction: float | None = fracs[strong_idx]
         strong_n: int | None = leg_scores[strong_idx].total_labeled

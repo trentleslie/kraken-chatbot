@@ -89,24 +89,28 @@ def tally_labels(labels: list[dict[str, Any]]) -> dict[str, int]:
 
 
 async def label_leg_via_sdk(
-    leg_prompt: str, *, model: str, node_name: str = "bridge_grounding"
+    leg_prompt: str, *, model_label: str, node_name: str = "bridge_grounding"
 ) -> tuple[list[dict[str, Any]], Any]:
     """Label one leg's abstracts via the Claude Agent SDK. Returns (parsed_labels, usage_record).
 
     Thin: builds pure-reasoning options (no tools, single turn) and parses the JSON response.
     The schema is advisory (embedded via the prompt); validation happens in parse_label_response.
+
+    `model_label` is NOT a model selector — it is only the string stamped on the usage record. The
+    SDK does NOT pin the model here (see the note below), so the actual inference model is the CLI's
+    configured default regardless of this value.
     """
     from ..graph.sdk_utils import ClaudeAgentOptions, query_with_usage
 
     _ = leg_label_schema()  # schema documents the contract; embedded via json_output_instruction
     # NOTE: do NOT set options.model — empirically, setting it (prefixed OR bare) breaks the
     # bundled Claude Code CLI subprocess in this environment (exit 1); synthesis.py omits it too.
-    # The CLI uses its configured default model; `model` here only labels the usage record.
+    # The CLI uses its configured default model; `model_label` only tags the usage record.
     options = ClaudeAgentOptions(
         system_prompt=LABELING_SYSTEM_PROMPT,
         allowed_tools=[],
         max_turns=1,
     )
     text, usage = await query_with_usage(
-        leg_prompt + json_output_instruction(), options, node_name=node_name, model_name=model)
+        leg_prompt + json_output_instruction(), options, node_name=node_name, model_name=model_label)
     return parse_label_response(text), usage

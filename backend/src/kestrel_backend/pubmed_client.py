@@ -37,6 +37,11 @@ def _ncbi_api_key() -> str:
     return os.getenv("NCBI_API_KEY", "")
 
 
+def ncbi_api_key_present() -> bool:
+    """Public predicate: whether an NCBI_API_KEY is configured (10 req/s vs 3 req/s)."""
+    return bool(_ncbi_api_key())
+
+
 def _pubmed_delay() -> float:
     """0.1s (~10 req/s) with an API key, else 0.35s (~3 req/s)."""
     return 0.1 if _ncbi_api_key() else 0.35

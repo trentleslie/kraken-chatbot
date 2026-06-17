@@ -53,6 +53,15 @@ def test_chain_lossy_min_distinguished_by_strong_leg():
     assert b.strong_leg_fraction == pytest.approx(0.56, abs=0.01)
 
 
+def test_chain_equal_legs_still_report_strong_leg():
+    # Tied legs (0.5, 0.5): the secondary key must still be reported (the OTHER leg), not None,
+    # so a downstream ranker sees the strong-leg signal even when both fractions are equal.
+    cs = score_chain([(5, 0, 5), (5, 0, 5)])  # both 5/10 = 0.5
+    assert cs.support_fraction == pytest.approx(0.5)
+    assert cs.strong_leg_fraction == pytest.approx(0.5)  # reported, not None
+    assert cs.strong_leg_n == 10
+
+
 def test_chain_ungrounded_when_headline_below_threshold():
     cs = score_chain([(8, 0, 2), (2, 3, 5)])  # weak leg 2/10 = 0.2
     assert cs.support_fraction == pytest.approx(0.2)

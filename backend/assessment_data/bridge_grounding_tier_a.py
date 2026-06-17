@@ -69,7 +69,7 @@ async def _score_chain(spec: ChainSpec, model: str, limit: int) -> tuple[ChainRe
             prompt = build_leg_prompt(
                 names[i], names[j], pred, fwd, abstracts, direction_known=direction_known)
             try:
-                labels, _usage = await label_leg_via_sdk(prompt, model=model)
+                labels, _usage = await label_leg_via_sdk(prompt, model_label=model)
             except Exception as e:  # one leg's SDK failure must not abort the whole panel run
                 leg_error = f"{type(e).__name__}: {e}"
                 logger.error("  leg %s labeling failed: %s", idx, leg_error)

@@ -8,7 +8,7 @@ one leg (matching skimgpt's shared-seen dedup), never dropped or double-counted.
 import logging
 import re
 
-from ..pubmed_client import _ncbi_api_key, search_pmids
+from ..pubmed_client import ncbi_api_key_present, search_pmids
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ async def cooccurrence_pmids(name_x: str, name_y: str, limit: int = MAX_RETMAX) 
     """
     if not name_x or not name_y or is_curie_like(name_x) or is_curie_like(name_y):
         return []
-    if not _ncbi_api_key():
+    if not ncbi_api_key_present():
         logger.warning(
             "bridge_grounding retrieval: NCBI_API_KEY unset — slower rate (0.35s/req); "
             "set NCBI_API_KEY for 10 req/s")

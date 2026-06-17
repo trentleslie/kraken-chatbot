@@ -54,7 +54,7 @@ def test_is_curie_like(name, expected):
 async def test_cooccurrence_pmids_happy_path(monkeypatch):
     rec = _Recorder(["1", "2", "3"])
     monkeypatch.setattr(retrieval, "search_pmids", rec)
-    monkeypatch.setattr(retrieval, "_ncbi_api_key", lambda: "KEY")
+    monkeypatch.setattr(retrieval, "ncbi_api_key_present", lambda: True)
     out = await cooccurrence_pmids("HPV", "cervical cancer")
     assert out == ["1", "2", "3"]
     assert rec.calls[0]["query"] == '"HPV" AND "cervical cancer"'
@@ -63,7 +63,7 @@ async def test_cooccurrence_pmids_happy_path(monkeypatch):
 async def test_cooccurrence_pmids_caps_retmax_at_50(monkeypatch):
     rec = _Recorder([])
     monkeypatch.setattr(retrieval, "search_pmids", rec)
-    monkeypatch.setattr(retrieval, "_ncbi_api_key", lambda: "KEY")
+    monkeypatch.setattr(retrieval, "ncbi_api_key_present", lambda: True)
     await cooccurrence_pmids("a", "b", limit=200)
     assert rec.calls[0]["retmax"] == 50
 
@@ -87,7 +87,7 @@ async def test_cooccurrence_pmids_curie_like_name_returns_empty(monkeypatch):
 async def test_cooccurrence_pmids_warns_when_no_api_key(monkeypatch, caplog):
     rec = _Recorder(["1"])
     monkeypatch.setattr(retrieval, "search_pmids", rec)
-    monkeypatch.setattr(retrieval, "_ncbi_api_key", lambda: "")  # no key
+    monkeypatch.setattr(retrieval, "ncbi_api_key_present", lambda: False)  # no key
     with caplog.at_level("WARNING"):
         await cooccurrence_pmids("a", "b")
     assert any("NCBI_API_KEY unset" in r.message for r in caplog.records)
