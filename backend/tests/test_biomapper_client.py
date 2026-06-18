@@ -67,12 +67,13 @@ class TestBiolinkMapping:
         assert biolink_class_for("gene") == "biolink:Gene"
         assert biolink_class_for("protein") == "biolink:Protein"
         assert biolink_class_for("metabolite") == "biolink:SmallMolecule"
+        assert biolink_class_for("disease") == "biolink:Disease"
         assert biolink_class_for("GENE") == "biolink:Gene"  # case-insensitive
 
     def test_unknown_or_missing_hint(self):
         assert biolink_class_for(None) is None
         assert biolink_class_for("") is None
-        assert biolink_class_for("disease") is None
+        assert biolink_class_for("pathway") is None  # not a supported intake hint
 
 
 class TestResolveHappyPath:

@@ -44,6 +44,34 @@ def _biomapper_result(curie="NCBIGene:7132", tier="high", xrefs=None):
             "category": "biolink:Gene", "xrefs": xrefs or {"HGNC": ["11916"], "NCBIGene": ["7132"]}}
 
 
+# =============================== biolink_class_for: hint -> Biolink category ===============================
+
+class TestBiolinkClassFor:
+    """The shared intake-hint -> Biolink class mapping (reused by the Kestrel category filter)."""
+
+    def test_disease_maps_to_biolink_disease(self):
+        assert entity_resolution.biolink_class_for("disease") == "biolink:Disease"
+
+    def test_disease_is_case_and_space_insensitive(self):
+        assert entity_resolution.biolink_class_for("  Disease ") == "biolink:Disease"
+
+    @pytest.mark.parametrize(
+        "hint, expected",
+        [
+            ("gene", "biolink:Gene"),
+            ("protein", "biolink:Protein"),
+            ("metabolite", "biolink:SmallMolecule"),
+            ("disease", "biolink:Disease"),
+        ],
+    )
+    def test_known_hints_map(self, hint, expected):
+        assert entity_resolution.biolink_class_for(hint) == expected
+
+    @pytest.mark.parametrize("hint", [None, "", "pathway", "unknown"])
+    def test_unknown_or_empty_hint_returns_none(self, hint):
+        assert entity_resolution.biolink_class_for(hint) is None
+
+
 # =============================== Unit 3: reconcile_to_kestrel ===============================
 
 class TestReconcile:
