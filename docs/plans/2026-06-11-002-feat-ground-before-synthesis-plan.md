@@ -359,7 +359,7 @@ graph TD
 > references table is assembled. Units 3–5 flip the topology; the suite is green only at the PR
 > boundary, not necessarily between these commits.
 
-- [ ] **Unit 0: Capture pre-change assessment baseline**
+- [x] **Unit 0: Capture pre-change assessment baseline**
 
 **Goal:** Snapshot the current pipeline's output on a pinned query **before** any topology change, so
 PR 1's "no regression vs. baseline" gate has something to compare against.
@@ -402,7 +402,7 @@ the saved baseline artifact.
 **Verification:** Baseline structural artifact + serialized state exist on disk with pinned inputs
 recorded; the pipeline + structural checks run clean on unmodified `dev` for the pinned query.
 
-- [ ] **Unit 0b: Size the production query mix by triage outcome (Decision 3; gates the latency call)**
+- [x] **Unit 0b: Size the production query mix by triage outcome (Decision 3; gates the latency call)**
 
 **Goal:** Quantify what fraction of real runs produce speculative hypotheses (sparse/cold_start) vs.
 well-characterized-only, so the well-characterized latency regression is a deliberate, evidenced
@@ -443,7 +443,7 @@ no new table or metrics backend.
 **Verification:** the pull result is recorded (n=2, unusable); no short-circuit router is added; the
 structured triage-outcome counter is in place; revisit when production pipeline volume exists.
 
-- [ ] **Unit 1: State channel + contract definitions**
+- [x] **Unit 1: State channel + contract definitions**
 
 **Goal:** Make the state channel and contracts ready for the new topology before any node moves.
 
@@ -564,7 +564,7 @@ moves an already-correct function.
 in the codebase (grep clean); helper fails loudly (empty + log) on bad input; per-caller behavior deltas
 captured against the Unit-0 baseline.
 
-- [ ] **Unit 2: `hypothesis_extraction` node**
+- [x] **Unit 2: `hypothesis_extraction` node**
 
 **Goal:** New node that validates bridges then extracts hypotheses, taking this logic out of synthesis
 — **with its own failure boundary**, because it is now the unguarded upstream gate feeding both
@@ -648,7 +648,7 @@ in-scope behavior delta to validate against the baseline for this relocation.
 **Verification:** New node's `run` output matches the values the old `synthesis.run()` produced for
 `bridges` and `hypotheses` on a shared fixture.
 
-- [ ] **Unit 3: `literature_grounding` becomes report-agnostic + cannot abort the run**
+- [x] **Unit 3: `literature_grounding` becomes report-agnostic + cannot abort the run**
 
 **Goal:** Grounding stops reading/appending `synthesis_report`; outputs grounded hypotheses +
 `literature_errors` only; and a grounding-phase exception **degrades to a no-op return instead of
@@ -722,7 +722,7 @@ both match that shape. The per-call `try/except` inside `validate_bridge_hypothe
 unchanged; a forced grounding exception leaves the run completing with a report (R13 proven by test,
 not assertion).
 
-- [ ] **Unit 4: `synthesis` becomes report-only**
+- [x] **Unit 4: `synthesis` becomes report-only**
 
 **Goal:** Synthesis reads grounded hypotheses + validated bridges, owns the references table, and
 returns only the report.
@@ -774,7 +774,7 @@ returns only the report.
 **Verification:** `synthesis.run` returns only `synthesis_report` (+ `model_usages`); references table
 present in both SDK and fallback reports; bridge tiers preserved.
 
-- [ ] **Unit 5: Wiring — graph edges + status message**
+- [x] **Unit 5: Wiring — graph edges + status message**
 
 **Goal:** Re-point the topology to insert `hypothesis_extraction` and ensure its state merges + emits
 progress.
@@ -823,7 +823,7 @@ progress.
 **Verification:** End-to-end discovery run completes with the new topology; all node contracts pass;
 no orphaned node; grounded hypotheses appear in final accumulated state.
 
-- [ ] **Unit 6: Test migration** (v1 deletion split to its own standalone PR — Decision 4)
+- [x] **Unit 6: Test migration** (v1 deletion split to its own standalone PR — Decision 4)
 
 **Goal:** Retarget moved-function imports and run-output assertions. **The dead-`v1`-graph deletion is
 NOT in this unit/PR 1** (Decision 4 split it into its own ~10-line cleanup PR); the
