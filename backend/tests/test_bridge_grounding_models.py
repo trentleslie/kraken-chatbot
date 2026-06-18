@@ -1,6 +1,6 @@
-"""U1 — BridgeGrounding / LegSummary models, Bridge.grounding field, and contracts.
+"""L2 — BridgeGrounding / LegSummary provenance models, Bridge.grounding field, and contracts.
 
-The grounding signal is attached to a frozen Bridge via model_copy and written to a separate
+The provenance label is attached to a frozen Bridge via model_copy and written to a separate
 `grounded_bridges` state key (NOT `bridges`, whose operator.add reducer would duplicate). The
 output contract defaults every field so a partial/early return still validates (never-throws).
 
@@ -18,11 +18,8 @@ from src.kestrel_backend.graph.state_contracts import (
 )
 
 
-def _leg(support=2, refute=0, neither=1, off_topic=0):
-    return LegSummary(
-        from_curie="A", to_curie="B", pool_size=10, abstracts_with_bodies=8,
-        support=support, refute=refute, neither=neither, off_topic=off_topic,
-    )
+def _leg(from_curie="A", to_curie="B", evidence_tier="curated-causal"):
+    return LegSummary(from_curie=from_curie, to_curie=to_curie, evidence_tier=evidence_tier)
 
 
 def _bridge():
@@ -38,50 +35,55 @@ def _bridge():
     )
 
 
-# --- BridgeGrounding model -------------------------------------------------------------
+# --- LegSummary (minimal provenance shape) ---------------------------------------------
 
-def test_grounding_minimal_defaults():
-    g = BridgeGrounding(support_fraction=0.67, decision="grounded")
-    assert g.support_fraction == 0.67
-    assert g.decision == "grounded"
-    # v2-only and secondary fields default to None / empty in v1.
-    assert g.ci_low is None and g.ci_high is None
-    assert g.strong_leg_fraction is None and g.strong_leg_n is None
-    assert g.legs == [] and g.chain_pmids == [] and g.rationale == ""
+def test_leg_summary_minimal_fields():
+    leg = LegSummary(from_curie="CHEBI:1", to_curie="HGNC:2", evidence_tier="text-mined")
+    assert leg.from_curie == "CHEBI:1"
+    assert leg.to_curie == "HGNC:2"
+    assert leg.evidence_tier == "text-mined"
+
+
+def test_leg_summary_is_frozen():
+    leg = _leg()
+    with pytest.raises(ValidationError):
+        leg.evidence_tier = "none"  # frozen
+
+
+def test_leg_summary_dropped_v1_tally_fields():
+    # The v1 co-occurrence tally fields are gone (not merely optional).
+    for gone in ("support", "refute", "neither", "off_topic", "pool_size", "dropped_co_mention"):
+        assert gone not in LegSummary.model_fields
+
+
+# --- BridgeGrounding (legs + chain label) ----------------------------------------------
+
+def test_grounding_carries_legs_and_label():
+    g = BridgeGrounding(
+        legs=[_leg(evidence_tier="curated-causal"), _leg(from_curie="B", to_curie="C",
+              evidence_tier="text-mined")],
+        label="weakest leg text-mined",
+    )
+    assert g.label == "weakest leg text-mined"
+    assert len(g.legs) == 2 and g.legs[0].evidence_tier == "curated-causal"
+
+
+def test_grounding_legs_default_empty():
+    g = BridgeGrounding(label="no KG edge")
+    assert g.legs == []
 
 
 def test_grounding_is_frozen():
-    g = BridgeGrounding(support_fraction=0.5, decision="ungrounded")
+    g = BridgeGrounding(label="both legs curated-causal")
     with pytest.raises(ValidationError):
-        g.support_fraction = 0.9  # frozen
+        g.label = "changed"  # frozen
 
 
-def test_support_fraction_bounds_enforced():
-    for bad in (-0.1, 1.1):
-        with pytest.raises(ValidationError):
-            BridgeGrounding(support_fraction=bad, decision="grounded")
-
-
-def test_decision_enum_constrained():
-    with pytest.raises(ValidationError):
-        BridgeGrounding(support_fraction=0.5, decision="totally_grounded")
-
-
-def test_grounding_carries_legs_and_strong_leg():
-    g = BridgeGrounding(
-        support_fraction=0.55, strong_leg_fraction=0.95, strong_leg_n=20,
-        decision="grounded", legs=[_leg(), _leg(support=19, neither=1)],
-        rationale="A affects B which relates to C", chain_pmids=["1", "2"],
-    )
-    assert g.strong_leg_fraction == 0.95 and g.strong_leg_n == 20
-    assert len(g.legs) == 2 and g.legs[0].support == 2
-
-
-# --- LegSummary ------------------------------------------------------------------------
-
-def test_leg_summary_defaults():
-    leg = LegSummary(from_curie="A", to_curie="B")
-    assert leg.pool_size == 0 and leg.support == 0 and leg.dropped_co_mention == 0
+def test_grounding_dropped_v1_score_fields():
+    # The v1 score/verdict fields are gone (not just optional) — the score is abandoned.
+    for gone in ("support_fraction", "decision", "strong_leg_fraction", "strong_leg_n",
+                 "ci_low", "ci_high", "rationale", "chain_pmids"):
+        assert gone not in BridgeGrounding.model_fields
 
 
 # --- Bridge.grounding field ------------------------------------------------------------
@@ -93,7 +95,7 @@ def test_bridge_grounding_defaults_none_backward_compatible():
 
 def test_attach_grounding_via_model_copy_does_not_mutate_original():
     b = _bridge()
-    g = BridgeGrounding(support_fraction=0.67, decision="grounded")
+    g = BridgeGrounding(legs=[_leg()], label="both legs curated-causal")
     grounded = b.model_copy(update={"grounding": g})
     assert grounded.grounding is g
     assert b.grounding is None  # frozen original untouched
@@ -102,19 +104,20 @@ def test_attach_grounding_via_model_copy_does_not_mutate_original():
 
 def test_bridge_roundtrips_with_grounding_serialized():
     b = _bridge().model_copy(update={"grounding": BridgeGrounding(
-        support_fraction=0.5, decision="ungrounded")})
+        legs=[_leg(evidence_tier="curated-associative")], label="weakest leg curated-associative")})
     restored = Bridge.model_validate(b.model_dump())
     assert restored.grounding is not None
-    assert restored.grounding.decision == "ungrounded"
+    assert restored.grounding.label == "weakest leg curated-associative"
+    assert restored.grounding.legs[0].evidence_tier == "curated-associative"
 
 
 def test_grounded_bridges_join_back_by_entities_tuple():
     # grounded_bridges is a subset; consumers join to the original list by the entities tuple.
     b = _bridge()
     grounded = b.model_copy(update={"grounding": BridgeGrounding(
-        support_fraction=0.8, decision="grounded")})
+        legs=[_leg()], label="both legs curated-causal")})
     by_entities = {tuple(x.entities): x for x in [grounded]}
-    assert by_entities[tuple(b.entities)].grounding.support_fraction == 0.8
+    assert by_entities[tuple(b.entities)].grounding.label == "both legs curated-causal"
 
 
 # --- Contracts -------------------------------------------------------------------------
