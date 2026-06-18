@@ -26,7 +26,7 @@ from src.kestrel_backend.graph.state import (
 )
 from src.kestrel_backend.graph.nodes import (
     intake, entity_resolution, triage, direct_kg, cold_start,
-    pathway_enrichment, integration, temporal, synthesis
+    pathway_enrichment, integration, temporal, hypothesis_extraction, synthesis
 )
 
 
@@ -2208,7 +2208,7 @@ class TestExtractHypotheses:
             "bridges": [],
         }
 
-        hypotheses = synthesis.extract_hypotheses(state)
+        hypotheses = hypothesis_extraction.extract_hypotheses(state)
         assert len(hypotheses) == 0
 
     def test_skips_bridges_without_significance(self):
@@ -2226,7 +2226,7 @@ class TestExtractHypotheses:
             ],
         }
 
-        hypotheses = synthesis.extract_hypotheses(state)
+        hypotheses = hypothesis_extraction.extract_hypotheses(state)
         assert len(hypotheses) == 0
 
     def test_only_tier3_from_cold_start(self):
@@ -2252,7 +2252,7 @@ class TestExtractHypotheses:
             "bridges": [],
         }
 
-        hypotheses = synthesis.extract_hypotheses(state)
+        hypotheses = hypothesis_extraction.extract_hypotheses(state)
         # Should only have the Tier 3 finding
         assert len(hypotheses) == 1
         assert hypotheses[0].tier == 3

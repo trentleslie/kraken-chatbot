@@ -6,7 +6,7 @@ Run with: uv run pytest tests/test_multi_hop_integration.py -v
 Tests cover:
 1. kestrel_client.multi_hop_query wrapper function
 2. integration.detect_bridges_via_api (cross-type bridge detection)
-3. synthesis.validate_bridge_hypotheses (bridge validation)
+3. hypothesis_extraction.validate_bridge_hypotheses (bridge validation)
 4. pathway_enrichment.find_two_hop_shared_neighbors (indirect connectivity)
 """
 
@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, patch
 
 from src.kestrel_backend.kestrel_client import multi_hop_query
 from src.kestrel_backend.graph.nodes.integration import detect_bridges_via_api, parse_multi_hop_result
-from src.kestrel_backend.graph.nodes.synthesis import validate_bridge_hypotheses
+from src.kestrel_backend.graph.nodes.hypothesis_extraction import validate_bridge_hypotheses
 from src.kestrel_backend.graph.nodes.pathway_enrichment import find_two_hop_shared_neighbors
 from src.kestrel_backend.graph.state import EntityResolution, Bridge
 
@@ -334,7 +334,7 @@ class TestValidateBridgeHypotheses:
             significance="Test bridge",
         )
 
-        with patch('src.kestrel_backend.graph.nodes.synthesis.multi_hop_query', new_callable=AsyncMock) as mock_mhq:
+        with patch('src.kestrel_backend.graph.nodes.hypothesis_extraction.multi_hop_query', new_callable=AsyncMock) as mock_mhq:
             # Mock successful validation — real shape with a reachable path.
             mock_mhq.return_value = {
                 "content": [{
@@ -369,7 +369,7 @@ class TestValidateBridgeHypotheses:
             significance="Test bridge",
         )
 
-        with patch('src.kestrel_backend.graph.nodes.synthesis.multi_hop_query', new_callable=AsyncMock) as mock_mhq:
+        with patch('src.kestrel_backend.graph.nodes.hypothesis_extraction.multi_hop_query', new_callable=AsyncMock) as mock_mhq:
             # Mock no paths found (real empty shape).
             mock_mhq.return_value = {
                 "content": [{
