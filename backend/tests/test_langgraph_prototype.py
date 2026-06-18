@@ -1689,8 +1689,8 @@ class TestEndToEndPhase4b:
     """End-to-end tests for Phase 4b complete graph."""
 
     @pytest.mark.asyncio
-    async def test_graph_has_9_nodes(self):
-        """Graph should have 9 analysis nodes plus __start__."""
+    async def test_graph_has_expected_nodes(self):
+        """Graph should contain all analysis nodes including bridge_grounding (added in L3)."""
         graph = build_discovery_graph()
         node_names = list(graph.nodes.keys())
 
@@ -1702,6 +1702,7 @@ class TestEndToEndPhase4b:
             "cold_start",
             "pathway_enrichment",
             "integration",
+            "bridge_grounding",
             "temporal",
             "synthesis",
         ]
@@ -1709,8 +1710,8 @@ class TestEndToEndPhase4b:
         for node in expected_nodes:
             assert node in node_names, f"Missing node: {node}"
 
-        # Should have 9 analysis nodes + __start__
-        assert len(node_names) == 10, f"Expected 10 nodes (9 + __start__), got {len(node_names)}: {node_names}"
+        # 11 real nodes (10 + bridge_grounding) + __start__ = 12 as reported by the compiled graph.
+        assert len(node_names) == 12, f"Expected 12 nodes, got {len(node_names)}: {node_names}"
 
     @pytest.mark.asyncio
     async def test_full_pipeline_non_longitudinal(self):

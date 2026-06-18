@@ -169,47 +169,35 @@ class BiologicalTheme(BaseModel):
 # =============================================================================
 
 class LegSummary(BaseModel):
-    """Per-leg labeling tally for one hop of a grounded bridge chain (A–B or B–C)."""
+    """Per-leg evidence-provenance summary for one hop of a grounded bridge chain (A–B or B–C).
+
+    Deterministic KG-edge provenance (no co-occurrence, no score): the best evidence tier over the
+    leg's KG edges, computed by ``bridge_grounding.provenance.leg_tier``.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     from_curie: str = Field(..., description="Source CURIE of this leg")
     to_curie: str = Field(..., description="Target CURIE of this leg")
-    pool_size: int = Field(0, description="PMIDs retrieved for this leg's co-occurrence pool")
-    abstracts_with_bodies: int = Field(0, description="Pool PMIDs with a usable abstract body")
-    support: int = Field(0, description="Abstracts labeled supports_leg")
-    refute: int = Field(0, description="Abstracts labeled refutes_leg")
-    neither: int = Field(0, description="Abstracts labeled neither/inconclusive (inflates denominator)")
-    off_topic: int = Field(0, description="Abstracts labeled off_topic (excluded from the tally)")
-    dropped_co_mention: int = Field(0, description="PMIDs in both legs, kept-first into the other leg")
+    evidence_tier: str = Field(
+        ...,
+        description="Best evidence tier over the leg's KG edges: curated-causal | "
+        "curated-associative | curated-neutral | text-mined | none",
+    )
 
 
 class BridgeGrounding(BaseModel):
-    """Literature grounding-confidence signal attached to a 3-node Bridge (v1).
+    """Deterministic evidence-provenance label attached to a 3-node Bridge (no score, no LLM).
 
-    v1 ships ratio + counts only. The headline ``support_fraction`` is the WEAKER leg's
-    supports/total_labeled (min-leg gating); the stronger leg is retained as a secondary
-    ranking key so a downstream ranker isn't forced to sort on the lossy min-only scalar.
-    Beta-Binomial CI (``ci_low``/``ci_high``) is deferred to v2 (null in v1). The qualitative
-    band surfaced to researchers is computed at render time from ``decision`` + ``support_fraction``
-    via config thresholds — NOT stored here (it is threshold-dependent).
+    Per leg, the best evidence tier from the leg's KG edges; per bridge, a human-readable chain
+    summary (``label``) composed by ``bridge_grounding.provenance.bridge_label``. Makes no
+    confidence/mechanism claim — it reports *what kind of evidence* backs each leg.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    support_fraction: float = Field(
-        ..., ge=0, le=1, description="v1 headline = weaker leg's supports/total_labeled")
-    strong_leg_fraction: float | None = Field(
-        None, ge=0, le=1, description="Secondary ranking key: stronger leg's support_fraction")
-    strong_leg_n: int | None = Field(
-        None, description="total_labeled behind strong_leg_fraction")
-    ci_low: float | None = Field(None, description="v2-only Beta-Binomial CI lower bound; null in v1")
-    ci_high: float | None = Field(None, description="v2-only Beta-Binomial CI upper bound; null in v1")
-    decision: Literal["grounded", "ungrounded", "insufficient_literature"] = Field(
-        ..., description="Structured chain verdict")
-    legs: list[LegSummary] = Field(default_factory=list, description="Per-leg labeling tallies")
-    rationale: str = Field(default="", description="Mediated-chain composition rationale")
-    chain_pmids: list[str] = Field(default_factory=list, description="PMIDs cited in the chain verdict")
+    legs: list[LegSummary] = Field(default_factory=list, description="Per-leg evidence tiers")
+    label: str = Field(..., description="Chain summary, e.g. 'both legs curated-causal' / 'no KG edge'")
 
 
 class Bridge(BaseModel):
