@@ -39,12 +39,19 @@ def _stub_leg_tier(monkeypatch, tier="curated-causal", calls=None):
 # --- default-off no-op -----------------------------------------------------------------
 
 async def test_disabled_is_noop(monkeypatch):
-    # Default config is enabled=False; the node must do nothing and call no Kestrel.
+    # When disabled, the node must do nothing and call no Kestrel.
+    _enable(monkeypatch, enabled=False)
     async def boom(*a, **k):
         raise AssertionError("leg_tier must not be called when disabled")
     monkeypatch.setattr(bridge_grounding, "leg_tier", boom)
     out = await bridge_grounding.run({"bridges": [_bridge()]})
     assert out == {}
+
+
+def test_node_enabled_by_default():
+    # L4 flip: the node now ships enabled=True (validation eval passed 2026-06-18).
+    from kestrel_backend.graph.pipeline_config import BridgeGroundingConfig
+    assert BridgeGroundingConfig().enabled is True
 
 
 # --- happy path ------------------------------------------------------------------------
