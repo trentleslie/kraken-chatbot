@@ -1023,7 +1023,27 @@ artifacts saved and a reviewer signs off that grounded evidence materially chang
 
 ## Phased Delivery
 
-### Spike 0 — De-risk the premise before paying the reorder cost (throwaway)
+### Spike 0 — ✅ PASSED the strengthened gate (validated 2026-06-18)
+
+> **GATE CLEARED.** Re-assessed against the strengthened quality bar (Decision 1) using the existing
+> comprehensive artifacts (`backend/assessment_data/spike0_runs*/`, main checkout): **5 panels, 18 blind
+> A/B verdicts in both orderings**, judged by the spike's own report-comparison judge (calibration /
+> correctness / actionability + helped/hurt) — *not* `assessment/scorer.py`. Result: treatment > control
+> on every dimension (overall 7.5 vs 6.89); **literature helped 14/18, hurt 0/18**; calibration *improved*
+> (unsupported-confidence guard), KG-structural reasoning *unchanged between arms* (not crowded out),
+> tangential/generic abstracts *down-weighted* (not misleading). Net-positive and reproducing across the
+> majority — exceeds the gate's "majority of 2–3 queries" bar.
+>
+> **Correction to Decision 1:** its "re-run, not re-judge — no artifacts persist / scorer wrong
+> dimensions" premise was wrong; the artifacts exist and the spike's judge used appropriate dimensions,
+> so re-judging them is valid (and stronger than a fresh run). No redundant live re-run was performed.
+>
+> **Caveats carried into PR 2 (not gate blockers):** (1) value tracks *retrieval precision*, not the
+> injection mechanism — the ceiling for obscure entities; (2) the spike injected *full* abstracts, an
+> upper bound vs PR 2's *capped+truncated* injection (PR 2's panel must still confirm the capped version);
+> (3) 4/9 pairs showed judge position-bias — aggregate robust, individual pairs less so.
+
+### Original Spike 0 framing (retained for context) — De-risk the premise before paying the reorder cost (throwaway)
 **Spike 0 must complete and show a positive signal before PR 1 implementation begins** — not just
 before PR 2. PR 1 is a 7-unit structural change that ships **zero** reader value on its own, so a
 negative spike result should change whether the reorder happens at all.
