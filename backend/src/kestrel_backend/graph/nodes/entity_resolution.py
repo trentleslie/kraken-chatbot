@@ -185,9 +185,11 @@ async def resolve_via_api(
         score = float(top.get("score", 0))
         curie = top.get("id") or top.get("curie")
         name = top.get("name") or top.get("label")
-        # categories is a list in the API response
+        # categories is a list in the API response. Named node_category (not category) so it does
+        # not shadow the function's `category` constraint parameter — this is the resolved node's
+        # own Biolink class, which may differ from the requested filter (list-membership match).
         categories = top.get("categories", [])
-        category = categories[0] if categories else top.get("category")
+        node_category = categories[0] if categories else top.get("category")
 
         # Map score to confidence
         if score > 1.5:
@@ -223,7 +225,7 @@ async def resolve_via_api(
             raw_name=entity,
             curie=curie,
             resolved_name=name,
-            category=category,
+            category=node_category,
             confidence=confidence,
             method=method,
         )

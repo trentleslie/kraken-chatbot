@@ -150,8 +150,9 @@ class EntityResolutionConfig(BaseModel):
     tier1_fallback_confidence: float = Field(
         default=0.5,
         description="Confidence assigned when a category-constrained hybrid_search errors and "
-        "resolution falls back to the unconstrained Kestrel result (honesty signal for a degraded "
-        "path). Display-only; does not gate Tier 2.",
+        "resolution falls back to the unconstrained Kestrel result. Honesty signal only — the value "
+        "is not compared against any threshold. (Returning a non-None result here does suppress "
+        "Tier 2 for that entity, but that is driven by the fallback succeeding, not by this number.)",
     )
     biomapper: BiomapperConfig = Field(
         default_factory=BiomapperConfig,
