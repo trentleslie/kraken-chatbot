@@ -267,6 +267,27 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         tier1_success, len(valid_entities) - tier1_success
     )
 
+    # Unit 0b — forward triage-outcome counter (Decision 3). The human log line above is for
+    # operators; this machine-parseable record lets us size the production query mix (what fraction
+    # of runs produce speculative sparse/cold_start hypotheses vs. well-characterized-only) once real
+    # traffic accrues, so the well-characterized latency cost of ground-before-synthesis becomes an
+    # evidenced choice. `produces_speculative` is the routing-relevant predicate (sparse OR cold_start
+    # entities are what generate cold-start hypotheses). One structured line per run; no new table.
+    logger.info(
+        "triage_outcome %s",
+        json.dumps({
+            "event": "triage_outcome",
+            "well_characterized": len(well_characterized),
+            "moderate": len(moderate),
+            "sparse": len(sparse),
+            "cold_start": len(cold_start),
+            "tier1_ok": tier1_success,
+            "tier1_failed": len(valid_entities) - tier1_success,
+            "produces_speculative": bool(sparse or cold_start),
+            "duration_seconds": round(duration, 2),
+        }),
+    )
+
     result = {
         "novelty_scores": final_scores,
         "well_characterized_curies": well_characterized,
