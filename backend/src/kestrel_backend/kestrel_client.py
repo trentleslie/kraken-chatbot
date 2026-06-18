@@ -428,8 +428,9 @@ def parse_kestrel_response(envelope: dict[str, Any]) -> dict[str, Any]:
         envelope: the MCP tool result ``{"content": [{"text": "<json>"}], "isError": ...}``.
 
     Returns:
-        ``{"paths": [{"curies": [...], "names": [...], "end_node_id": str,
-        "degree": int, "score": float}], "nodes": {curie: {...}},
+        ``{"paths": [{"curies": [...], "names": [...],
+        "predicates": [{"predicate": str|None, "forward": bool|None}, ...] (one per hop),
+        "end_node_id": str, "degree": int, "score": float}], "nodes": {curie: {...}},
         "end_node_ids": [str, ...], "n_paths": int}`` — ``end_node_ids`` lists every result's
         ``end_node_id`` (order-preserving, deduped), for callers that need reachable end-nodes
         rather than full paths (e.g. pathway_enrichment's shared-neighbor counting).
@@ -466,6 +467,70 @@ def parse_kestrel_response(envelope: dict[str, Any]) -> dict[str, Any]:
             return str(info["name"])
         return curie
 
+    # --- Per-hop predicate derivation (U0) -------------------------------------------------
+    # The response carries `edges` (edge-id -> compact tuple) + `edge_schema` (column order).
+    # Map each consecutive path pair to its edge predicate, recording orientation vs the path.
+    edges = data.get("edges", {})
+    if not isinstance(edges, dict):
+        edges = {}
+    norm_edges = {str(k): v for k, v in edges.items()}  # edge_ids may be ints; keys may be str
+    edge_schema = data.get("edge_schema", [])
+    sub_i = pred_i = obj_i = None
+    if isinstance(edge_schema, list):
+        for _idx, _col in enumerate(edge_schema):
+            if _col == "subject":
+                sub_i = _idx
+            elif _col == "predicate":
+                pred_i = _idx
+            elif _col == "object":
+                obj_i = _idx
+
+    def _edge_triple(e: Any) -> tuple[str, str, str] | None:
+        """Extract (subject, predicate, object) from a compact edge tuple via edge_schema.
+
+        Reads positions from edge_schema rather than hardcoding index 1 (robust to reorder).
+        """
+        if not isinstance(e, list) or sub_i is None or pred_i is None or obj_i is None:
+            return None
+        if max(sub_i, pred_i, obj_i) >= len(e):
+            return None
+        s, p, o = e[sub_i], e[pred_i], e[obj_i]
+        if not (isinstance(s, str) and isinstance(p, str) and isinstance(o, str)):
+            return None
+        return s, p, o
+
+    def _triple_map(edge_values: list) -> dict[frozenset, list[tuple[str, str, str]]]:
+        """frozenset({subject, object}) -> predicate-sorted (s, p, o) triples (deterministic)."""
+        m: dict[frozenset, list[tuple[str, str, str]]] = {}
+        for e in edge_values:
+            t = _edge_triple(e)
+            if t is None or t[0] == t[2]:  # skip unparseable / self-loops
+                continue
+            m.setdefault(frozenset((t[0], t[2])), []).append(t)
+        for _k in m:
+            m[_k].sort(key=lambda t: t[1])
+        return m
+
+    def _hop_predicates(curies: list[str], tmap: dict) -> list[dict[str, Any]]:
+        """Per-hop {predicate, forward}; forward=True when the edge runs A->B along the path.
+
+        Missing edge for a hop -> {None, None} at that position (never a positional shift).
+        Prefers a forward-oriented edge; falls back to a reverse one (the direction signal).
+        """
+        out: list[dict[str, Any]] = []
+        for i in range(len(curies) - 1):
+            a, b = curies[i], curies[i + 1]
+            cands = tmap.get(frozenset((a, b)), []) if a != b else []
+            fwd = [t for t in cands if t[0] == a and t[2] == b]
+            rev = [t for t in cands if t[0] == b and t[2] == a]
+            if fwd:
+                out.append({"predicate": fwd[0][1], "forward": True})
+            elif rev:
+                out.append({"predicate": rev[0][1], "forward": False})
+            else:
+                out.append({"predicate": None, "forward": None})
+        return out
+
     parsed_paths: list[dict[str, Any]] = []
     end_node_ids: list[str] = []
     seen_ends: set[str] = set()
@@ -476,6 +541,15 @@ def parse_kestrel_response(envelope: dict[str, Any]) -> dict[str, Any]:
         if isinstance(end_id, str) and end_id and end_id not in seen_ends:
             seen_ends.add(end_id)
             end_node_ids.append(end_id)
+        # Scope edges to this result's edge_ids when resolvable, else scan all edges.
+        eids = res.get("edge_ids")
+        if isinstance(eids, list) and eids:
+            cand = [norm_edges[str(eid)] for eid in eids if str(eid) in norm_edges]
+            if not cand:
+                cand = list(edges.values())
+        else:
+            cand = list(edges.values())
+        tmap = _triple_map(cand)
         for path in res.get("paths", []) or []:
             # A path is a list of CURIE strings. Reject the old dict shape loudly.
             if not isinstance(path, list) or len(path) < 2:
@@ -486,6 +560,7 @@ def parse_kestrel_response(envelope: dict[str, Any]) -> dict[str, Any]:
             parsed_paths.append({
                 "curies": curies,
                 "names": [_name(c) for c in curies],
+                "predicates": _hop_predicates(curies, tmap),
                 "end_node_id": res.get("end_node_id", curies[-1]),
                 "degree": res.get("degree", 0),
                 "score": res.get("score", 0.0),

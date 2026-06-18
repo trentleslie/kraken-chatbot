@@ -168,6 +168,50 @@ class BiologicalTheme(BaseModel):
 # Phase 4b: Integration Models (Bridges + Gap Analysis)
 # =============================================================================
 
+class LegSummary(BaseModel):
+    """Per-leg labeling tally for one hop of a grounded bridge chain (A–B or B–C)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    from_curie: str = Field(..., description="Source CURIE of this leg")
+    to_curie: str = Field(..., description="Target CURIE of this leg")
+    pool_size: int = Field(0, description="PMIDs retrieved for this leg's co-occurrence pool")
+    abstracts_with_bodies: int = Field(0, description="Pool PMIDs with a usable abstract body")
+    support: int = Field(0, description="Abstracts labeled supports_leg")
+    refute: int = Field(0, description="Abstracts labeled refutes_leg")
+    neither: int = Field(0, description="Abstracts labeled neither/inconclusive (inflates denominator)")
+    off_topic: int = Field(0, description="Abstracts labeled off_topic (excluded from the tally)")
+    dropped_co_mention: int = Field(0, description="PMIDs in both legs, kept-first into the other leg")
+
+
+class BridgeGrounding(BaseModel):
+    """Literature grounding-confidence signal attached to a 3-node Bridge (v1).
+
+    v1 ships ratio + counts only. The headline ``support_fraction`` is the WEAKER leg's
+    supports/total_labeled (min-leg gating); the stronger leg is retained as a secondary
+    ranking key so a downstream ranker isn't forced to sort on the lossy min-only scalar.
+    Beta-Binomial CI (``ci_low``/``ci_high``) is deferred to v2 (null in v1). The qualitative
+    band surfaced to researchers is computed at render time from ``decision`` + ``support_fraction``
+    via config thresholds — NOT stored here (it is threshold-dependent).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    support_fraction: float = Field(
+        ..., ge=0, le=1, description="v1 headline = weaker leg's supports/total_labeled")
+    strong_leg_fraction: float | None = Field(
+        None, ge=0, le=1, description="Secondary ranking key: stronger leg's support_fraction")
+    strong_leg_n: int | None = Field(
+        None, description="total_labeled behind strong_leg_fraction")
+    ci_low: float | None = Field(None, description="v2-only Beta-Binomial CI lower bound; null in v1")
+    ci_high: float | None = Field(None, description="v2-only Beta-Binomial CI upper bound; null in v1")
+    decision: Literal["grounded", "ungrounded", "insufficient_literature"] = Field(
+        ..., description="Structured chain verdict")
+    legs: list[LegSummary] = Field(default_factory=list, description="Per-leg labeling tallies")
+    rationale: str = Field(default="", description="Mediated-chain composition rationale")
+    chain_pmids: list[str] = Field(default_factory=list, description="PMIDs cited in the chain verdict")
+
+
 class Bridge(BaseModel):
     """Cross-entity-type connection discovered through multi-hop analysis."""
 
@@ -177,9 +221,17 @@ class Bridge(BaseModel):
     entities: list[str] = Field(..., description="CURIEs along the path")
     entity_names: list[str] = Field(default_factory=list, description="Names along the path")
     predicates: list[str] = Field(default_factory=list, description="Predicate at each hop")
+    predicate_directions: list[bool | None] = Field(
+        default_factory=list,
+        description="Per-hop orientation parallel to predicates: True if the KG edge runs "
+        "subject→object along the path (forward), False if reversed, None if no edge found. "
+        "Populated for multi-hop bridges; empty for subgraph/legacy bridges.",
+    )
     tier: Literal[2, 3] = Field(3, description="Evidence tier (2=moderate, 3=speculative)")
     novelty: Literal["known", "inferred"] = Field("inferred", description="Known from KG or inferred")
     significance: str = Field(..., description="Why this bridge matters for the study")
+    grounding: BridgeGrounding | None = Field(
+        None, description="Literature grounding signal (attached by bridge_grounding via model_copy)")
 
 
 class GapEntity(BaseModel):
@@ -394,6 +446,12 @@ class DiscoveryState(TypedDict, total=False):
 
     # === Phase 5b: Literature Grounding ===
     literature_errors: Annotated[list[str], operator.add]
+
+    # === Phase 5c: Bridge Grounding (per-bridge literature confidence) ===
+    # NOT using operator.add - written once by bridge_grounding (a separate key from `bridges`,
+    # whose operator.add reducer is load-bearing for integration/synthesis writes; see plan U1).
+    grounded_bridges: list[Bridge]
+    bridge_grounding_errors: Annotated[list[str], operator.add]
 
     # === Cost Tracking ===
     # Uses operator.add reducer for parallel writes from concurrent branches
