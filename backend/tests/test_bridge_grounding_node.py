@@ -144,6 +144,21 @@ def test_format_bridges_without_labels_omits_provenance_line():
     assert "Evidence provenance" not in out
 
 
+def test_format_bridges_tier2_includes_predicates():
+    out = format_bridges([_bridge(tier=2)])
+    assert "Predicates:" in out  # Tier 2 lists per-hop predicates
+
+
+def test_format_bridges_tier3_omits_predicates_keeps_label():
+    # Regression guard: the _render refactor must preserve the original behavior — Tier 3
+    # (speculative) bridges deliberately OMIT the Predicates line (Greptile PR #77).
+    b = _bridge(tier=3)
+    out = format_bridges([b], {tuple(b.entities): "weakest leg text-mined"})
+    assert "### Speculative Bridges (Tier 3)" in out
+    assert "Predicates:" not in out  # omitted for Tier 3
+    assert "**Evidence provenance**: weakest leg text-mined" in out  # label still rendered
+
+
 def test_grounding_labels_from_state_builds_map():
     b = _bridge()
     gb = b.model_copy(update={"grounding": BridgeGrounding(legs=[], label="no KG edge")})

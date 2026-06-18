@@ -438,7 +438,9 @@ def format_bridges(
 
     labels = grounding_labels or {}
 
-    def _render(b: Bridge) -> None:
+    def _render(b: Bridge, show_predicates: bool) -> None:
+        # show_predicates preserves the original behavior: Tier 2 lists per-hop predicates,
+        # Tier 3 (speculative) deliberately omits them.
         novelty_tag = "Known" if b.novelty == "known" else "Inferred"
         lines.append(f"\n**{b.path_description}** [{novelty_tag}]")
         if b.entity_names:
@@ -448,7 +450,7 @@ def format_bridges(
             lines.append(f"  - Path: {path_with_names}")
         else:
             lines.append(f"  - Entities: {' -> '.join(b.entities)}")
-        if b.predicates:
+        if show_predicates and b.predicates:
             lines.append(f"  - Predicates: {' -> '.join(b.predicates)}")
         if b.significance:
             lines.append(f"  - **Significance**: {b.significance}")
@@ -466,13 +468,13 @@ def format_bridges(
     if tier2:
         lines.append("### High-Confidence Bridges (Tier 2)")
         for b in tier2:
-            _render(b)
+            _render(b, show_predicates=True)
         lines.append("")
 
     if tier3:
         lines.append("### Speculative Bridges (Tier 3)")
         for b in tier3:
-            _render(b)
+            _render(b, show_predicates=False)
         lines.append("")
 
     return "\n".join(lines)
