@@ -1562,19 +1562,20 @@ class TestIntegrationRouting:
         result = route_after_integration(state)
         assert result == "temporal"
 
-    def test_route_to_synthesis_for_non_longitudinal(self):
-        """Non-longitudinal studies should skip temporal and route to synthesis."""
+    def test_route_to_hypothesis_extraction_for_non_longitudinal(self):
+        """Non-longitudinal studies should skip temporal and route to hypothesis_extraction
+        (ground-before-synthesis: hypotheses are extracted+grounded before synthesis)."""
         state: DiscoveryState = {
             "is_longitudinal": False,
         }
         result = route_after_integration(state)
-        assert result == "synthesis"
+        assert result == "hypothesis_extraction"
 
-    def test_route_to_synthesis_when_flag_missing(self):
-        """Missing is_longitudinal flag should default to synthesis."""
+    def test_route_to_hypothesis_extraction_when_flag_missing(self):
+        """Missing is_longitudinal flag should default to hypothesis_extraction."""
         state: DiscoveryState = {}
         result = route_after_integration(state)
-        assert result == "synthesis"
+        assert result == "hypothesis_extraction"
 
 
 # =============================================================================
@@ -1690,8 +1691,8 @@ class TestEndToEndPhase4b:
     """End-to-end tests for Phase 4b complete graph."""
 
     @pytest.mark.asyncio
-    async def test_graph_has_9_nodes(self):
-        """Graph should have 9 analysis nodes plus __start__."""
+    async def test_graph_has_all_expected_nodes(self):
+        """Graph should have the 11 analysis nodes (ground-before-synthesis) plus __start__."""
         graph = build_discovery_graph()
         node_names = list(graph.nodes.keys())
 
@@ -1704,14 +1705,16 @@ class TestEndToEndPhase4b:
             "pathway_enrichment",
             "integration",
             "temporal",
+            "hypothesis_extraction",
+            "literature_grounding",
             "synthesis",
         ]
 
         for node in expected_nodes:
             assert node in node_names, f"Missing node: {node}"
 
-        # Should have 9 analysis nodes + __start__
-        assert len(node_names) == 10, f"Expected 10 nodes (9 + __start__), got {len(node_names)}: {node_names}"
+        # Should have 11 analysis nodes + __start__
+        assert len(node_names) == 12, f"Expected 12 nodes (11 + __start__), got {len(node_names)}: {node_names}"
 
     @pytest.mark.asyncio
     async def test_full_pipeline_non_longitudinal(self):
@@ -1900,16 +1903,19 @@ class TestSynthesisPhase5:
     """Tests for Phase 5 synthesis node with hypothesis generation."""
 
     @pytest.mark.asyncio
-    async def test_synthesis_returns_hypotheses(self):
-        """Synthesis node should return hypotheses list."""
+    async def test_hypothesis_extraction_returns_hypotheses(self):
+        """hypothesis_extraction (not synthesis) returns the hypotheses list now."""
         state: DiscoveryState = {
             "raw_query": "Analyze glucose",
             "query_type": "discovery",
             "resolved_entities": [],
+            # direct_findings satisfies the OR-gate; it is not read by extract_hypotheses.
+            "direct_findings": [Finding(entity="CHEBI:17234", claim="glucose assoc", tier=1,
+                                        source="direct_kg", confidence="high")],
             "cold_start_findings": [],
             "bridges": [],
         }
-        result = await synthesis.run(state)
+        result = await hypothesis_extraction.run(state)
 
         assert "hypotheses" in result
         assert isinstance(result["hypotheses"], list)
@@ -1935,7 +1941,7 @@ class TestSynthesisPhase5:
             ],
             "bridges": [],
         }
-        result = await synthesis.run(state)
+        result = await hypothesis_extraction.run(state)
 
         hypotheses = result["hypotheses"]
         assert len(hypotheses) >= 1
@@ -1953,6 +1959,9 @@ class TestSynthesisPhase5:
             "raw_query": "Analyze bridge connections",
             "query_type": "discovery",
             "resolved_entities": [],
+            # direct_findings satisfies the OR-gate; bridges drive the hypothesis under test.
+            "direct_findings": [Finding(entity="CHEBI:123", claim="assoc", tier=1,
+                                        source="direct_kg", confidence="high")],
             "cold_start_findings": [],
             "bridges": [
                 Bridge(
@@ -1966,7 +1975,7 @@ class TestSynthesisPhase5:
                 ),
             ],
         }
-        result = await synthesis.run(state)
+        result = await hypothesis_extraction.run(state)
 
         hypotheses = result["hypotheses"]
         assert len(hypotheses) >= 1
@@ -2005,7 +2014,7 @@ class TestSynthesisPhase5:
                 ),
             ],
         }
-        result = await synthesis.run(state)
+        result = await hypothesis_extraction.run(state)
 
         hypotheses = result["hypotheses"]
         assert len(hypotheses) >= 2
@@ -2043,7 +2052,7 @@ class TestSynthesisPhase5:
                 ),
             ],
         }
-        result = await synthesis.run(state)
+        result = await hypothesis_extraction.run(state)
 
         hypotheses = result["hypotheses"]
         assert len(hypotheses) >= 2
@@ -2164,6 +2173,9 @@ class TestSynthesisPhase5:
             "raw_query": "Test inferred",
             "query_type": "discovery",
             "resolved_entities": [],
+            # direct_findings satisfies the OR-gate; inferred_associations drive the hypothesis.
+            "direct_findings": [Finding(entity="SPARSE:1", claim="assoc", tier=1,
+                                        source="direct_kg", confidence="high")],
             "cold_start_findings": [],
             "bridges": [],
             "inferred_associations": [
@@ -2179,7 +2191,7 @@ class TestSynthesisPhase5:
                 ),
             ],
         }
-        result = await synthesis.run(state)
+        result = await hypothesis_extraction.run(state)
 
         hypotheses = result["hypotheses"]
         assert len(hypotheses) >= 1
