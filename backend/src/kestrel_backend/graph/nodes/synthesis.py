@@ -423,10 +423,38 @@ def format_hub_warnings(hub_flags: list[str]) -> str:
     return "\n".join(lines)
 
 
-def format_bridges(bridges: list[Bridge]) -> str:
-    """Format cross-type bridges discovered during integration analysis."""
+def format_bridges(
+    bridges: list[Bridge],
+    grounding_labels: dict[tuple[str, ...], str] | None = None,
+) -> str:
+    """Format cross-type bridges discovered during integration analysis.
+
+    ``grounding_labels`` maps a bridge's ``tuple(entities)`` to its evidence-provenance chain
+    label (from the bridge_grounding node, via ``grounded_bridges``). When present, the label is
+    rendered per bridge so the researcher sees what kind of evidence backs each leg.
+    """
     if not bridges:
         return ""
+
+    labels = grounding_labels or {}
+
+    def _render(b: Bridge) -> None:
+        novelty_tag = "Known" if b.novelty == "known" else "Inferred"
+        lines.append(f"\n**{b.path_description}** [{novelty_tag}]")
+        if b.entity_names:
+            path_with_names = " -> ".join(
+                f"{name} (`{curie}`)" for name, curie in zip(b.entity_names, b.entities)
+            )
+            lines.append(f"  - Path: {path_with_names}")
+        else:
+            lines.append(f"  - Entities: {' -> '.join(b.entities)}")
+        if b.predicates:
+            lines.append(f"  - Predicates: {' -> '.join(b.predicates)}")
+        if b.significance:
+            lines.append(f"  - **Significance**: {b.significance}")
+        label = labels.get(tuple(b.entities))
+        if label:
+            lines.append(f"  - **Evidence provenance**: {label}")
 
     lines = ["## Cross-Type Bridges\n"]
     lines.append("*Multi-hop paths connecting different entity types across the analysis.*\n")
@@ -438,40 +466,26 @@ def format_bridges(bridges: list[Bridge]) -> str:
     if tier2:
         lines.append("### High-Confidence Bridges (Tier 2)")
         for b in tier2:
-            novelty_tag = "Known" if b.novelty == "known" else "Inferred"
-            lines.append(f"\n**{b.path_description}** [{novelty_tag}]")
-            if b.entity_names:
-                path_with_names = " -> ".join(
-                    f"{name} (`{curie}`)"
-                    for name, curie in zip(b.entity_names, b.entities)
-                )
-                lines.append(f"  - Path: {path_with_names}")
-            else:
-                lines.append(f"  - Entities: {' -> '.join(b.entities)}")
-            if b.predicates:
-                lines.append(f"  - Predicates: {' -> '.join(b.predicates)}")
-            if b.significance:
-                lines.append(f"  - **Significance**: {b.significance}")
+            _render(b)
         lines.append("")
 
     if tier3:
         lines.append("### Speculative Bridges (Tier 3)")
         for b in tier3:
-            novelty_tag = "Known" if b.novelty == "known" else "Inferred"
-            lines.append(f"\n**{b.path_description}** [{novelty_tag}]")
-            if b.entity_names:
-                path_with_names = " -> ".join(
-                    f"{name} (`{curie}`)"
-                    for name, curie in zip(b.entity_names, b.entities)
-                )
-                lines.append(f"  - Path: {path_with_names}")
-            else:
-                lines.append(f"  - Entities: {' -> '.join(b.entities)}")
-            if b.significance:
-                lines.append(f"  - **Significance**: {b.significance}")
+            _render(b)
         lines.append("")
 
     return "\n".join(lines)
+
+
+def grounding_labels_from_state(state: DiscoveryState) -> dict[tuple[str, ...], str]:
+    """Build a {tuple(entities) -> chain label} map from grounded_bridges for bridge rendering."""
+    labels: dict[tuple[str, ...], str] = {}
+    for gb in state.get("grounded_bridges", []) or []:
+        grounding = getattr(gb, "grounding", None)
+        if grounding is not None and getattr(grounding, "label", ""):
+            labels[tuple(gb.entities)] = grounding.label
+    return labels
 
 
 def format_gap_entities(gaps: list[GapEntity]) -> str:
@@ -658,7 +672,7 @@ def assemble_synthesis_context(state: DiscoveryState) -> str:
     
     # Cross-type bridges
     bridges = state.get("bridges", [])
-    bridges_section = format_bridges(bridges)
+    bridges_section = format_bridges(bridges, grounding_labels_from_state(state))
     if bridges_section:
         sections.append(bridges_section)
     
@@ -752,7 +766,7 @@ def fallback_report(state: DiscoveryState) -> str:
         report_lines.append(enrichment_section)
 
     # Cross-type bridges - Phase 4b
-    bridges_section = format_bridges(bridges)
+    bridges_section = format_bridges(bridges, grounding_labels_from_state(state))
     if bridges_section:
         report_lines.append(bridges_section)
 

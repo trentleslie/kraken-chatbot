@@ -20,7 +20,7 @@ from langgraph.graph import StateGraph, END
 from .state import DiscoveryState
 from .nodes import (
     intake, entity_resolution, triage, direct_kg, cold_start,
-    pathway_enrichment, integration, temporal, synthesis, literature_grounding
+    pathway_enrichment, integration, bridge_grounding, temporal, synthesis, literature_grounding
 )
 
 
@@ -129,6 +129,7 @@ def build_discovery_graph() -> StateGraph:
     workflow.add_node("cold_start", cold_start.run)
     workflow.add_node("pathway_enrichment", pathway_enrichment.run)
     workflow.add_node("integration", integration.run)
+    workflow.add_node("bridge_grounding", bridge_grounding.run)
     workflow.add_node("temporal", temporal.run)
     workflow.add_node("synthesis", synthesis.run)
     workflow.add_node("literature_grounding", literature_grounding.run)
@@ -157,18 +158,23 @@ def build_discovery_graph() -> StateGraph:
     # Pathway enrichment flows to integration
     workflow.add_edge("pathway_enrichment", "integration")
 
-    # Conditional routing after integration: temporal (if longitudinal) or synthesis
+    # bridge_grounding sits before synthesis on BOTH inbound paths so neither study type
+    # bypasses it: the non-longitudinal branch routes integration -> bridge_grounding (map below),
+    # and the longitudinal branch routes temporal -> bridge_grounding (edge below).
     workflow.add_conditional_edges(
         "integration",
         route_after_integration,
         {
             "temporal": "temporal",
-            "synthesis": "synthesis",
+            "synthesis": "bridge_grounding",  # non-longitudinal: integration -> bridge_grounding
         }
     )
 
-    # Temporal flows to synthesis
-    workflow.add_edge("temporal", "synthesis")
+    # Longitudinal: temporal -> bridge_grounding (not straight to synthesis)
+    workflow.add_edge("temporal", "bridge_grounding")
+
+    # bridge_grounding -> synthesis (single join point for both paths)
+    workflow.add_edge("bridge_grounding", "synthesis")
 
     # Synthesis flows to literature grounding
     workflow.add_edge("synthesis", "literature_grounding")
