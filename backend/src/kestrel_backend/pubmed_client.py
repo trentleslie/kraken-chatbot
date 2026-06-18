@@ -37,6 +37,11 @@ def _ncbi_api_key() -> str:
     return os.getenv("NCBI_API_KEY", "")
 
 
+def ncbi_api_key_present() -> bool:
+    """Public predicate: whether an NCBI_API_KEY is configured (10 req/s vs 3 req/s)."""
+    return bool(_ncbi_api_key())
+
+
 def _pubmed_delay() -> float:
     """0.1s (~10 req/s) with an API key, else 0.35s (~3 req/s)."""
     return 0.1 if _ncbi_api_key() else 0.35
@@ -66,6 +71,17 @@ async def search_papers(
         if not pmids:
             return []
         return await _esummary(pmids)
+
+
+async def search_pmids(query: str, retmax: int = 50) -> list[str]:
+    """Return the bare PMID list for a query (relevance-sorted; sort is hardcoded in _esearch).
+
+    Public wrapper around the private _esearch: ``search_papers`` returns ESummary metadata
+    dicts, but bridge-grounding co-occurrence retrieval needs only the PMID strings. Acquires
+    PUBMED_SEMAPHORE like ``search_papers`` does.
+    """
+    async with PUBMED_SEMAPHORE:
+        return await _esearch(query, retmax)
 
 
 async def _esearch(query: str, limit: int) -> list[str]:

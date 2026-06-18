@@ -183,6 +183,11 @@ class LiteratureGroundingInput(_ContractBase):
     hypotheses: list[Any]
 
 
+class BridgeGroundingInput(_ContractBase):
+    """Bridge grounding reads bridges (from integration; the node runs before synthesis)."""
+    bridges: list[Any]
+
+
 # =============================================================================
 # Output Models
 # =============================================================================
@@ -244,6 +249,17 @@ class LiteratureGroundingOutput(_ContractBase):
     hypotheses: list[Any]
 
 
+class BridgeGroundingOutput(_ContractBase):
+    """Bridge grounding produces grounded_bridges (+ errors/usages).
+
+    All fields default so a partial/early return (e.g. mid-run SDK failure) still validates —
+    preserving the node's never-throws contract. Pydantic v2 copies mutable defaults per-instance.
+    """
+    grounded_bridges: list[Any] = []
+    bridge_grounding_errors: list[Any] = []
+    model_usages: list[Any] = []
+
+
 # =============================================================================
 # Node Contract Registry
 # =============================================================================
@@ -259,6 +275,7 @@ NODE_CONTRACTS: dict[str, tuple[type[_ContractBase], type[_ContractBase]]] = {
     "temporal": (TemporalInput, TemporalOutput),
     "synthesis": (SynthesisInput, SynthesisOutput),
     "literature_grounding": (LiteratureGroundingInput, LiteratureGroundingOutput),
+    "bridge_grounding": (BridgeGroundingInput, BridgeGroundingOutput),
 }
 
 

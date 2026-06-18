@@ -1,0 +1,4 @@
+
+# Tier A calibration spike artifacts (expensive-run outputs; reproducible from manifest)
+assessment_data/bridge_grounding_tier_a_runs/
+assessment_data/kg_bridge_leg_runs/

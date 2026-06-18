@@ -242,6 +242,47 @@ class TestParseMultiHopResult:
         assert bridge.entities[-1] == "MONDO:0005148"
         assert bridge.tier == 2  # 3 nodes = 2 hops = tier 2
         assert bridge.novelty == "known"
+        # No edges in the response -> predicates/directions are all-None placeholders, hop-aligned.
+        assert bridge.predicates == ["", ""]
+        assert bridge.predicate_directions == [None, None]
+
+    def test_parse_populates_hop_aligned_predicates_and_directions(self):
+        """With edges/edge_schema, the builder fills Bridge.predicates + orientation per hop (U0)."""
+        result = {
+            "content": [{
+                "type": "text",
+                "text": json.dumps({
+                    "results": [{
+                        "end_node_id": "MONDO:0005148",
+                        "paths": [["CHEBI:17234", "HGNC:6081", "MONDO:0005148"]],
+                        "edge_ids": [1, 2],
+                    }],
+                    "nodes": {
+                        "CHEBI:17234": {"name": "glucose"},
+                        "HGNC:6081": {"name": "INS"},
+                        "MONDO:0005148": {"name": "type 2 diabetes"},
+                    },
+                    "edge_schema": ["subject", "predicate", "object"],
+                    "edges": {
+                        # hop 1 forward: glucose -> INS
+                        "1": ["CHEBI:17234", "biolink:affects", "HGNC:6081"],
+                        # hop 2 stored REVERSED: disease -> gene (orientation must be recovered)
+                        "2": ["MONDO:0005148", "biolink:gene_associated_with_condition", "HGNC:6081"],
+                    },
+                })
+            }]
+        }
+        start = [EntityResolution(raw_name="glucose", curie="CHEBI:17234", resolved_name="glucose",
+                                  category="biolink:ChemicalEntity", confidence=1.0, method="exact")]
+        end = [EntityResolution(raw_name="type 2 diabetes", curie="MONDO:0005148",
+                                resolved_name="type 2 diabetes", category="biolink:Disease",
+                                confidence=1.0, method="exact")]
+        bridges = parse_multi_hop_result(result, start, end,
+                                         "biolink:ChemicalEntity", "biolink:Disease")
+        bridge = bridges[0]
+        assert bridge.predicates == ["biolink:affects", "biolink:gene_associated_with_condition"]
+        # hop 1 runs with the path (forward); hop 2 edge is stored reversed -> forward=False.
+        assert bridge.predicate_directions == [True, False]
 
     def test_parse_empty_result(self):
         """Test parsing empty result."""
