@@ -362,7 +362,7 @@ one bridge degrades it (label `none`/error in `bridge_grounding_errors`), node s
   the node runs in each, not just one; `total_nodes`/`NODE_STATUS_MESSAGES` updated; synthesis renders the
   label; disabled = no-op.
 
-- [ ] **L4: Validation eval over real bridges + enablement flip (follow-up)**
+- [x] **L4: Validation eval over real bridges + enablement flip (follow-up)**
 
 **Goal:** Confirm the labeler produces a sensible label distribution on real, now-correctly-resolved
 bridges, then flip the node default to `enabled=True`.
