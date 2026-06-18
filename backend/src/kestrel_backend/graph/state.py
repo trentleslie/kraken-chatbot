@@ -430,7 +430,12 @@ class DiscoveryState(TypedDict, total=False):
     pathway_enrichment_degraded: bool
 
     # === Phase 4b: Integration (Bridges + Gap Analysis) ===
-    bridges: Annotated[list[Bridge], operator.add]
+    # Plain last-write-wins (NOT operator.add): integration writes the raw bridges once, then
+    # hypothesis_extraction RE-EMITS the *validated* bridge list (Unit 1/Unit 2). With an
+    # operator.add reducer the re-emit would concatenate onto the originals (duplicating/
+    # un-validating); last-write-wins lets the validated list replace the raw one. Dropping the
+    # reducer also auto-removes `bridges` from CONCAT_LIST_FIELDS via _get_concat_fields().
+    bridges: list[Bridge]
     gap_entities: Annotated[list[GapEntity], operator.add]
 
     # === Phase 4b: Temporal Analysis (Conditional) ===
