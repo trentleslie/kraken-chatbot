@@ -34,6 +34,7 @@ _CLASS_TO_BIOLINK: dict[str, str] = {
     "gene": "biolink:Gene",
     "protein": "biolink:Protein",
     "metabolite": "biolink:SmallMolecule",
+    "disease": "biolink:Disease",
 }
 
 # Minimum confidence tier to accept a Biomapper map; below this the caller falls back to Kestrel.

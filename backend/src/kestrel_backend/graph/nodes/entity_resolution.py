@@ -91,12 +91,20 @@ If no candidate fits: {"curie": null, "confidence": 0.0}"""
 
 
 
-async def resolve_via_api(entity: str) -> EntityResolution | None:
+async def resolve_via_api(
+    entity: str, category: str | None = None
+) -> EntityResolution | None:
     """
     Tier 1: Attempt to resolve entity via direct Kestrel API call.
 
     Uses hybrid_search and takes the top-scored result if confidence is high enough.
     Returns None if resolution fails or confidence is too low (triggering Tier 2).
+
+    ``category`` (a Biolink class, e.g. "biolink:Disease") constrains hybrid_search to that
+    class so a same-text node from another namespace cannot win (the Tier 1 wrong-namespace
+    fix). When set: an in-category hit at/below ``tier1_min_score`` or an empty result returns
+    None (routes to Tier 2); an ``isError`` falls back to the unconstrained call at
+    ``tier1_fallback_confidence``. When None, behavior is byte-identical to the legacy path.
 
     Confidence mapping from hybrid_search score:
     - score > 1.5 → confidence 0.95 (exact + vector match)
@@ -107,10 +115,15 @@ async def resolve_via_api(entity: str) -> EntityResolution | None:
     """
     try:
         # Call hybrid_search directly - parameter is 'search_text' not 'query'
-        result = await call_kestrel_tool("hybrid_search", {
+        search_args: dict = {
             "search_text": entity,
             "limit": 1,  # Only need top result
-        })
+        }
+        if category is not None:
+            # Constrain to the expected Biolink class. Matching is list-membership (a node
+            # matches if the class is anywhere in its categories array) — verified live 2026-06-17.
+            search_args["category"] = category
+        result = await call_kestrel_tool("hybrid_search", search_args)
 
         # Debug logging - show raw API response
         is_error = result.get("isError", False)
@@ -121,6 +134,21 @@ async def resolve_via_api(entity: str) -> EntityResolution | None:
         )
 
         if is_error:
+            if category is not None:
+                # The category-filter mechanism itself failed (e.g. a future arg drift). Degrade
+                # gracefully to today's unconstrained behavior, flagged at a reduced confidence so
+                # the degraded path is visible. (R5; mirrors the direction-param cold-start lesson.)
+                logger.info(
+                    "FALLBACK_EVENT node=entity_resolution reason=category_iserror entity=%s",
+                    entity,
+                )
+                fallback = await resolve_via_api(entity, category=None)
+                if fallback is None:
+                    return None
+                return fallback.model_copy(update={
+                    "confidence": _config.tier1_fallback_confidence,
+                    "method": "category-fallback",
+                })
             logger.debug("Tier 1 '%s': API returned error", entity)
             return None
 
@@ -677,9 +705,14 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     tier1_targets = [(i, e) for i, e in enumerate(entities) if i not in biomapper_confirmed]
     logger.info("Tier 1 (API): Attempting direct resolution for %d entities", len(tier1_targets))
 
-    # Run all API calls in parallel (they're fast and independent)
+    # Run all API calls in parallel (they're fast and independent). Pass the Biolink category
+    # the intake hint maps to (None when no/unknown hint) so hybrid_search resolves to the right
+    # namespace instead of a same-text node from another category (Tier 1 wrong-namespace fix).
     tier1_results = await asyncio.gather(
-        *[resolve_via_api(e) for (_i, e) in tier1_targets],
+        *[
+            resolve_via_api(e, category=biolink_class_for(entity_type_hints.get(e)))
+            for (_i, e) in tier1_targets
+        ],
         return_exceptions=True,
     )
 
@@ -719,8 +752,12 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                        len(entity_aliases), entity, entity_aliases)
             
             resolved_via_alias = False
+            # Constrain the alias lookup to the PARENT entity's category (hints are keyed on the
+            # original name, not the alias). A type-mismatched alias yields an empty in-category
+            # result and routes to Tier 2, exactly as an over-fired hint does.
+            alias_category = biolink_class_for(entity_type_hints.get(entity))
             for alias in entity_aliases:
-                alias_result = await resolve_via_api(alias)
+                alias_result = await resolve_via_api(alias, category=alias_category)
                 if alias_result is not None:
                     # Use alias resolution but keep original raw_name
                     all_results[idx] = EntityResolution(
