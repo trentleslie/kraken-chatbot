@@ -2438,5 +2438,40 @@ class TestSynthesisReportOnly:
         assert "Urolithin Neuroprotection Study" not in result["synthesis_report"]
 
 
+class TestGroundBeforeSynthesisTopology:
+    """Unit 5 — graph wiring inserts hypothesis_extraction before grounding+synthesis."""
+
+    def test_graph_has_11_nodes_including_hypothesis_extraction(self):
+        graph = build_discovery_graph()
+        node_names = [n for n in graph.nodes.keys() if n != "__start__"]
+        assert "hypothesis_extraction" in node_names
+        # 11 analysis nodes (10 prior + hypothesis_extraction); +1 for __start__ in the raw dict.
+        assert len(graph.nodes.keys()) == 12, f"got {len(graph.nodes.keys())}: {list(graph.nodes.keys())}"
+
+    def test_new_edges_present_old_edges_gone(self):
+        graph = build_discovery_graph()
+        edges = {(e.source, e.target) for e in graph.get_graph().edges}
+        # New ground-before-synthesis path
+        assert ("temporal", "hypothesis_extraction") in edges
+        assert ("integration", "hypothesis_extraction") in edges  # non-longitudinal branch
+        assert ("hypothesis_extraction", "literature_grounding") in edges
+        assert ("literature_grounding", "synthesis") in edges
+        assert ("synthesis", "__end__") in edges
+        # Old topology removed
+        assert ("synthesis", "literature_grounding") not in edges
+        assert ("literature_grounding", "__end__") not in edges
+        assert ("temporal", "synthesis") not in edges
+
+    def test_route_after_integration_targets_hypothesis_extraction(self):
+        assert route_after_integration({"is_longitudinal": False}) == "hypothesis_extraction"
+        assert route_after_integration({"is_longitudinal": True}) == "temporal"
+
+    def test_total_nodes_matches_status_messages(self):
+        """Guards the 11/10 off-by-one: progress total must equal the registered status messages."""
+        from src.kestrel_backend.protocol import NODE_STATUS_MESSAGES, PipelineProgressMessage
+        assert "hypothesis_extraction" in NODE_STATUS_MESSAGES
+        assert PipelineProgressMessage.model_fields["total_nodes"].default == len(NODE_STATUS_MESSAGES)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
