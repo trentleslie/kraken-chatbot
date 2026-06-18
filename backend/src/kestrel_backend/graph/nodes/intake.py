@@ -365,14 +365,28 @@ def extract_fdr_groups(query: str, entities: list[str]) -> tuple[list[str], list
     return fdr_entities, marginal_entities
 
 
+# Curated disease lexicon (regex, canonical label). Shared by `detect_entity_types` (per-token
+# disease hinting) and `extract_study_context` (whole-query disease_focus). Single source of truth.
+_DISEASE_PATTERNS: list[tuple[str, str]] = [
+    (r"diabetes|t2d|type 2 diabetes|t2dm", "type 2 diabetes"),
+    (r"t1d|type 1 diabetes|t1dm", "type 1 diabetes"),
+    (r"alzheimer|ad\b", "Alzheimer's disease"),
+    (r"parkinson", "Parkinson's disease"),
+    (r"cancer|tumor|carcinoma", "cancer"),
+    (r"cardiovascular|cvd|heart disease", "cardiovascular disease"),
+    (r"obesity|bmi|overweight", "obesity"),
+]
+
+
 def detect_entity_types(query: str, entities: list[str]) -> dict[str, str]:
     """
     Tag entities with type hints based on context.
 
     Uses:
-    - Section headers: "Significant Metabolites:" → metabolite
+    - Section headers: "Significant Metabolites:" → metabolite, "Diseases:"/"Conditions:" → disease
     - Gene symbol heuristics: 2-6 uppercase chars → protein/gene
     - Chemical suffixes: -ose, -ate, -ine, -ol → metabolite
+    - Disease lexicon (``_DISEASE_PATTERNS``): per-token, after gene/metabolite heuristics
 
     Returns:
         Dict mapping entity names to type hints.
@@ -384,6 +398,7 @@ def detect_entity_types(query: str, entities: list[str]) -> dict[str, str]:
     metabolite_headers = ["metabolites:", "metabolite:", "significant metabolites:"]
     protein_headers = ["proteins:", "protein:", "significant proteins:"]
     gene_headers = ["genes:", "gene:", "significant genes:"]
+    disease_headers = ["diseases:", "disease:", "conditions:", "significant diseases:"]
     
     # Check which section each entity might be under
     # This is a simplified approach - looks for proximity to headers
@@ -420,22 +435,35 @@ def detect_entity_types(query: str, entities: list[str]) -> dict[str, str]:
             if pos > best_header_pos:
                 best_header_pos = pos
                 best_header_type = "gene"
-        
+
+        for header in disease_headers:
+            pos = query_lower.rfind(header, 0, entity_pos)
+            if pos > best_header_pos:
+                best_header_pos = pos
+                best_header_type = "disease"
+
         if best_header_type:
             type_hints[entity] = best_header_type
             continue
-        
+
         # Heuristic: Gene symbols are typically 2-6 uppercase characters
         if re.match(r"^[A-Z]{2,6}\d?$", entity):
             type_hints[entity] = "gene"
             continue
-        
+
         # Heuristic: Chemical suffixes
         entity_lower = entity.lower()
         if any(entity_lower.endswith(suffix) for suffix in ["ose", "ate", "ine", "ol", "ide", "yl"]):
             type_hints[entity] = "metabolite"
             continue
-    
+
+        # Heuristic: disease lexicon (reused regex list), applied to the entity token itself.
+        # Runs AFTER the gene/metabolite heuristics so those take precedence for clear gene/
+        # metabolite tokens (e.g. "AD" stays gene). Matches prose disease names that carry no header.
+        if any(re.search(pat, entity_lower) for pat, _label in _DISEASE_PATTERNS):
+            type_hints[entity] = "disease"
+            continue
+
     return type_hints
 
 
@@ -464,17 +492,8 @@ def extract_study_context(query: str) -> dict[str, str]:
     elif "cohort" in query_lower:
         context["study_type"] = "cohort"
     
-    # Detect disease focus
-    disease_patterns = [
-        (r"diabetes|t2d|type 2 diabetes|t2dm", "type 2 diabetes"),
-        (r"t1d|type 1 diabetes|t1dm", "type 1 diabetes"),
-        (r"alzheimer|ad\b", "Alzheimer's disease"),
-        (r"parkinson", "Parkinson's disease"),
-        (r"cancer|tumor|carcinoma", "cancer"),
-        (r"cardiovascular|cvd|heart disease", "cardiovascular disease"),
-        (r"obesity|bmi|overweight", "obesity"),
-    ]
-    for pattern, disease in disease_patterns:
+    # Detect disease focus (shared lexicon with detect_entity_types)
+    for pattern, disease in _DISEASE_PATTERNS:
         if re.search(pattern, query_lower):
             context["disease_focus"] = disease
             break

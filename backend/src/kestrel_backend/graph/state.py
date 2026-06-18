@@ -393,7 +393,7 @@ class DiscoveryState(TypedDict, total=False):
 
     # === Structured Intake Context (from intake node) ===
     entity_aliases: dict[str, list[str]]  # primary_name -> [alias1, alias2, ...]
-    entity_type_hints: dict[str, str]  # entity_name -> "metabolite"|"protein"|"gene"
+    entity_type_hints: dict[str, str]  # entity_name -> "metabolite"|"protein"|"gene"|"disease"
     study_context: dict[str, str]  # Structured study metadata (type, design, timepoints, etc.)
     analytical_directives: list[str]  # User's specific analysis priorities/requests
 
