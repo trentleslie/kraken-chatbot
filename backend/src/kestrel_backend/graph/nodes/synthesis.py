@@ -25,6 +25,10 @@ from ..state import (
 from ...literature_utils import format_pmid_link
 from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
 from ..state_contracts import validate_state, SynthesisInput, SynthesisOutput
+# References-table assembly lives with grounding's module but is OWNED by synthesis now (R6):
+# synthesis appends it from the grounded hypotheses in state. (literature_grounding does not
+# import synthesis, so this one-way import introduces no cycle.)
+from .literature_grounding import build_references_table
 
 logger = logging.getLogger(__name__)
 
@@ -837,16 +841,18 @@ def fallback_report(state: DiscoveryState) -> str:
 @validate_state(SynthesisInput, SynthesisOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
-    Generate a synthesis report and extract hypotheses from all analysis phases.
+    Generate the final synthesis report from all analysis phases.
 
-    Phase 5 architecture:
+    Reads the already-validated `bridges` and the grounded `hypotheses` from state (produced
+    upstream by hypothesis_extraction and literature_grounding) and renders the report:
     - Phase A: Assemble all state into context block
     - Phase B: LLM synthesis (if SDK available) or fallback report
-    - Hypothesis extraction: Build structured Hypothesis objects from state
+    - R6: append the references table (built from the grounded hypotheses) to both paths
 
     Returns:
-        synthesis_report: Formatted markdown report
-        hypotheses: List of Hypothesis objects with validation steps and gap calibration
+        synthesis_report: Formatted markdown report (the only domain output — hypotheses and
+            bridges are owned upstream and are NOT re-emitted here)
+        model_usages: SDK usage record(s) for cost tracking, if any
     """
     # Count input findings
     direct_findings = state.get("direct_findings", [])
@@ -890,10 +896,17 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             # Could log error here if needed
     else:
         report = fallback_report(state)
-    
+
     # Hypotheses are produced upstream (hypothesis_extraction) and grounded by
     # literature_grounding; read them from state.
     hypotheses = state.get("hypotheses", [])
+
+    # R6: synthesis owns the references table now (grounding stopped appending it in Unit 3).
+    # Append it AFTER the SDK/fallback convergence point so BOTH the LLM-success path and the
+    # fallback_report path emit it — the fallback omission was the highest-risk silent regression.
+    references_table = build_references_table(hypotheses)
+    if references_table:
+        report = report + "\n" + references_table
 
     duration = time.time() - start
     logger.info(
@@ -901,9 +914,10 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         duration, len(hypotheses), len(report), len(validated_bridges)
     )
 
+    # Report-only return (R4/R12): hypotheses and bridges are produced/owned upstream now, so
+    # synthesis must NOT re-emit them. extra='ignore' on SynthesisOutput would silently let a
+    # stray `bridges` return through, so it is removed deliberately, not relied on to be dropped.
     return {
         "synthesis_report": report,
-        "hypotheses": hypotheses,
-        "bridges": validated_bridges,  # Return validated bridges
         "model_usages": [usage_record] if usage_record else [],
     }

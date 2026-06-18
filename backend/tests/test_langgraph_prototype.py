@@ -22,7 +22,8 @@ from src.kestrel_backend.graph.builder import (
 from src.kestrel_backend.graph.state import (
     DiscoveryState, EntityResolution, NoveltyScore, Finding,
     DiseaseAssociation, PathwayMembership, InferredAssociation, AnalogueEntity,
-    SharedNeighbor, BiologicalTheme, Bridge, GapEntity, TemporalClassification, Hypothesis
+    SharedNeighbor, BiologicalTheme, Bridge, GapEntity, TemporalClassification, Hypothesis,
+    LiteratureSupport,
 )
 from src.kestrel_backend.graph.nodes import (
     intake, entity_resolution, triage, direct_kg, cold_start,
@@ -2368,6 +2369,74 @@ class TestEndToEndPhase5:
         assert len(merged) == 2
         assert merged[0].title == "Hypothesis 1"
         assert merged[1].title == "Hypothesis 2"
+
+
+class TestSynthesisReportOnly:
+    """Unit 4 — synthesis is report-only: reads grounded hypotheses + validated bridges from
+    state, owns the references table (both SDK and fallback paths), and returns only the report."""
+
+    @staticmethod
+    def _grounded_state():
+        lit = LiteratureSupport(
+            paper_id="p1", title="Urolithin Neuroprotection Study", authors="Smith et al.",
+            year=2024, doi="10.1234/uro", relevance_score=0.9, relationship="supporting",
+            key_passage="Urolithin B reduces neuroinflammation", citation_count=42,
+        )
+        hyp = Hypothesis(
+            title="Inferred role of urolithin B", tier=3, claim="urolithin B is neuroprotective",
+            supporting_entities=["CHEBI:1"], structural_logic="analogue inference",
+            validation_steps=["validate in cohort"], literature_support=[lit],
+        )
+        return {
+            "raw_query": "neuroprotection",
+            "query_type": "discovery",
+            "direct_findings": [Finding(entity="X", claim="x assoc", tier=1,
+                                        source="direct_kg", confidence="high")],
+            "cold_start_findings": [],
+            "bridges": [],
+            "hypotheses": [hyp],
+        }
+
+    @pytest.mark.asyncio
+    async def test_return_is_report_only(self):
+        """Return dict carries no `hypotheses` or `bridges` keys (owned upstream now)."""
+        with patch.object(synthesis, "HAS_SDK", False):
+            result = await synthesis.run(self._grounded_state())
+        assert set(result.keys()) == {"synthesis_report", "model_usages"}
+        assert "hypotheses" not in result
+        assert "bridges" not in result
+
+    @pytest.mark.asyncio
+    async def test_references_table_in_fallback_path(self):
+        """R6 highest-risk regression: the fallback_report path must still emit the references table."""
+        with patch.object(synthesis, "HAS_SDK", False):
+            result = await synthesis.run(self._grounded_state())
+        report = result["synthesis_report"]
+        assert "Urolithin Neuroprotection Study" in report
+
+    @pytest.mark.asyncio
+    async def test_references_table_in_sdk_path(self):
+        """R6: the SDK-success path also appends the references table after the LLM report body."""
+        async def fake_query(prompt, options, node_name):
+            return ("# LLM Report\n\nGenerated body.", None)
+
+        with patch.object(synthesis, "HAS_SDK", True), \
+                patch.object(synthesis, "query_with_usage", fake_query):
+            result = await synthesis.run(self._grounded_state())
+        report = result["synthesis_report"]
+        assert "# LLM Report" in report
+        assert "Urolithin Neuroprotection Study" in report
+
+    @pytest.mark.asyncio
+    async def test_empty_hypotheses_no_crash_no_table(self):
+        """Empty hypotheses → report still produced, no references table, no crash."""
+        state = self._grounded_state()
+        state["hypotheses"] = []
+        with patch.object(synthesis, "HAS_SDK", False):
+            result = await synthesis.run(state)
+        assert result["synthesis_report"]  # non-empty report
+        assert "Urolithin Neuroprotection Study" not in result["synthesis_report"]
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
