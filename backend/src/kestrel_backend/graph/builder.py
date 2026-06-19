@@ -197,24 +197,3 @@ def build_discovery_graph() -> StateGraph:
 
     # Compile and return
     return workflow.compile()
-
-
-def build_discovery_graph_v1() -> StateGraph:
-    """
-    Legacy Phase 1 graph for backward compatibility.
-
-    Linear 3-node pipeline without triage or parallel branches.
-    Use build_discovery_graph() for the latest implementation.
-    """
-    workflow = StateGraph(DiscoveryState)
-
-    workflow.add_node("intake", intake.run)
-    workflow.add_node("entity_resolution", entity_resolution.run)
-    workflow.add_node("synthesis", synthesis.run)
-
-    workflow.set_entry_point("intake")
-    workflow.add_edge("intake", "entity_resolution")
-    workflow.add_edge("entity_resolution", "synthesis")
-    workflow.add_edge("synthesis", END)
-
-    return workflow.compile()
