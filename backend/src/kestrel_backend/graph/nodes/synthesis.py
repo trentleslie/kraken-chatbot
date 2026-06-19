@@ -863,9 +863,8 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     # Bridges are already validated and hypotheses already produced upstream by the
     # hypothesis_extraction node (and grounded by literature_grounding); synthesis reads them
-    # from state rather than recomputing. (Unit 2 relocated validate_bridge_hypotheses /
-    # extract_hypotheses out of synthesis; Unit 4 will own the references table + report-only return.)
-    validated_bridges = state.get("bridges", [])
+    # from state rather than recomputing — no validation happens here anymore.
+    bridges = state.get("bridges", [])
 
     # Phase B: Assemble context (always done)
     context = assemble_synthesis_context(state)
@@ -910,8 +909,8 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     duration = time.time() - start
     logger.info(
-        "Completed synthesis in %.1fs — hypotheses=%d, report_length=%d, validated_bridges=%d",
-        duration, len(hypotheses), len(report), len(validated_bridges)
+        "Completed synthesis in %.1fs — hypotheses=%d, report_length=%d, bridges=%d",
+        duration, len(hypotheses), len(report), len(bridges)
     )
 
     # Report-only return (R4/R12): hypotheses and bridges are produced/owned upstream now, so
