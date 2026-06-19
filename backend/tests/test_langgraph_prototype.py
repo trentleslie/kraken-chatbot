@@ -1692,7 +1692,8 @@ class TestEndToEndPhase4b:
 
     @pytest.mark.asyncio
     async def test_graph_has_all_expected_nodes(self):
-        """Graph should have the 11 analysis nodes (ground-before-synthesis) plus __start__."""
+        """Graph should have all 12 analysis nodes (ground-before-synthesis + bridge_grounding
+        evidence-provenance labeler) plus __start__."""
         graph = build_discovery_graph()
         node_names = list(graph.nodes.keys())
 
@@ -1704,6 +1705,7 @@ class TestEndToEndPhase4b:
             "cold_start",
             "pathway_enrichment",
             "integration",
+            "bridge_grounding",
             "temporal",
             "hypothesis_extraction",
             "literature_grounding",
@@ -1713,8 +1715,8 @@ class TestEndToEndPhase4b:
         for node in expected_nodes:
             assert node in node_names, f"Missing node: {node}"
 
-        # Should have 11 analysis nodes + __start__
-        assert len(node_names) == 12, f"Expected 12 nodes (11 + __start__), got {len(node_names)}: {node_names}"
+        # 12 analysis nodes (incl. bridge_grounding + hypothesis_extraction) + __start__
+        assert len(node_names) == 13, f"Expected 13 nodes (12 + __start__), got {len(node_names)}: {node_names}"
 
     @pytest.mark.asyncio
     async def test_full_pipeline_non_longitudinal(self):
@@ -2451,37 +2453,44 @@ class TestSynthesisReportOnly:
 
 
 class TestGroundBeforeSynthesisTopology:
-    """Unit 5 — graph wiring inserts hypothesis_extraction before grounding+synthesis."""
+    """Unit 5 (+ merged bridge_grounding) — pre-synthesis chain is
+    hypothesis_extraction -> bridge_grounding -> literature_grounding -> synthesis."""
 
-    def test_graph_has_11_nodes_including_hypothesis_extraction(self):
+    def test_graph_has_all_nodes_including_hypothesis_extraction(self):
         graph = build_discovery_graph()
         node_names = [n for n in graph.nodes.keys() if n != "__start__"]
         assert "hypothesis_extraction" in node_names
-        # 11 analysis nodes (10 prior + hypothesis_extraction); +1 for __start__ in the raw dict.
-        assert len(graph.nodes.keys()) == 12, f"got {len(graph.nodes.keys())}: {list(graph.nodes.keys())}"
+        assert "bridge_grounding" in node_names
+        # 12 analysis nodes + __start__ in the raw dict.
+        assert len(graph.nodes.keys()) == 13, f"got {len(graph.nodes.keys())}: {list(graph.nodes.keys())}"
 
     def test_new_edges_present_old_edges_gone(self):
         graph = build_discovery_graph()
         edges = {(e.source, e.target) for e in graph.get_graph().edges}
-        # New ground-before-synthesis path
+        # Ground-before-synthesis + bridge-provenance chain, all before synthesis
         assert ("temporal", "hypothesis_extraction") in edges
         assert ("integration", "hypothesis_extraction") in edges  # non-longitudinal branch
-        assert ("hypothesis_extraction", "literature_grounding") in edges
+        assert ("hypothesis_extraction", "bridge_grounding") in edges
+        assert ("bridge_grounding", "literature_grounding") in edges
         assert ("literature_grounding", "synthesis") in edges
         assert ("synthesis", "__end__") in edges
         # Old topology removed
         assert ("synthesis", "literature_grounding") not in edges
         assert ("literature_grounding", "__end__") not in edges
         assert ("temporal", "synthesis") not in edges
+        # dev's pre-merge bridge_grounding wiring (bridge_grounding straight to synthesis) is gone
+        assert ("bridge_grounding", "synthesis") not in edges
+        assert ("hypothesis_extraction", "literature_grounding") not in edges
 
     def test_route_after_integration_targets_hypothesis_extraction(self):
         assert route_after_integration({"is_longitudinal": False}) == "hypothesis_extraction"
         assert route_after_integration({"is_longitudinal": True}) == "temporal"
 
     def test_total_nodes_matches_status_messages(self):
-        """Guards the 11/10 off-by-one: progress total must equal the registered status messages."""
+        """Progress total must equal the registered status messages (guards the N/N-1 off-by-one)."""
         from src.kestrel_backend.protocol import NODE_STATUS_MESSAGES, PipelineProgressMessage
         assert "hypothesis_extraction" in NODE_STATUS_MESSAGES
+        assert "bridge_grounding" in NODE_STATUS_MESSAGES
         assert PipelineProgressMessage.model_fields["total_nodes"].default == len(NODE_STATUS_MESSAGES)
 
 

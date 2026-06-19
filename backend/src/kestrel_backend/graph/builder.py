@@ -9,10 +9,10 @@ Phase 2: + Triage -> [Direct KG | Cold-Start] -> Synthesis
 Phase 4a: + Pathway Enrichment (after analysis branches converge)
 Phase 4b: + Integration (bridges + gaps) + Temporal (conditional for longitudinal)
 
-Full 11-node architecture (ground-before-synthesis):
+Full 12-node architecture (ground-before-synthesis + bridge evidence-provenance):
     Intake -> Entity Resolution -> Triage -> [Direct KG | Cold-Start]
            -> Pathway Enrichment -> Integration -> [Temporal]
-           -> Hypothesis Extraction -> Literature Grounding -> Synthesis
+           -> Hypothesis Extraction -> Bridge Grounding -> Literature Grounding -> Synthesis
 """
 
 from typing import Literal
@@ -20,8 +20,8 @@ from langgraph.graph import StateGraph, END
 from .state import DiscoveryState
 from .nodes import (
     intake, entity_resolution, triage, direct_kg, cold_start,
-    pathway_enrichment, integration, temporal, hypothesis_extraction,
-    synthesis, literature_grounding
+    pathway_enrichment, integration, bridge_grounding, temporal,
+    hypothesis_extraction, synthesis, literature_grounding
 )
 
 
@@ -78,9 +78,9 @@ def build_discovery_graph() -> StateGraph:
     """
     Build the KRAKEN discovery workflow graph.
 
-    Phase 5b: 11-node pipeline with conditional parallel branches, temporal routing,
-    and ground-before-synthesis ordering (hypotheses are grounded with literature BEFORE
-    synthesis writes the report).
+    Phase 5b: 12-node pipeline with conditional parallel branches, temporal routing,
+    ground-before-synthesis ordering (hypotheses are grounded with literature BEFORE
+    synthesis writes the report), and bridge evidence-provenance labeling.
 
     Nodes:
     - Intake: Parse query, extract entities, detect mode
@@ -92,8 +92,9 @@ def build_discovery_graph() -> StateGraph:
     - Integration: Cross-type bridge detection + gap analysis
     - Temporal: Classify findings by temporal relationship (conditional)
     - Hypothesis Extraction: Validate bridges, build structured hypotheses from findings
+    - Bridge Grounding: Label cross-type bridges with KG evidence provenance
     - Literature Grounding: Add Semantic Scholar / OpenAlex / PubMed / Exa citations to hypotheses
-    - Synthesis: Generate the final report from all findings + grounded hypotheses
+    - Synthesis: Generate the final report from all findings + grounded hypotheses + labeled bridges
 
     Graph structure:
         intake -> entity_resolution -> triage -+-> direct_kg ------+-> pathway_enrichment
@@ -109,6 +110,8 @@ def build_discovery_graph() -> StateGraph:
                                            temporal                                    |
                                                |                                       |
                                                +------> hypothesis_extraction <--------+
+                                                                   |
+                                                          bridge_grounding
                                                                    |
                                                           literature_grounding
                                                                    |
@@ -129,7 +132,7 @@ def build_discovery_graph() -> StateGraph:
     # Create graph with our state schema
     workflow = StateGraph(DiscoveryState)
 
-    # Add all 11 nodes
+    # Add all 12 nodes
     workflow.add_node("intake", intake.run)
     workflow.add_node("entity_resolution", entity_resolution.run)
     workflow.add_node("triage", triage.run)
@@ -137,6 +140,7 @@ def build_discovery_graph() -> StateGraph:
     workflow.add_node("cold_start", cold_start.run)
     workflow.add_node("pathway_enrichment", pathway_enrichment.run)
     workflow.add_node("integration", integration.run)
+    workflow.add_node("bridge_grounding", bridge_grounding.run)
     workflow.add_node("temporal", temporal.run)
     workflow.add_node("hypothesis_extraction", hypothesis_extraction.run)
     workflow.add_node("synthesis", synthesis.run)
@@ -166,7 +170,10 @@ def build_discovery_graph() -> StateGraph:
     # Pathway enrichment flows to integration
     workflow.add_edge("pathway_enrichment", "integration")
 
-    # Conditional routing after integration: temporal (if longitudinal) or hypothesis_extraction
+    # Conditional routing after integration: temporal (if longitudinal) or hypothesis_extraction.
+    # Both study types converge on hypothesis_extraction, so the whole pre-synthesis chain
+    # (hypothesis_extraction -> bridge_grounding -> literature_grounding) runs on every path and
+    # neither study type bypasses it.
     workflow.add_conditional_edges(
         "integration",
         route_after_integration,
@@ -176,13 +183,15 @@ def build_discovery_graph() -> StateGraph:
         }
     )
 
-    # Temporal flows to hypothesis_extraction
+    # Temporal flows to hypothesis_extraction (the single join point for both paths)
     workflow.add_edge("temporal", "hypothesis_extraction")
 
-    # Ground-before-synthesis: hypothesis_extraction -> literature_grounding -> synthesis -> END.
-    # Hypotheses are produced, then grounded with literature, BEFORE synthesis reads them to
-    # write the report (so the report can cite the grounded evidence — PR 2).
-    workflow.add_edge("hypothesis_extraction", "literature_grounding")
+    # Ground-before-synthesis + bridge evidence-provenance, all BEFORE synthesis:
+    # hypothesis_extraction validates bridges and builds hypotheses; bridge_grounding then labels
+    # those validated bridges' evidence provenance; literature_grounding grounds the hypotheses with
+    # literature; synthesis renders the final report from the grounded hypotheses + labeled bridges.
+    workflow.add_edge("hypothesis_extraction", "bridge_grounding")
+    workflow.add_edge("bridge_grounding", "literature_grounding")
     workflow.add_edge("literature_grounding", "synthesis")
     workflow.add_edge("synthesis", END)
 

@@ -243,6 +243,25 @@ class IntegrationConfig(BaseModel):
     )
 
 
+class BridgeGroundingConfig(BaseModel):
+    """Configuration for the bridge_grounding node (deterministic evidence-provenance labeler)."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Enabled (L4 flip, 2026-06-18). The L4 validation eval over real bridges passed: "
+        "no all-`none` collapse and a 33% curated-causal leg fraction (>= the ~23% baseline) under "
+        "correct Tier 1 + Tier 2 resolution — see assessment_data/bridge_grounding_eval.py and "
+        "docs/plans/2026-06-17-002-feat-bridge-evidence-provenance-labeler-plan.md. When False the "
+        "node is a no-op (no Kestrel calls).",
+    )
+    max_scored_bridges: int = Field(
+        default=20,
+        description="Cap on ordered 3-node bridges labeled per run. Each costs 2 one_hop_query "
+        "full calls, so this bounds the added Kestrel load (2 * max_scored_bridges per run). "
+        "(The per-leg edge limit is fixed at L1's leg_tier constant.)",
+    )
+
+
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration with per-node sub-models.
 
@@ -258,6 +277,7 @@ class PipelineConfig(BaseModel):
     cold_start: ColdStartConfig = Field(default_factory=ColdStartConfig)
     literature_grounding: LiteratureGroundingConfig = Field(default_factory=LiteratureGroundingConfig)
     integration: IntegrationConfig = Field(default_factory=IntegrationConfig)
+    bridge_grounding: BridgeGroundingConfig = Field(default_factory=BridgeGroundingConfig)
 
 
 @lru_cache(maxsize=1)
