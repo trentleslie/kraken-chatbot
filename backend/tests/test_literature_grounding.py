@@ -1659,3 +1659,26 @@ class TestGroundingRunReportAgnostic:
         assert len(result["literature_errors"]) == 1
         assert result["literature_errors"][0].startswith("grounding failed:")
         assert "synthesis_report" not in result
+
+    @pytest.mark.asyncio
+    async def test_overall_timeout_degrades(self, monkeypatch):
+        """R13 latency ceiling: a slow grounding body hits asyncio.timeout (TimeoutError, an
+        Exception) and degrades to the no-op return — the run is bounded, not stalled, and still
+        reaches synthesis."""
+        import asyncio
+
+        monkeypatch.setattr(lit_grounding_module._config, "overall_timeout_seconds", 0.05)
+        monkeypatch.setattr(lit_grounding_module, "collect_pmids_from_state", lambda state: {})
+
+        async def slow_search(hypothesis, disease_context="", entity_names=None):
+            await asyncio.sleep(1.0)  # exceeds the 0.05s ceiling
+            return [], [], {"kg": 0, "pubmed": 0, "openalex": 0, "exa": 0, "s2": 0}
+
+        monkeypatch.setattr(lit_grounding_module, "parallel_search_hypothesis", slow_search)
+
+        upstream = [_make_hypothesis("H1", [])]
+        result = await lit_grounding_module.run({"hypotheses": upstream})  # must NOT raise/hang
+
+        assert result["hypotheses"] == upstream
+        assert result["literature_errors"][0].startswith("grounding failed:")
+        assert "synthesis_report" not in result

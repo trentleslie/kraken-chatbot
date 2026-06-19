@@ -14,12 +14,14 @@ with no report, an unguarded crash here — now upstream of synthesis — would 
 run before any report is produced. The boundary degrades to a contract-valid payload instead.
 """
 
+import asyncio
 import logging
 import time
 from typing import Any
 
 from ..state import DiscoveryState, Bridge, Hypothesis, InferredAssociation
 from ...kestrel_client import multi_hop_query, parse_kestrel_response
+from ..pipeline_config import get_pipeline_config
 from ..state_contracts import (
     validate_state,
     HypothesisExtractionInput,
@@ -234,8 +236,16 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     start = time.time()
 
     bridges = state.get("bridges", [])
+    timeout_s = get_pipeline_config().hypothesis_extraction.validate_timeout_seconds
     try:
-        validated_bridges = await validate_bridge_hypotheses(bridges)
+        # R13 latency ceiling: validate_bridge_hypotheses is a serial loop of live multi_hop_query
+        # calls (each up to the ~60s Kestrel timeout), now upstream of any report. Bound the whole
+        # loop with asyncio.timeout so a slow KG cannot stall the report indefinitely; on expiry the
+        # TimeoutError (an Exception) is caught by the degrade boundary below. Use asyncio.timeout,
+        # NOT manual cancellation — a raw CancelledError (BaseException) would slip past `except
+        # Exception` and main.py's catch, yielding no report at all (worse than the crash R13 guards).
+        async with asyncio.timeout(timeout_s):
+            validated_bridges = await validate_bridge_hypotheses(bridges)
 
         # Extract hypotheses from a state view carrying the validated bridges.
         state_with_validated = dict(state)
@@ -245,7 +255,10 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         logger.warning("hypothesis_extraction degraded after exception: %s", e)
         # Degrade payload satisfies HypothesisExtractionOutput (bridges required): pass the
         # upstream bridges through unvalidated and emit no hypotheses, so the run still reaches
-        # synthesis with a report instead of aborting upstream.
+        # synthesis with a report instead of aborting upstream. This is also the timeout payload:
+        # extract_hypotheses runs AFTER the validate loop, so on a validation-phase timeout there is
+        # no "extracted-so-far" to emit, and omitting `bridges` would raise StateValidationError on
+        # output (outside this try) — exactly the PIPELINE_ERROR the ceiling exists to prevent.
         return {"bridges": bridges, "hypotheses": []}
 
     duration = time.time() - start
