@@ -21,6 +21,7 @@ from ..state import (
     DiscoveryState, EntityResolution, NoveltyScore, Finding,
     DiseaseAssociation, PathwayMembership, InferredAssociation, AnalogueEntity,
     SharedNeighbor, BiologicalTheme, Bridge, GapEntity, TemporalClassification,
+    Hypothesis,
 )
 from ...literature_utils import format_pmid_link
 from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
@@ -93,12 +94,19 @@ Prioritized next steps:
 
 Every factual claim in the report MUST be tagged with its evidence source:
 - [KG Evidence] — finding came from Kestrel knowledge graph query results (direct_findings, disease_associations, pathway data, edge counts)
-- [Model Knowledge] — claim is from general biomedical knowledge, not backed by KG query results in this analysis
-- [Inferred] — derived by combining KG evidence with model knowledge
+- [Literature] — claim is supported by a grounded abstract/passage in the "Literature Evidence" section below (cite it: author/year or title)
+- [Model Knowledge] — claim is from general biomedical knowledge, not backed by KG query results or grounded literature in this analysis
+- [Inferred] — derived by combining KG evidence, grounded literature, and/or model knowledge
+
+When a hypothesis has grounded literature in the "Literature Evidence" section, cite that evidence with a
+[Literature] tag in its structural-logic / logic-chain narrative — do not leave grounded evidence unused.
+Only tag [Literature] when the cited abstract genuinely supports the claim; a tangential paper is not support
+(say so rather than over-claiming). The presence of grounded abstracts means literature was *fetched* for that
+hypothesis, NOT that the claim is verified — calibrate confidence on the evidence content, not its mere presence.
 
 If a section has no KG-backed findings, state this explicitly: "No direct KG evidence was found for this connection. The following is based on [Model Knowledge]."
 
-Do NOT present model knowledge as if it were KG-derived. Scientific integrity requires honest attribution.
+Do NOT present model knowledge as if it were KG-derived or literature-backed. Scientific integrity requires honest attribution.
 
 Generate a clear, scientific report in markdown format.
 """
@@ -614,10 +622,89 @@ def format_study_context(state: DiscoveryState) -> str:
     return "\n".join(lines)
 
 
+# Caps for rendering grounded literature into the synthesis context (R5). Mirror the Spike-0 budget
+# (max_papers_per_hyp=4, max_abstract_chars=1500) and keep the whole section well under max_buffer_size.
+MAX_LIT_PAPERS_PER_HYPOTHESIS = 4
+MAX_LIT_ABSTRACT_CHARS = 1500
+
+
+def _truncate_abstract(text: str, limit: int = MAX_LIT_ABSTRACT_CHARS) -> str:
+    """Trim an abstract/passage to the per-entry budget, marking truncation."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "… [truncated]"
+
+
+def format_literature_evidence(hypotheses: list[Hypothesis]) -> str:
+    """Render grounded literature (abstracts / key passages) for the synthesis context (R5).
+
+    Ground-before-synthesis delivers value here: synthesis reasons over the grounded abstracts, not
+    just a trailing references table. Only S2-inline and PMID-backfilled entries carry an ``abstract``
+    body; OpenAlex/Exa entries carry only title/citation (sometimes a ``key_passage``) — render what
+    exists, never fabricate.
+
+    Legibility + calibration (guards mis-calibrated trust): each hypothesis carries a grounded/ungrounded
+    marker so a reader can tell "not grounded" from "unsupported". "Grounded" means abstracts were
+    *fetched* for the hypothesis (only the top hypotheses by tier are attempted), NOT that the claim is
+    verified or stronger; "ungrounded" spans both "no papers found" and "ranked below the grounding cap",
+    so the absence of a [Literature] citation is not evidence of weakness.
+    """
+    if not hypotheses:
+        return ""
+
+    grounded = [h for h in hypotheses if getattr(h, "literature_support", None)]
+    ungrounded = [h for h in hypotheses if not getattr(h, "literature_support", None)]
+
+    if not grounded:
+        # Hypotheses exist but none carry literature (well-characterized-only run, all below the cap,
+        # or no papers found). Emit only a short calibration note so the absence reads correctly.
+        return (
+            "## Literature Evidence\n\n"
+            "_No hypotheses in this run have grounded literature attached. Absence of literature here "
+            "means none was fetched or found — NOT that the hypotheses are unsupported._"
+        )
+
+    lines = [
+        "## Literature Evidence\n",
+        "_\"Grounded\" means abstracts were fetched for a hypothesis (top hypotheses by tier only); it "
+        "does NOT mean the claim is verified or stronger. Cite these with a [Literature] tag only where "
+        "they genuinely support a claim._\n",
+    ]
+
+    for h in grounded:
+        all_lits = list(h.literature_support or [])
+        lits = all_lits[:MAX_LIT_PAPERS_PER_HYPOTHESIS]
+        more = f" (+{len(all_lits) - len(lits)} more papers)" if len(all_lits) > len(lits) else ""
+        lines.append(f"### {h.title}  — ✓ literature-grounded{more}")
+        for lit in lits:
+            cite_bits = [b for b in [lit.authors, str(lit.year) if lit.year else None] if b]
+            citation = ", ".join(cite_bits) if cite_bits else (lit.source or "source unknown")
+            header = f"- **{lit.title or 'Untitled'}** ({citation})"
+            if lit.doi:
+                header += f" doi:{lit.doi}"
+            lines.append(header)
+            body = lit.abstract or lit.key_passage or ""
+            if body:
+                lines.append(f"  {_truncate_abstract(body)}")
+            # else: OpenAlex/Exa entry with no abstract body — title/citation already rendered.
+        lines.append("")
+
+    if ungrounded:
+        names = ", ".join(h.title for h in ungrounded[:10])
+        extra = f" (+{len(ungrounded) - 10} more)" if len(ungrounded) > 10 else ""
+        lines.append(
+            f"_Ungrounded hypotheses (no abstracts fetched — speculative, ranked below the grounding "
+            f"cap, or no papers found; not a sign of weakness): {names}{extra}._"
+        )
+
+    return "\n".join(lines)
+
+
 def assemble_synthesis_context(state: DiscoveryState) -> str:
     """
     Assemble all accumulated state into a context block for LLM synthesis.
-    
+
     This function gathers data from all previous nodes and formats it into
     a comprehensive context that the LLM can use to generate a discovery report.
     """
@@ -701,7 +788,15 @@ def assemble_synthesis_context(state: DiscoveryState) -> str:
     findings_section = format_findings_summary(direct_findings, cold_start_findings)
     if findings_section:
         sections.append(findings_section)
-    
+
+    # Grounded literature evidence (R5): abstracts/passages the model should reason over and cite
+    # with [Literature]. This is the value-delivering change — synthesis now sees the grounded
+    # abstracts (produced upstream by literature_grounding), not just a trailing references table.
+    hypotheses = state.get("hypotheses", [])
+    literature_section = format_literature_evidence(hypotheses)
+    if literature_section:
+        sections.append(literature_section)
+
     return "\n".join(sections)
 
 

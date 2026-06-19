@@ -2494,5 +2494,94 @@ class TestGroundBeforeSynthesisTopology:
         assert PipelineProgressMessage.model_fields["total_nodes"].default == len(NODE_STATUS_MESSAGES)
 
 
+class TestLiteratureEvidenceRendering:
+    """Unit 7 (R5) — grounded literature is rendered into the synthesis context so the LLM reasons
+    over abstracts, not just a trailing references table."""
+
+    @staticmethod
+    def _hyp(title, lits, tier=3):
+        return Hypothesis(
+            title=title, tier=tier, claim=f"{title} claim",
+            supporting_entities=["CURIE:1"], structural_logic="logic",
+            validation_steps=["step"], literature_support=lits,
+        )
+
+    @staticmethod
+    def _lit(abstract=None, key_passage=None, source="s2", title="A Paper", doi="10.1/x"):
+        return LiteratureSupport(
+            paper_id="p1", title=title, authors="Smith et al.", year=2024, doi=doi,
+            relevance_score=0.9, relationship="supporting", key_passage=key_passage or "",
+            abstract=abstract, citation_count=10, source=source,
+        )
+
+    def test_mechanical_guard_abstract_in_context_before_llm(self):
+        """The assembled context contains the abstract body BEFORE any LLM call (guards a silent
+        no-op reorder where grounding ran but synthesis never saw the abstracts)."""
+        state = {
+            "raw_query": "q", "query_type": "discovery",
+            "direct_findings": [Finding(entity="X", claim="x", tier=1, source="direct_kg", confidence="high")],
+            "hypotheses": [self._hyp("Inferred role of urolithin B",
+                                     [self._lit(abstract="Urolithin B reduces neuroinflammation in vivo.")])],
+        }
+        context = synthesis.assemble_synthesis_context(state)
+        assert "Literature Evidence" in context
+        assert "Urolithin B reduces neuroinflammation in vivo." in context
+        assert "literature-grounded" in context
+
+    def test_openalex_no_abstract_renders_citation_no_crash(self):
+        """Entries without an abstract body (OpenAlex/Exa) render title/citation only, no crash,
+        no empty [Literature] noise."""
+        state = {
+            "raw_query": "q", "query_type": "discovery",
+            "cold_start_findings": [Finding(entity="Y", claim="y", tier=3, source="cold_start", confidence="low")],
+            "hypotheses": [self._hyp("H", [self._lit(abstract=None, key_passage="", title="OpenAlex Paper",
+                                                     source="openalex")])],
+        }
+        context = synthesis.assemble_synthesis_context(state)
+        assert "OpenAlex Paper" in context
+        assert "Smith et al." in context  # citation rendered
+
+    def test_empty_hypotheses_no_literature_section(self):
+        """Well-characterized-only run (no hypotheses) emits no Literature Evidence section."""
+        state = {
+            "raw_query": "q", "query_type": "discovery",
+            "direct_findings": [Finding(entity="X", claim="x", tier=1, source="direct_kg", confidence="high")],
+            "hypotheses": [],
+        }
+        context = synthesis.assemble_synthesis_context(state)
+        assert "Literature Evidence" not in context
+
+    def test_abstract_truncated_to_budget(self):
+        """An over-budget abstract is truncated to the per-entry cap."""
+        long_abstract = "A" * (synthesis.MAX_LIT_ABSTRACT_CHARS + 500)
+        out = synthesis.format_literature_evidence([self._hyp("H", [self._lit(abstract=long_abstract)])])
+        assert "… [truncated]" in out
+        # Body should not contain the full over-budget string.
+        assert long_abstract not in out
+
+    def test_malformed_literature_support_skipped_gracefully(self):
+        """A hypothesis whose literature_support is empty is treated as ungrounded, no crash."""
+        hyp = self._hyp("H", [])  # empty literature_support
+        out = synthesis.format_literature_evidence([hyp])
+        # Only-ungrounded → calibration note, not a crash, no fabricated abstracts.
+        assert "Literature Evidence" in out
+        assert "not that the hypotheses are unsupported" in out.lower()
+
+    def test_grounded_and_ungrounded_legibility_marker(self):
+        """A mix of grounded + ungrounded hypotheses renders a signal so ungrounded reads as
+        'not grounded', not 'unsupported'."""
+        grounded = self._hyp("Grounded one", [self._lit(abstract="Evidence body.")])
+        ungrounded = self._hyp("Ungrounded one", [])
+        out = synthesis.format_literature_evidence([grounded, ungrounded])
+        assert "Grounded one" in out and "✓ literature-grounded" in out
+        assert "Ungrounded one" in out
+        assert "not a sign of weakness" in out
+
+    def test_calibration_grounded_is_not_verified(self):
+        """The section states 'grounded' means fetched, not verified (trust calibration)."""
+        out = synthesis.format_literature_evidence([self._hyp("H", [self._lit(abstract="x")])])
+        assert "does NOT mean the claim is verified" in out
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
