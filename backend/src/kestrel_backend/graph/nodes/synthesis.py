@@ -622,8 +622,12 @@ def format_study_context(state: DiscoveryState) -> str:
     return "\n".join(lines)
 
 
-# Caps for rendering grounded literature into the synthesis context (R5). Mirror the Spike-0 budget
-# (max_papers_per_hyp=4, max_abstract_chars=1500) and keep the whole section well under max_buffer_size.
+# Caps for rendering grounded literature into the synthesis context (R5). Based on the Spike-0 budget
+# (max_papers_per_hyp=4, max_abstract_chars=1500) and kept well under max_buffer_size.
+# NOTE: this is a DISPLAY cap, deliberately >= LiteratureGroundingConfig.papers_per_hypothesis
+# (default 3) so the renderer never hides papers that grounding actually attached. Under the default
+# config a hypothesis carries <= 3 entries, so the slice and the "+N more papers" path only activate
+# if that grounding config value is raised above 4 — intentional operator headroom, not dead code.
 MAX_LIT_PAPERS_PER_HYPOTHESIS = 4
 MAX_LIT_ABSTRACT_CHARS = 1500
 

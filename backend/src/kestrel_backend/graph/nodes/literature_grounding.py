@@ -9,7 +9,10 @@ Parallel multi-source approach:
 Note: S2 uses an internal semaphore (limit=1) and 10s delay between requests,
 so it naturally throttles itself even when called in parallel with other sources.
 
-Position in pipeline: Runs after synthesis, before final output.
+Position in pipeline (ground-before-synthesis): runs AFTER hypothesis_extraction and
+bridge_grounding and BEFORE synthesis, so synthesis can reason over the grounded
+abstracts. It is report-agnostic — it outputs grounded hypotheses + literature_errors
+only; synthesis owns the report and references table.
 """
 
 import asyncio
