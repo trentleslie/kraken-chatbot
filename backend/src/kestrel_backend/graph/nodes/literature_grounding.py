@@ -1146,108 +1146,120 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             "literature_errors": [],
         }
 
-    # Step 1: Collect KG PMIDs from findings
-    kg_pmids = collect_pmids_from_state(state)
+    # R13 failure boundary: grounding now runs UPSTREAM of synthesis, and main.py converts any
+    # uncaught node exception into PIPELINE_ERROR with no report. Per-source searches are already
+    # guarded (return_exceptions=True) and backfill_abstracts has internal guards, so typical
+    # failures degrade — but an unguarded path (e.g. an EFetch/contract edge) would propagate and
+    # abort the run before synthesis ever produces a report. Wrap the whole body so a crash
+    # degrades to a no-op return (pass the ungrounded hypotheses through) and the graph still
+    # reaches synthesis. Pairs with LiteratureGroundingInput.hypotheses being Optional (Unit 1) so
+    # the node's INPUT validation also can't abort.
+    try:
+        # Step 1: Collect KG PMIDs from findings
+        kg_pmids = collect_pmids_from_state(state)
 
-    # Extract disease focus to anchor search queries
-    # disease_focus is nested inside study_context dict from intake node
-    study_context = state.get("study_context", {})
-    disease_focus = study_context.get("disease_focus", "") if isinstance(study_context, dict) else ""
-    if disease_focus:
-        logger.info("Using disease context for queries: %s", disease_focus)
+        # Extract disease focus to anchor search queries
+        # disease_focus is nested inside study_context dict from intake node
+        study_context = state.get("study_context", {})
+        disease_focus = study_context.get("disease_focus", "") if isinstance(study_context, dict) else ""
+        if disease_focus:
+            logger.info("Using disease context for queries: %s", disease_focus)
 
-    # Build CURIE -> name mapping from resolved_entities for query enhancement
-    entity_names: dict[str, str] = {}
-    for resolution in state.get("resolved_entities", []):
-        if resolution.curie and resolution.resolved_name:
-            entity_names[resolution.curie] = resolution.resolved_name
-    logger.info("Entity name mapping: %d CURIEs available for query enhancement", len(entity_names))
+        # Build CURIE -> name mapping from resolved_entities for query enhancement
+        entity_names: dict[str, str] = {}
+        for resolution in state.get("resolved_entities", []):
+            if resolution.curie and resolution.resolved_name:
+                entity_names[resolution.curie] = resolution.resolved_name
+        logger.info("Entity name mapping: %d CURIEs available for query enhancement", len(entity_names))
 
-    # Prioritize hypotheses by tier
-    sorted_hypotheses = sorted(hypotheses, key=lambda h: h.tier)
-    to_ground = sorted_hypotheses[:_config.max_hypotheses]
-    remaining = sorted_hypotheses[_config.max_hypotheses:]
+        # Prioritize hypotheses by tier
+        sorted_hypotheses = sorted(hypotheses, key=lambda h: h.tier)
+        to_ground = sorted_hypotheses[:_config.max_hypotheses]
+        remaining = sorted_hypotheses[_config.max_hypotheses:]
 
-    logger.info(
-        "Grounding %d/%d hypotheses (tiers: %s)",
-        len(to_ground), len(hypotheses),
-        [h.tier for h in to_ground[:10]]
-    )
-
-    # Step 2: Process each hypothesis
-    all_errors: list[str] = []
-    grounded: list[Hypothesis] = []
-
-    # Track raw paper counts before deduplication for diagnostic logging
-    raw_paper_counts = {"kg": 0, "pubmed": 0, "openalex": 0, "exa": 0, "s2": 0}
-
-    for hypothesis in to_ground:
-        # Try KG PMIDs first (free, instant)
-        updated, has_kg = ground_hypothesis_kg(hypothesis, kg_pmids)
-        if has_kg:
-            grounded.append(updated)
-            raw_paper_counts["kg"] += len(updated.literature_support)
-            continue
-
-        # Parallel search: OpenAlex + Exa + PubMed + S2
-        literature, errors, raw_counts = await parallel_search_hypothesis(
-            hypothesis, disease_context=disease_focus, entity_names=entity_names
+        logger.info(
+            "Grounding %d/%d hypotheses (tiers: %s)",
+            len(to_ground), len(hypotheses),
+            [h.tier for h in to_ground[:10]]
         )
-        all_errors.extend(errors)
 
-        # Accumulate raw counts for diagnostic logging
-        for source, count in raw_counts.items():
-            raw_paper_counts[source] += count
+        # Step 2: Process each hypothesis
+        all_errors: list[str] = []
+        grounded: list[Hypothesis] = []
 
-        if literature:
-            updated = hypothesis.model_copy(update={"literature_support": literature})
-        else:
-            updated = hypothesis
+        # Track raw paper counts before deduplication for diagnostic logging
+        raw_paper_counts = {"kg": 0, "pubmed": 0, "openalex": 0, "exa": 0, "s2": 0}
 
-        grounded.append(updated)
+        for hypothesis in to_ground:
+            # Try KG PMIDs first (free, instant)
+            updated, has_kg = ground_hypothesis_kg(hypothesis, kg_pmids)
+            if has_kg:
+                grounded.append(updated)
+                raw_paper_counts["kg"] += len(updated.literature_support)
+                continue
 
-    # Add ungrounded hypotheses
-    grounded.extend(remaining)
+            # Parallel search: OpenAlex + Exa + PubMed + S2
+            literature, errors, raw_counts = await parallel_search_hypothesis(
+                hypothesis, disease_context=disease_focus, entity_names=entity_names
+            )
+            all_errors.extend(errors)
 
-    # Backfill abstract bodies for PMID-bearing papers that lack one (S2 already
-    # carries its abstract inline; this fills kg/pubmed entries via EFetch). Idempotent
-    # and best-effort — failures leave entries unchanged.
-    grounded, abstracts_filled = await backfill_abstracts(grounded)
-    if abstracts_filled:
-        logger.info("Abstract backfill: filled %d literature entries via EFetch", abstracts_filled)
+            # Accumulate raw counts for diagnostic logging
+            for source, count in raw_counts.items():
+                raw_paper_counts[source] += count
 
-    # Count papers found by source (after deduplication)
-    papers_found = sum(len(h.literature_support) for h in grounded)
-    kg_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "kg")
-    pubmed_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "pubmed")
-    openalex_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "openalex")
-    exa_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "exa")
-    s2_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "s2")
+            if literature:
+                updated = hypothesis.model_copy(update={"literature_support": literature})
+            else:
+                updated = hypothesis
 
-    duration = time.time() - start
-    # Log both final counts and raw counts (before deduplication) for diagnostics
-    # Raw counts show what each source found; final counts show what survived deduplication
-    logger.info(
-        "Completed literature_grounding in %.1fs — %d hypotheses, %d papers "
-        "(kg=%d, pubmed=%d [raw=%d], openalex=%d [raw=%d], exa=%d [raw=%d], s2=%d [raw=%d])",
-        duration, len(grounded), papers_found,
-        kg_papers,
-        pubmed_papers, raw_paper_counts["pubmed"],
-        openalex_papers, raw_paper_counts["openalex"],
-        exa_papers, raw_paper_counts["exa"],
-        s2_papers, raw_paper_counts["s2"]
-    )
+            grounded.append(updated)
 
-    # Build literature references table
-    references_table = build_references_table(grounded)
+        # Add ungrounded hypotheses
+        grounded.extend(remaining)
 
-    # Append to synthesis report if exists
-    synthesis_report = state.get("synthesis_report", "")
-    if references_table:
-        synthesis_report = synthesis_report + "\n" + references_table
+        # Backfill abstract bodies for PMID-bearing papers that lack one (S2 already
+        # carries its abstract inline; this fills kg/pubmed entries via EFetch). Idempotent
+        # and best-effort — failures leave entries unchanged.
+        grounded, abstracts_filled = await backfill_abstracts(grounded)
+        if abstracts_filled:
+            logger.info("Abstract backfill: filled %d literature entries via EFetch", abstracts_filled)
 
+        # Count papers found by source (after deduplication)
+        papers_found = sum(len(h.literature_support) for h in grounded)
+        kg_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "kg")
+        pubmed_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "pubmed")
+        openalex_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "openalex")
+        exa_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "exa")
+        s2_papers = sum(1 for h in grounded for lit in h.literature_support if lit.source == "s2")
+
+        duration = time.time() - start
+        # Log both final counts and raw counts (before deduplication) for diagnostics
+        # Raw counts show what each source found; final counts show what survived deduplication
+        logger.info(
+            "Completed literature_grounding in %.1fs — %d hypotheses, %d papers "
+            "(kg=%d, pubmed=%d [raw=%d], openalex=%d [raw=%d], exa=%d [raw=%d], s2=%d [raw=%d])",
+            duration, len(grounded), papers_found,
+            kg_papers,
+            pubmed_papers, raw_paper_counts["pubmed"],
+            openalex_papers, raw_paper_counts["openalex"],
+            exa_papers, raw_paper_counts["exa"],
+            s2_papers, raw_paper_counts["s2"]
+        )
+    except Exception as e:
+        # Degrade, never block: pass ungrounded hypotheses through so synthesis still runs.
+        # The references table is assembled by synthesis now (Unit 4), not here, so grounding's
+        # only outputs are the (possibly ungrounded) hypotheses and the surfaced error.
+        logger.warning("literature_grounding degraded after exception: %s", e)
+        return {
+            "hypotheses": state.get("hypotheses", []),
+            "literature_errors": [f"grounding failed: {e}"],
+        }
+
+    # Grounding is report-agnostic now: it no longer reads or appends synthesis_report and no
+    # longer builds the references table (synthesis owns that, from the grounded hypotheses in
+    # state — Unit 4). build_references_table stays defined in this module for synthesis to import.
     return {
         "hypotheses": grounded,
         "literature_errors": all_errors,
-        "synthesis_report": synthesis_report,
     }

@@ -22,11 +22,12 @@ from src.kestrel_backend.graph.builder import (
 from src.kestrel_backend.graph.state import (
     DiscoveryState, EntityResolution, NoveltyScore, Finding,
     DiseaseAssociation, PathwayMembership, InferredAssociation, AnalogueEntity,
-    SharedNeighbor, BiologicalTheme, Bridge, GapEntity, TemporalClassification, Hypothesis
+    SharedNeighbor, BiologicalTheme, Bridge, GapEntity, TemporalClassification, Hypothesis,
+    LiteratureSupport,
 )
 from src.kestrel_backend.graph.nodes import (
     intake, entity_resolution, triage, direct_kg, cold_start,
-    pathway_enrichment, integration, temporal, synthesis
+    pathway_enrichment, integration, temporal, hypothesis_extraction, synthesis
 )
 
 
@@ -1561,19 +1562,20 @@ class TestIntegrationRouting:
         result = route_after_integration(state)
         assert result == "temporal"
 
-    def test_route_to_synthesis_for_non_longitudinal(self):
-        """Non-longitudinal studies should skip temporal and route to synthesis."""
+    def test_route_to_hypothesis_extraction_for_non_longitudinal(self):
+        """Non-longitudinal studies should skip temporal and route to hypothesis_extraction
+        (ground-before-synthesis: hypotheses are extracted+grounded before synthesis)."""
         state: DiscoveryState = {
             "is_longitudinal": False,
         }
         result = route_after_integration(state)
-        assert result == "synthesis"
+        assert result == "hypothesis_extraction"
 
-    def test_route_to_synthesis_when_flag_missing(self):
-        """Missing is_longitudinal flag should default to synthesis."""
+    def test_route_to_hypothesis_extraction_when_flag_missing(self):
+        """Missing is_longitudinal flag should default to hypothesis_extraction."""
         state: DiscoveryState = {}
         result = route_after_integration(state)
-        assert result == "synthesis"
+        assert result == "hypothesis_extraction"
 
 
 # =============================================================================
@@ -1689,8 +1691,9 @@ class TestEndToEndPhase4b:
     """End-to-end tests for Phase 4b complete graph."""
 
     @pytest.mark.asyncio
-    async def test_graph_has_expected_nodes(self):
-        """Graph should contain all analysis nodes including bridge_grounding (added in L3)."""
+    async def test_graph_has_all_expected_nodes(self):
+        """Graph should have all 12 analysis nodes (ground-before-synthesis + bridge_grounding
+        evidence-provenance labeler) plus __start__."""
         graph = build_discovery_graph()
         node_names = list(graph.nodes.keys())
 
@@ -1704,14 +1707,16 @@ class TestEndToEndPhase4b:
             "integration",
             "bridge_grounding",
             "temporal",
+            "hypothesis_extraction",
+            "literature_grounding",
             "synthesis",
         ]
 
         for node in expected_nodes:
             assert node in node_names, f"Missing node: {node}"
 
-        # 11 real nodes (10 + bridge_grounding) + __start__ = 12 as reported by the compiled graph.
-        assert len(node_names) == 12, f"Expected 12 nodes, got {len(node_names)}: {node_names}"
+        # 12 analysis nodes (incl. bridge_grounding + hypothesis_extraction) + __start__
+        assert len(node_names) == 13, f"Expected 13 nodes (12 + __start__), got {len(node_names)}: {node_names}"
 
     @pytest.mark.asyncio
     async def test_full_pipeline_non_longitudinal(self):
@@ -1900,16 +1905,19 @@ class TestSynthesisPhase5:
     """Tests for Phase 5 synthesis node with hypothesis generation."""
 
     @pytest.mark.asyncio
-    async def test_synthesis_returns_hypotheses(self):
-        """Synthesis node should return hypotheses list."""
+    async def test_hypothesis_extraction_returns_hypotheses(self):
+        """hypothesis_extraction (not synthesis) returns the hypotheses list now."""
         state: DiscoveryState = {
             "raw_query": "Analyze glucose",
             "query_type": "discovery",
             "resolved_entities": [],
+            # direct_findings satisfies the OR-gate; it is not read by extract_hypotheses.
+            "direct_findings": [Finding(entity="CHEBI:17234", claim="glucose assoc", tier=1,
+                                        source="direct_kg", confidence="high")],
             "cold_start_findings": [],
             "bridges": [],
         }
-        result = await synthesis.run(state)
+        result = await hypothesis_extraction.run(state)
 
         assert "hypotheses" in result
         assert isinstance(result["hypotheses"], list)
@@ -1935,7 +1943,7 @@ class TestSynthesisPhase5:
             ],
             "bridges": [],
         }
-        result = await synthesis.run(state)
+        result = await hypothesis_extraction.run(state)
 
         hypotheses = result["hypotheses"]
         assert len(hypotheses) >= 1
@@ -1953,6 +1961,9 @@ class TestSynthesisPhase5:
             "raw_query": "Analyze bridge connections",
             "query_type": "discovery",
             "resolved_entities": [],
+            # direct_findings satisfies the OR-gate; bridges drive the hypothesis under test.
+            "direct_findings": [Finding(entity="CHEBI:123", claim="assoc", tier=1,
+                                        source="direct_kg", confidence="high")],
             "cold_start_findings": [],
             "bridges": [
                 Bridge(
@@ -1966,7 +1977,7 @@ class TestSynthesisPhase5:
                 ),
             ],
         }
-        result = await synthesis.run(state)
+        result = await hypothesis_extraction.run(state)
 
         hypotheses = result["hypotheses"]
         assert len(hypotheses) >= 1
@@ -2005,7 +2016,7 @@ class TestSynthesisPhase5:
                 ),
             ],
         }
-        result = await synthesis.run(state)
+        result = await hypothesis_extraction.run(state)
 
         hypotheses = result["hypotheses"]
         assert len(hypotheses) >= 2
@@ -2043,7 +2054,7 @@ class TestSynthesisPhase5:
                 ),
             ],
         }
-        result = await synthesis.run(state)
+        result = await hypothesis_extraction.run(state)
 
         hypotheses = result["hypotheses"]
         assert len(hypotheses) >= 2
@@ -2164,6 +2175,9 @@ class TestSynthesisPhase5:
             "raw_query": "Test inferred",
             "query_type": "discovery",
             "resolved_entities": [],
+            # direct_findings satisfies the OR-gate; inferred_associations drive the hypothesis.
+            "direct_findings": [Finding(entity="SPARSE:1", claim="assoc", tier=1,
+                                        source="direct_kg", confidence="high")],
             "cold_start_findings": [],
             "bridges": [],
             "inferred_associations": [
@@ -2179,7 +2193,7 @@ class TestSynthesisPhase5:
                 ),
             ],
         }
-        result = await synthesis.run(state)
+        result = await hypothesis_extraction.run(state)
 
         hypotheses = result["hypotheses"]
         assert len(hypotheses) >= 1
@@ -2209,7 +2223,7 @@ class TestExtractHypotheses:
             "bridges": [],
         }
 
-        hypotheses = synthesis.extract_hypotheses(state)
+        hypotheses = hypothesis_extraction.extract_hypotheses(state)
         assert len(hypotheses) == 0
 
     def test_skips_bridges_without_significance(self):
@@ -2227,7 +2241,7 @@ class TestExtractHypotheses:
             ],
         }
 
-        hypotheses = synthesis.extract_hypotheses(state)
+        hypotheses = hypothesis_extraction.extract_hypotheses(state)
         assert len(hypotheses) == 0
 
     def test_only_tier3_from_cold_start(self):
@@ -2253,7 +2267,7 @@ class TestExtractHypotheses:
             "bridges": [],
         }
 
-        hypotheses = synthesis.extract_hypotheses(state)
+        hypotheses = hypothesis_extraction.extract_hypotheses(state)
         # Should only have the Tier 3 finding
         assert len(hypotheses) == 1
         assert hypotheses[0].tier == 3
@@ -2369,6 +2383,116 @@ class TestEndToEndPhase5:
         assert len(merged) == 2
         assert merged[0].title == "Hypothesis 1"
         assert merged[1].title == "Hypothesis 2"
+
+
+class TestSynthesisReportOnly:
+    """Unit 4 — synthesis is report-only: reads grounded hypotheses + validated bridges from
+    state, owns the references table (both SDK and fallback paths), and returns only the report."""
+
+    @staticmethod
+    def _grounded_state():
+        lit = LiteratureSupport(
+            paper_id="p1", title="Urolithin Neuroprotection Study", authors="Smith et al.",
+            year=2024, doi="10.1234/uro", relevance_score=0.9, relationship="supporting",
+            key_passage="Urolithin B reduces neuroinflammation", citation_count=42,
+        )
+        hyp = Hypothesis(
+            title="Inferred role of urolithin B", tier=3, claim="urolithin B is neuroprotective",
+            supporting_entities=["CHEBI:1"], structural_logic="analogue inference",
+            validation_steps=["validate in cohort"], literature_support=[lit],
+        )
+        return {
+            "raw_query": "neuroprotection",
+            "query_type": "discovery",
+            "direct_findings": [Finding(entity="X", claim="x assoc", tier=1,
+                                        source="direct_kg", confidence="high")],
+            "cold_start_findings": [],
+            "bridges": [],
+            "hypotheses": [hyp],
+        }
+
+    @pytest.mark.asyncio
+    async def test_return_is_report_only(self):
+        """Return dict carries no `hypotheses` or `bridges` keys (owned upstream now)."""
+        with patch.object(synthesis, "HAS_SDK", False):
+            result = await synthesis.run(self._grounded_state())
+        assert set(result.keys()) == {"synthesis_report", "model_usages"}
+        assert "hypotheses" not in result
+        assert "bridges" not in result
+
+    @pytest.mark.asyncio
+    async def test_references_table_in_fallback_path(self):
+        """R6 highest-risk regression: the fallback_report path must still emit the references table."""
+        with patch.object(synthesis, "HAS_SDK", False):
+            result = await synthesis.run(self._grounded_state())
+        report = result["synthesis_report"]
+        assert "Urolithin Neuroprotection Study" in report
+
+    @pytest.mark.asyncio
+    async def test_references_table_in_sdk_path(self):
+        """R6: the SDK-success path also appends the references table after the LLM report body."""
+        async def fake_query(prompt, options, node_name):
+            return ("# LLM Report\n\nGenerated body.", None)
+
+        with patch.object(synthesis, "HAS_SDK", True), \
+                patch.object(synthesis, "query_with_usage", fake_query):
+            result = await synthesis.run(self._grounded_state())
+        report = result["synthesis_report"]
+        assert "# LLM Report" in report
+        assert "Urolithin Neuroprotection Study" in report
+
+    @pytest.mark.asyncio
+    async def test_empty_hypotheses_no_crash_no_table(self):
+        """Empty hypotheses → report still produced, no references table, no crash."""
+        state = self._grounded_state()
+        state["hypotheses"] = []
+        with patch.object(synthesis, "HAS_SDK", False):
+            result = await synthesis.run(state)
+        assert result["synthesis_report"]  # non-empty report
+        assert "Urolithin Neuroprotection Study" not in result["synthesis_report"]
+
+
+class TestGroundBeforeSynthesisTopology:
+    """Unit 5 (+ merged bridge_grounding) — pre-synthesis chain is
+    hypothesis_extraction -> bridge_grounding -> literature_grounding -> synthesis."""
+
+    def test_graph_has_all_nodes_including_hypothesis_extraction(self):
+        graph = build_discovery_graph()
+        node_names = [n for n in graph.nodes.keys() if n != "__start__"]
+        assert "hypothesis_extraction" in node_names
+        assert "bridge_grounding" in node_names
+        # 12 analysis nodes + __start__ in the raw dict.
+        assert len(graph.nodes.keys()) == 13, f"got {len(graph.nodes.keys())}: {list(graph.nodes.keys())}"
+
+    def test_new_edges_present_old_edges_gone(self):
+        graph = build_discovery_graph()
+        edges = {(e.source, e.target) for e in graph.get_graph().edges}
+        # Ground-before-synthesis + bridge-provenance chain, all before synthesis
+        assert ("temporal", "hypothesis_extraction") in edges
+        assert ("integration", "hypothesis_extraction") in edges  # non-longitudinal branch
+        assert ("hypothesis_extraction", "bridge_grounding") in edges
+        assert ("bridge_grounding", "literature_grounding") in edges
+        assert ("literature_grounding", "synthesis") in edges
+        assert ("synthesis", "__end__") in edges
+        # Old topology removed
+        assert ("synthesis", "literature_grounding") not in edges
+        assert ("literature_grounding", "__end__") not in edges
+        assert ("temporal", "synthesis") not in edges
+        # dev's pre-merge bridge_grounding wiring (bridge_grounding straight to synthesis) is gone
+        assert ("bridge_grounding", "synthesis") not in edges
+        assert ("hypothesis_extraction", "literature_grounding") not in edges
+
+    def test_route_after_integration_targets_hypothesis_extraction(self):
+        assert route_after_integration({"is_longitudinal": False}) == "hypothesis_extraction"
+        assert route_after_integration({"is_longitudinal": True}) == "temporal"
+
+    def test_total_nodes_matches_status_messages(self):
+        """Progress total must equal the registered status messages (guards the N/N-1 off-by-one)."""
+        from src.kestrel_backend.protocol import NODE_STATUS_MESSAGES, PipelineProgressMessage
+        assert "hypothesis_extraction" in NODE_STATUS_MESSAGES
+        assert "bridge_grounding" in NODE_STATUS_MESSAGES
+        assert PipelineProgressMessage.model_fields["total_nodes"].default == len(NODE_STATUS_MESSAGES)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

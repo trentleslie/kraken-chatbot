@@ -7,11 +7,11 @@ Architecture:
 - Phase A: assemble_synthesis_context() - gather all state into context block
 - Phase B: LLM query() call for natural language discovery report (if SDK available)
 - Fallback: fallback_report() - structured markdown sections (current logic)
-- Hypothesis Extraction: extract_hypotheses() - build Hypothesis objects from state
 
-The ~18% validation gap calibration is applied to all Tier 3 hypotheses, based on
-systematic review data showing that approximately 18% of computational predictions
-progress to clinical investigation.
+Hypotheses are no longer produced here: hypothesis_extraction.run() builds them upstream
+and literature_grounding.run() grounds them, both before synthesis. Synthesis reads the
+already-validated `bridges` and grounded `hypotheses` from state (Unit 2 of the
+ground-before-synthesis reorg).
 """
 
 import logging
@@ -21,18 +21,16 @@ from ..state import (
     DiscoveryState, EntityResolution, NoveltyScore, Finding,
     DiseaseAssociation, PathwayMembership, InferredAssociation, AnalogueEntity,
     SharedNeighbor, BiologicalTheme, Bridge, GapEntity, TemporalClassification,
-    Hypothesis
 )
 from ...literature_utils import format_pmid_link
-from ...kestrel_client import multi_hop_query, parse_kestrel_response
 from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
 from ..state_contracts import validate_state, SynthesisInput, SynthesisOutput
+# References-table assembly lives with grounding's module but is OWNED by synthesis now (R6):
+# synthesis appends it from the grounded hypotheses in state. (literature_grounding does not
+# import synthesis, so this one-way import introduces no cycle.)
+from .literature_grounding import build_references_table
 
 logger = logging.getLogger(__name__)
-
-
-# Validation gap calibration constant
-VALIDATION_GAP_NOTE = "~18% of computational predictions reach clinical investigation (systematic review calibration)"
 
 
 # =============================================================================
@@ -856,197 +854,21 @@ def fallback_report(state: DiscoveryState) -> str:
     return "\n".join(report_lines)
 
 
-async def validate_bridge_hypotheses(bridges: list[Bridge]) -> list[Bridge]:
-    """
-    Validate Tier 3 bridge hypotheses using doubly-pinned multi_hop_query.
-
-    For each Tier 3 bridge, attempt to verify the path exists in the KG.
-    If verified, upgrade to Tier 2. If not verified, keep as Tier 3.
-
-    Args:
-        bridges: List of Bridge objects to validate
-
-    Returns:
-        Updated list of bridges with validated ones upgraded to Tier 2
-    """
-    if not bridges:
-        return bridges
-
-    validated_bridges: list[Bridge] = []
-    tier3_bridges = [b for b in bridges if b.tier == 3]
-    other_bridges = [b for b in bridges if b.tier != 3]
-
-    logger.info("validate_bridge_hypotheses: validating %d Tier 3 bridges", len(tier3_bridges))
-
-    for bridge in tier3_bridges:
-        if len(bridge.entities) < 2:
-            # Can't validate without start/end
-            validated_bridges.append(bridge)
-            continue
-
-        start_curie = bridge.entities[0]
-        end_curie = bridge.entities[-1]
-
-        try:
-            # Use doubly-pinned search with max_hops based on path length
-            expected_hops = len(bridge.entities) - 1
-            result = await multi_hop_query(
-                start_node_ids=[start_curie],
-                end_node_ids=[end_curie],
-                max_hops=min(expected_hops + 1, 5),  # Allow 1 extra hop, cap at 5
-                limit=1,  # We just need to know if ANY path exists
-            )
-
-            if result.get("isError"):
-                # Validation failed, keep as Tier 3
-                validated_bridges.append(bridge)
-                continue
-
-            # Check if we got any paths back. Use the shared helper — the real response is
-            # {"results":[{"paths":[[curie,...]]}], ...} with NO top-level "paths" key. The old
-            # data.get("paths", data) fell back to the whole dict (always truthy) and upgraded
-            # EVERY bridge to Tier 2 on garbage; the helper returns n_paths=0 on a no-path result.
-            parsed = parse_kestrel_response(result)
-
-            if parsed["n_paths"] > 0:
-                # Path verified! Upgrade to Tier 2
-                logger.info(
-                    "validate_bridge_hypotheses: VALIDATED %s -> %s, upgrading to Tier 2",
-                    start_curie, end_curie
-                )
-                validated_bridges.append(Bridge(
-                    path_description=bridge.path_description,
-                    entities=bridge.entities,
-                    entity_names=bridge.entity_names,
-                    predicates=bridge.predicates,
-                    tier=2,  # UPGRADED
-                    novelty="known",  # Now verified in KG
-                    significance=bridge.significance + " [KG-validated]",
-                ))
-            else:
-                # No path found, keep as Tier 3
-                validated_bridges.append(bridge)
-
-        except Exception as e:
-            logger.warning("Error validating bridge %s -> %s: %s", start_curie, end_curie, str(e))
-            # Keep as Tier 3 on error
-            validated_bridges.append(bridge)
-
-    # Combine validated bridges with other tiers
-    all_bridges = other_bridges + validated_bridges
-    logger.info(
-        "validate_bridge_hypotheses: %d bridges after validation (%d upgraded to Tier 2)",
-        len(all_bridges),
-        sum(1 for b in validated_bridges if b.tier == 2)
-    )
-
-    return all_bridges
-
-
-def extract_hypotheses(state: DiscoveryState) -> list[Hypothesis]:
-    """
-    Extract structured Hypothesis objects from accumulated state.
-    
-    Builds hypotheses programmatically from:
-    - cold_start_findings (Tier 3 inferences)
-    - bridges (Tier 2-3 cross-type connections)
-    
-    All hypotheses include the ~18% validation gap note.
-    """
-    hypotheses: list[Hypothesis] = []
-    
-    # From cold-start findings (Tier 3 inferences)
-    cold_start_findings = state.get("cold_start_findings", [])
-    for finding in cold_start_findings:
-        # Skip placeholder or pending findings
-        if not finding.claim or "pending" in finding.claim.lower():
-            continue
-        
-        # Only process Tier 3 findings (speculative)
-        if finding.tier == 3:
-            hypotheses.append(Hypothesis(
-                title=f"Inferred role of {finding.entity}",
-                tier=3,
-                claim=finding.claim,
-                supporting_entities=[finding.entity],
-                contradicting_entities=[],
-                structural_logic=finding.logic_chain or "Based on analogue inference",
-                confidence=finding.confidence,
-                validation_steps=[
-                    f"Search literature for {finding.entity} associations",
-                    f"Validate in independent cohort",
-                ],
-                validation_gap_note=VALIDATION_GAP_NOTE,
-            ))
-    
-    # From cross-type bridges
-    bridges = state.get("bridges", [])
-    for bridge in bridges:
-        if not isinstance(bridge, Bridge):
-            continue
-        
-        # Only create hypothesis if bridge has significance
-        if not bridge.significance:
-            continue
-        
-        # Build the logic chain from path
-        if bridge.entity_names and bridge.predicates:
-            logic = f"{' -> '.join(bridge.entity_names)} via {', '.join(bridge.predicates)}"
-        else:
-            logic = bridge.path_description
-        
-        # Get target entity name for validation step
-        target_name = bridge.entity_names[-1] if bridge.entity_names else "target"
-        
-        hypotheses.append(Hypothesis(
-            title=f"Bridge: {bridge.path_description}",
-            tier=bridge.tier,
-            claim=bridge.significance,
-            supporting_entities=bridge.entities,
-            contradicting_entities=[],
-            structural_logic=logic,
-            confidence="moderate",
-            validation_steps=[
-                f"Verify path in literature",
-                f"Check {target_name} in GWAS Catalog",
-            ],
-            validation_gap_note=VALIDATION_GAP_NOTE,
-        ))
-    
-    # From inferred associations (cold-start analogues)
-    inferred_associations = state.get("inferred_associations", [])
-    for inference in inferred_associations:
-        if not isinstance(inference, InferredAssociation):
-            continue
-        
-        hypotheses.append(Hypothesis(
-            title=f"Inferred: {inference.source_entity} -> {inference.target_name}",
-            tier=3,
-            claim=f"{inference.source_entity} may be associated with {inference.target_name} via {inference.predicate}",
-            supporting_entities=[inference.source_entity, inference.target_curie],
-            contradicting_entities=[],
-            structural_logic=inference.logic_chain,
-            confidence=inference.confidence,
-            validation_steps=[inference.validation_step],
-            validation_gap_note=VALIDATION_GAP_NOTE,
-        ))
-    
-    return hypotheses
-
-
 @validate_state(SynthesisInput, SynthesisOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
-    Generate a synthesis report and extract hypotheses from all analysis phases.
+    Generate the final synthesis report from all analysis phases.
 
-    Phase 5 architecture:
+    Reads the already-validated `bridges` and the grounded `hypotheses` from state (produced
+    upstream by hypothesis_extraction and literature_grounding) and renders the report:
     - Phase A: Assemble all state into context block
     - Phase B: LLM synthesis (if SDK available) or fallback report
-    - Hypothesis extraction: Build structured Hypothesis objects from state
+    - R6: append the references table (built from the grounded hypotheses) to both paths
 
     Returns:
-        synthesis_report: Formatted markdown report
-        hypotheses: List of Hypothesis objects with validation steps and gap calibration
+        synthesis_report: Formatted markdown report (the only domain output — hypotheses and
+            bridges are owned upstream and are NOT re-emitted here)
+        model_usages: SDK usage record(s) for cost tracking, if any
     """
     # Count input findings
     direct_findings = state.get("direct_findings", [])
@@ -1055,16 +877,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     logger.info("Starting synthesis with %d findings", total_findings)
     start = time.time()
 
-    # Phase A: Validate bridge hypotheses
+    # Bridges are already validated and hypotheses already produced upstream by the
+    # hypothesis_extraction node (and grounded by literature_grounding); synthesis reads them
+    # from state rather than recomputing — no validation happens here anymore.
     bridges = state.get("bridges", [])
-    validated_bridges = await validate_bridge_hypotheses(bridges)
-
-    # Update state with validated bridges for context assembly
-    state_with_validated = dict(state)
-    state_with_validated["bridges"] = validated_bridges
 
     # Phase B: Assemble context (always done)
-    context = assemble_synthesis_context(state_with_validated)
+    context = assemble_synthesis_context(state)
 
     # Phase C: LLM synthesis or fallback
     usage_record = None
@@ -1092,20 +911,28 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             # Could log error here if needed
     else:
         report = fallback_report(state)
-    
-    # Extract structured hypotheses (always, from state not LLM output)
-    # Use the validated bridges for hypothesis generation
-    hypotheses = extract_hypotheses(state_with_validated)
+
+    # Hypotheses are produced upstream (hypothesis_extraction) and grounded by
+    # literature_grounding; read them from state.
+    hypotheses = state.get("hypotheses", [])
+
+    # R6: synthesis owns the references table now (grounding stopped appending it in Unit 3).
+    # Append it AFTER the SDK/fallback convergence point so BOTH the LLM-success path and the
+    # fallback_report path emit it — the fallback omission was the highest-risk silent regression.
+    references_table = build_references_table(hypotheses)
+    if references_table:
+        report = report + "\n" + references_table
 
     duration = time.time() - start
     logger.info(
-        "Completed synthesis in %.1fs — hypotheses=%d, report_length=%d, validated_bridges=%d",
-        duration, len(hypotheses), len(report), len(validated_bridges)
+        "Completed synthesis in %.1fs — hypotheses=%d, report_length=%d, bridges=%d",
+        duration, len(hypotheses), len(report), len(bridges)
     )
 
+    # Report-only return (R4/R12): hypotheses and bridges are produced/owned upstream now, so
+    # synthesis must NOT re-emit them. extra='ignore' on SynthesisOutput would silently let a
+    # stray `bridges` return through, so it is removed deliberately, not relied on to be dropped.
     return {
         "synthesis_report": report,
-        "hypotheses": hypotheses,
-        "bridges": validated_bridges,  # Return validated bridges
         "model_usages": [usage_record] if usage_record else [],
     }

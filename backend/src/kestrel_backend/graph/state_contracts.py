@@ -149,8 +149,46 @@ class TemporalInput(_ContractBase):
     cold_start_findings: list[Any] | None = None
 
 
+class HypothesisExtractionInput(_ContractBase):
+    """Hypothesis extraction validates bridges then extracts hypotheses.
+
+    Mirrors IntegrationInput's OR-semantics: this is a cheap "the pipeline reached the
+    findings stage" precondition, NOT a guarantee the node produces hypotheses.
+    extract_hypotheses reads cold_start_findings, bridges, and inferred_associations — it
+    never reads direct_findings — so a well-characterized-only run (direct_findings
+    populated, cold_start empty) passes this gate yet legitimately yields hypotheses: [].
+    Empty hypotheses is a valid output, not a contract failure; the gate exists only to
+    reject a genuinely empty pipeline.
+    """
+    resolved_entities: list[Any] | None = None
+    direct_findings: list[Any] | None = None
+    cold_start_findings: list[Any] | None = None
+    disease_associations: list[Any] | None = None
+    pathway_memberships: list[Any] | None = None
+    inferred_associations: list[Any] | None = None
+    biological_themes: list[Any] | None = None
+    bridges: list[Any] | None = None
+    raw_query: str | None = None
+
+    @model_validator(mode="after")
+    def at_least_one_findings_branch(self) -> "HypothesisExtractionInput":
+        direct = self.direct_findings or []
+        cold = self.cold_start_findings or []
+        if not direct and not cold:
+            raise ValueError(
+                "HypothesisExtractionInput requires at least one of direct_findings or "
+                "cold_start_findings to be non-empty. Both are empty/None — "
+                "this suggests neither direct_kg nor cold_start produced results."
+            )
+        return self
+
+
 class SynthesisInput(_ContractBase):
-    """Synthesis reads all accumulated state. Path-conditional fields are Optional."""
+    """Synthesis reads all accumulated state. Path-conditional fields are Optional.
+
+    `hypotheses` is now an available (Optional) input — it is produced upstream by
+    hypothesis_extraction and grounded by literature_grounding before synthesis reads it.
+    """
     resolved_entities: list[Any] | None = None
     novelty_scores: list[Any] | None = None
     direct_findings: list[Any] | None = None
@@ -162,6 +200,7 @@ class SynthesisInput(_ContractBase):
     shared_neighbors: list[Any] | None = None
     biological_themes: list[Any] | None = None
     bridges: list[Any] | None = None
+    hypotheses: list[Any] | None = None
     gap_entities: list[Any] | None = None
     temporal_classifications: list[Any] | None = None
 
@@ -179,8 +218,13 @@ class SynthesisInput(_ContractBase):
 
 
 class LiteratureGroundingInput(_ContractBase):
-    """Literature grounding reads hypotheses from synthesis."""
-    hypotheses: list[Any]
+    """Literature grounding reads hypotheses from hypothesis_extraction.
+
+    `hypotheses` is Optional (load-bearing for R13): in the new topology grounding runs
+    upstream of synthesis, so a missing/empty `hypotheses` key must degrade to grounding's
+    existing empty-list no-op rather than raising StateValidationError at the node's input.
+    """
+    hypotheses: list[Any] | None = None
 
 
 class BridgeGroundingInput(_ContractBase):
@@ -238,15 +282,32 @@ class TemporalOutput(_ContractBase):
     temporal_classifications: list[Any] | None = None
 
 
-class SynthesisOutput(_ContractBase):
-    """Synthesis must produce synthesis_report and hypotheses."""
-    synthesis_report: str
+class HypothesisExtractionOutput(_ContractBase):
+    """Hypothesis extraction must produce the validated bridges and the extracted hypotheses.
+
+    Both are required outputs: `bridges` is re-emitted (now validated, last-write-wins) so
+    synthesis reads the validated list; `hypotheses` may legitimately be empty (well-char-only
+    run) but the key must be present so downstream grounding/synthesis read a defined value.
+    """
+    bridges: list[Any]
     hypotheses: list[Any]
+
+
+class SynthesisOutput(_ContractBase):
+    """Synthesis must produce synthesis_report. Hypotheses are produced upstream now
+    (hypothesis_extraction → literature_grounding), so synthesis no longer emits them."""
+    synthesis_report: str
 
 
 class LiteratureGroundingOutput(_ContractBase):
-    """Literature grounding must produce updated hypotheses."""
+    """Literature grounding produces grounded hypotheses and surfaces literature_errors.
+
+    `literature_errors` is a first-class declared field (not an extra='ignore' passthrough)
+    so a grounding failure is visible in the contract and survives the R13 degrade path.
+    Defaults to [] so a clean run still validates.
+    """
     hypotheses: list[Any]
+    literature_errors: list[Any] = []
 
 
 class BridgeGroundingOutput(_ContractBase):
@@ -273,6 +334,7 @@ NODE_CONTRACTS: dict[str, tuple[type[_ContractBase], type[_ContractBase]]] = {
     "pathway_enrichment": (PathwayEnrichmentInput, PathwayEnrichmentOutput),
     "integration": (IntegrationInput, IntegrationOutput),
     "temporal": (TemporalInput, TemporalOutput),
+    "hypothesis_extraction": (HypothesisExtractionInput, HypothesisExtractionOutput),
     "synthesis": (SynthesisInput, SynthesisOutput),
     "literature_grounding": (LiteratureGroundingInput, LiteratureGroundingOutput),
     "bridge_grounding": (BridgeGroundingInput, BridgeGroundingOutput),

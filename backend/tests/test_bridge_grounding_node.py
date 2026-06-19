@@ -128,13 +128,18 @@ async def test_per_bridge_error_isolation(monkeypatch):
 # --- graph wiring (both study-type paths) ----------------------------------------------
 
 def test_graph_routes_through_bridge_grounding_both_paths():
+    # After the ground-before-synthesis merge, bridge_grounding no longer joins synthesis directly;
+    # it sits in the pre-synthesis chain that both study types converge on via hypothesis_extraction:
+    #   integration/temporal -> hypothesis_extraction -> bridge_grounding -> literature_grounding -> synthesis
     edges = {(e.source, e.target) for e in build_discovery_graph().get_graph().edges}
-    assert ("bridge_grounding", "synthesis") in edges          # single join point
-    assert ("temporal", "bridge_grounding") in edges           # longitudinal path
-    assert ("integration", "bridge_grounding") in edges        # non-longitudinal conditional path
-    # Neither study type bypasses the node straight into synthesis:
+    assert ("hypothesis_extraction", "bridge_grounding") in edges   # bridge_grounding in the chain
+    assert ("bridge_grounding", "literature_grounding") in edges    # before synthesis (via lit-grounding)
+    assert ("temporal", "hypothesis_extraction") in edges           # longitudinal path converges here
+    assert ("integration", "hypothesis_extraction") in edges        # non-longitudinal conditional path
+    # Neither study type bypasses the pre-synthesis chain straight into synthesis:
     assert ("temporal", "synthesis") not in edges
     assert ("integration", "synthesis") not in edges
+    assert ("bridge_grounding", "synthesis") not in edges           # no longer the direct join point
 
 
 # --- synthesis rendering ---------------------------------------------------------------
