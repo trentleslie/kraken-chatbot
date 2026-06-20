@@ -153,7 +153,7 @@ def cached_leg_fetcher(concurrency: int = 8):
             async def _go() -> tuple[list[dict[str, Any]], bool]:
                 async with sem:
                     return await _leg_edges_from(curie)
-            task = asyncio.ensure_future(_go())
+            task = asyncio.create_task(_go())
             cache[curie] = task
         return await task
 
