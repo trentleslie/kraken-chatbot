@@ -6,11 +6,15 @@ knowledge_level + agent_type + Biolink predicate class. No score, no LLM.
 Run with: uv run python -m pytest tests/test_bridge_provenance.py -v
 """
 
+import asyncio
+import json
+
 import pytest
 
 from src.kestrel_backend.bridge_grounding import provenance
 from src.kestrel_backend.bridge_grounding.provenance import (
     bridge_label,
+    cached_leg_fetcher,
     evidence_tier,
     is_curated,
     leg_tier,
@@ -183,3 +187,81 @@ def test_bridge_label_weakest_leg():
     # Mixed tiers (both present) -> summarized by the weaker leg.
     assert bridge_label("curated-causal", "text-mined") == "weakest leg text-mined"
     assert bridge_label("curated-associative", "curated-neutral") == "weakest leg curated-neutral"
+
+
+# --- cached_leg_fetcher: single-flight + concurrency bound (perf optimization) ----------
+
+def _kestrel_resp(edges_by_id):
+    return {"content": [{"text": json.dumps({"edges": edges_by_id})}]}
+
+
+async def test_cached_leg_fetcher_single_flight(monkeypatch):
+    # Concurrent fetches for the SAME curie hit the underlying Kestrel call exactly once.
+    calls = []
+
+    async def fake_kestrel(tool, args):
+        calls.append(args["start_node_ids"])
+        await asyncio.sleep(0.01)  # keep the first call in-flight while the others arrive
+        return _kestrel_resp({})
+
+    monkeypatch.setattr(provenance, "call_kestrel_tool", fake_kestrel)
+    fetch = cached_leg_fetcher(concurrency=8)
+    await asyncio.gather(fetch("HGNC:1"), fetch("HGNC:1"), fetch("HGNC:1"))
+    assert calls == ["HGNC:1"]  # deduped to a single in-flight fetch
+
+
+async def test_cached_leg_fetcher_caches_repeat_fetches_distinct_curies(monkeypatch):
+    # A repeated curie is fetched once; distinct curies are each fetched once.
+    calls = []
+
+    async def fake_kestrel(tool, args):
+        calls.append(args["start_node_ids"])
+        return _kestrel_resp({})
+
+    monkeypatch.setattr(provenance, "call_kestrel_tool", fake_kestrel)
+    fetch = cached_leg_fetcher()
+    await fetch("A")
+    await fetch("B")
+    await fetch("A")
+    assert calls == ["A", "B"]  # A cached on the second call
+
+
+async def test_cached_leg_fetcher_bounds_concurrency(monkeypatch):
+    # No more than `concurrency` underlying Kestrel calls run at once.
+    inflight = 0
+    peak = 0
+
+    async def fake_kestrel(tool, args):
+        nonlocal inflight, peak
+        inflight += 1
+        peak = max(peak, inflight)
+        await asyncio.sleep(0.01)
+        inflight -= 1
+        return _kestrel_resp({})
+
+    monkeypatch.setattr(provenance, "call_kestrel_tool", fake_kestrel)
+    fetch = cached_leg_fetcher(concurrency=2)
+    await asyncio.gather(*[fetch(f"N:{i}") for i in range(10)])
+    assert peak <= 2
+
+
+# --- leg_tier: injectable fetch (so the node can pass a cached fetcher) -----------------
+
+async def test_leg_tier_uses_injected_fetch():
+    # leg_tier classifies using the injected fetch's edges (no real Kestrel call).
+    async def fetch(curie):
+        return ([_edge("biolink:causes", "knowledge_assertion", "manual_agent",
+                       subject="A", obj="B")], False)
+
+    assert await leg_tier("A", "B", fetch=fetch) == "curated-causal"
+
+
+async def test_leg_tier_injected_fetch_hub_retry():
+    # When the start node is truncated with no X-Y edge, leg_tier retries from Y via the same fetch.
+    async def fetch(curie):
+        if curie == "HUB":
+            return ([], True)  # truncated, no edge to Y found
+        return ([_edge("biolink:causes", "knowledge_assertion", "manual_agent",
+                       subject="Y", obj="HUB")], False)
+
+    assert await leg_tier("HUB", "Y", fetch=fetch) == "curated-causal"

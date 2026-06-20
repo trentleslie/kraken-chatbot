@@ -280,9 +280,18 @@ class BridgeGroundingConfig(BaseModel):
     )
     max_scored_bridges: int = Field(
         default=20,
-        description="Cap on ordered 3-node bridges labeled per run. Each costs 2 one_hop_query "
-        "full calls, so this bounds the added Kestrel load (2 * max_scored_bridges per run). "
-        "(The per-leg edge limit is fixed at L1's leg_tier constant.)",
+        description="Cap on ordered 3-node bridges labeled per run. Each costs up to 2 one_hop_query "
+        "full calls, so this bounds the added Kestrel load. Per-CURIE fetches are cached within a "
+        "run, so the actual call count is the number of DISTINCT leg endpoints, often well below "
+        "2 * max_scored_bridges. (The per-leg edge limit is fixed at L1's leg_tier constant.)",
+    )
+    concurrency: int = Field(
+        default=8,
+        ge=1,
+        description="Max concurrent leg-edge one_hop_query calls. Bridges are labeled in parallel "
+        "and per-CURIE fetches are deduplicated within a run (cached_leg_fetcher), so a module whose "
+        "bridges share hub endpoints fetches each hub once instead of once per bridge. Bounds Kestrel "
+        "load while cutting the node's wall-clock from sequential ~O(2*bridges) fetches.",
     )
 
 
