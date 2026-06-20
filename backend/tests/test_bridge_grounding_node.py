@@ -29,7 +29,7 @@ def _enable(monkeypatch, enabled=True, max_scored_bridges=20):
 
 
 def _stub_leg_tier(monkeypatch, tier="curated-causal", calls=None):
-    async def fake(x, y):
+    async def fake(x, y, **_):  # **_: the node passes fetch= (cached_leg_fetcher)
         if calls is not None:
             calls.append((x, y))
         return tier
@@ -75,7 +75,7 @@ async def test_enabled_labels_curated_causal(monkeypatch):
 async def test_weakest_leg_label(monkeypatch):
     _enable(monkeypatch)
     tiers = iter(["curated-causal", "text-mined"])
-    async def fake(x, y):
+    async def fake(x, y, **_):
         return next(tiers)
     monkeypatch.setattr(bridge_grounding, "leg_tier", fake)
     out = await bridge_grounding.run({"bridges": [_bridge()]})
@@ -112,7 +112,7 @@ async def test_per_bridge_error_isolation(monkeypatch):
     good = _bridge(entities=("CHEBI:1", "HGNC:2", "MONDO:3"))
     bad = _bridge(entities=("X:1", "Y:2", "Z:3"))
 
-    async def fake(x, y):
+    async def fake(x, y, **_):
         if x == "X:1":
             raise RuntimeError("kestrel boom")
         return "curated-causal"
@@ -176,3 +176,46 @@ def test_grounding_labels_from_state_builds_map():
     gb = b.model_copy(update={"grounding": BridgeGrounding(legs=[], label="no KG edge")})
     m = grounding_labels_from_state({"grounded_bridges": [gb]})
     assert m[tuple(b.entities)] == "no KG edge"
+
+
+# --- perf: parallel + per-CURIE fetch dedup --------------------------------------------
+
+async def test_node_dedups_shared_endpoint_fetches(monkeypatch):
+    # Two bridges sharing endpoints A,B (A->B->C and A->B->D): each unique start CURIE's
+    # expensive full-mode fetch runs ONCE for the run (cached_leg_fetcher), not once per bridge.
+    from collections import Counter
+    from kestrel_backend.bridge_grounding import provenance
+
+    _enable(monkeypatch)
+    fetched = []
+
+    async def fake_edges(curie):
+        fetched.append(curie)
+        return ([], False)  # no edges; we assert the FETCH accounting, not the tier
+
+    monkeypatch.setattr(provenance, "_leg_edges_from", fake_edges)
+    bridges = [_bridge(entities=("A", "B", "C")), _bridge(entities=("A", "B", "D"))]
+    out = await bridge_grounding.run({"bridges": bridges})
+
+    assert len(out["grounded_bridges"]) == 2
+    counts = Counter(fetched)
+    # Leg fetches are start-only: A (A->B) and B (B->C, B->D). Shared A,B fetched once each.
+    assert counts["A"] == 1, f"A fetched {counts['A']}x (expected 1 — cache miss)"
+    assert counts["B"] == 1, f"B fetched {counts['B']}x (expected 1 — cache miss)"
+
+
+async def test_node_parallel_preserves_per_bridge_labels(monkeypatch):
+    # Concurrency must not cross-contaminate labels: each bridge keeps its own legs' tiers.
+    _enable(monkeypatch)
+    tier_by_leg = {("A1", "B1"): "curated-causal", ("B1", "C1"): "curated-causal",
+                   ("A2", "B2"): "text-mined", ("B2", "C2"): "none"}
+
+    async def fake_leg_tier(x, y, **_):
+        return tier_by_leg[(x, y)]
+
+    monkeypatch.setattr(bridge_grounding, "leg_tier", fake_leg_tier)
+    bridges = [_bridge(entities=("A1", "B1", "C1")), _bridge(entities=("A2", "B2", "C2"))]
+    out = await bridge_grounding.run({"bridges": bridges})
+    by_entities = {tuple(b.entities): b for b in out["grounded_bridges"]}
+    assert by_entities[("A1", "B1", "C1")].grounding.label == "both legs curated-causal"
+    assert by_entities[("A2", "B2", "C2")].grounding.label == "one leg unsupported"
