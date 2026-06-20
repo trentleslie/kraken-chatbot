@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -184,7 +185,7 @@ async def main():
     parser.add_argument("--cassettes-dir", type=str, default=None,
                         help="Cassettes directory (default: assessment_data/cassettes)")
     parser.add_argument("--output", type=str, default=None,
-                        help="Output file for results JSON (default: stdout)")
+                        help="Override the artifact path. A timestamped artifact is ALWAYS saved either way.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -195,13 +196,32 @@ async def main():
         cassettes_dir=args.cassettes_dir,
     )
 
-    output_json = json.dumps(results, indent=2, default=str)
+    # Expensive-run SOP: ALWAYS persist a timestamped artifact (the pipeline run is the expensive
+    # part); --output only overrides the path, it is not the only way to save. Pin reproduce-inputs.
+    from datetime import datetime, timezone
 
-    if args.output:
-        Path(args.output).write_text(output_json)
-        print(f"Results written to {args.output}")
-    else:
-        print(output_json)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, cwd=Path(__file__).parent,
+        ).stdout.strip() or "unknown"
+    except Exception:
+        sha = "unknown"
+    artifact = {
+        "reproduce_inputs": {
+            "queries": str(args.queries), "mode": args.mode, "git_sha": sha, "timestamp": ts,
+        },
+        **results,
+    }
+    output_json = json.dumps(artifact, indent=2, default=str)
+
+    out_path = Path(args.output) if args.output else (
+        Path(__file__).parents[3] / "assessment_data" / "assessment_runs" / f"assessment_{ts}.json"
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(output_json)
+    print(f"Results written to {out_path}")
 
 
 if __name__ == "__main__":

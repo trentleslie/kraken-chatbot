@@ -8,6 +8,7 @@ import type {
   TraceMessage,
   SessionStats,
   AgentMode,
+  BiomapperEnv,
   PipelineProgress,
 } from "@/types/messages";
 
@@ -224,6 +225,8 @@ export function useWebSocket() {
   const [sessionStats, setSessionStats] = useState<SessionStats>(emptySessionStats());
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [agentMode, setAgentMode] = useState<AgentMode>("classic");
+  // Prod/dev biomapper2 API toggle for the discovery pipeline (default prod).
+  const [biomapperEnv, setBiomapperEnv] = useState<BiomapperEnv>("production");
   const [pipelineProgress, setPipelineProgress] = useState<PipelineProgress | null>(null);
 
   // Clerk auth: get a fresh session token for WebSocket connections.
@@ -576,10 +579,11 @@ export function useWebSocket() {
           type: "user_message",
           content,
           agent_mode: agentMode,
+          biomapper_env: biomapperEnv,
         }),
       );
     },
-    [runDemoScenario, agentMode],
+    [runDemoScenario, agentMode, biomapperEnv],
   );
 
   const clearMessages = useCallback(() => {
@@ -616,6 +620,8 @@ export function useWebSocket() {
     conversationId,
     agentMode,
     setAgentMode,
+    biomapperEnv,
+    setBiomapperEnv,
     pipelineProgress,
     sendMessage,
     clearMessages,

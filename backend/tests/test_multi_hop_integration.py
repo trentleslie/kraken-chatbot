@@ -6,7 +6,7 @@ Run with: uv run pytest tests/test_multi_hop_integration.py -v
 Tests cover:
 1. kestrel_client.multi_hop_query wrapper function
 2. integration.detect_bridges_via_api (cross-type bridge detection)
-3. synthesis.validate_bridge_hypotheses (bridge validation)
+3. hypothesis_extraction.validate_bridge_hypotheses (bridge validation)
 4. pathway_enrichment.find_two_hop_shared_neighbors (indirect connectivity)
 """
 
@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, patch
 
 from src.kestrel_backend.kestrel_client import multi_hop_query
 from src.kestrel_backend.graph.nodes.integration import detect_bridges_via_api, parse_multi_hop_result
-from src.kestrel_backend.graph.nodes.synthesis import validate_bridge_hypotheses
+from src.kestrel_backend.graph.nodes.hypothesis_extraction import validate_bridge_hypotheses
 from src.kestrel_backend.graph.nodes.pathway_enrichment import find_two_hop_shared_neighbors
 from src.kestrel_backend.graph.state import EntityResolution, Bridge
 
@@ -33,7 +33,7 @@ class TestMultiHopQueryWrapper:
         """Test singly-pinned mode (start nodes only)."""
         with patch('src.kestrel_backend.kestrel_client.call_kestrel_tool', new_callable=AsyncMock) as mock_call:
             mock_call.return_value = {
-                "content": [{"type": "text", "text": '{"paths": []}'}],
+                "content": [{"type": "text", "text": '{"results": []}'}],
                 "isError": False,
             }
 
@@ -43,12 +43,12 @@ class TestMultiHopQueryWrapper:
                 limit=10,
             )
 
-            # Verify the call was made correctly
+            # Verify the call was made correctly. The wrapper maps max_hops -> max_path_length.
             mock_call.assert_called_once()
             call_args = mock_call.call_args[0]
             assert call_args[0] == "multi_hop_query"
             assert call_args[1]["start_node_ids"] == ["CHEBI:17234"]
-            assert call_args[1]["max_hops"] == 2
+            assert call_args[1]["max_path_length"] == 2
             assert call_args[1]["limit"] == 10
             assert "end_node_ids" not in call_args[1]
 
@@ -59,7 +59,7 @@ class TestMultiHopQueryWrapper:
         """Test doubly-pinned mode (start and end nodes)."""
         with patch('src.kestrel_backend.kestrel_client.call_kestrel_tool', new_callable=AsyncMock) as mock_call:
             mock_call.return_value = {
-                "content": [{"type": "text", "text": '{"paths": []}'}],
+                "content": [{"type": "text", "text": '{"results": []}'}],
                 "isError": False,
             }
 
@@ -72,7 +72,7 @@ class TestMultiHopQueryWrapper:
             call_args = mock_call.call_args[0]
             assert call_args[1]["start_node_ids"] == ["CHEBI:17234"]
             assert call_args[1]["end_node_ids"] == ["MONDO:0005148"]
-            assert call_args[1]["max_hops"] == 3
+            assert call_args[1]["max_path_length"] == 3
 
     @pytest.mark.asyncio
     async def test_validation_max_hops(self):
@@ -160,15 +160,16 @@ class TestDetectBridgesViaAPI:
 
         with patch('src.kestrel_backend.graph.nodes.integration.multi_hop_query', new_callable=AsyncMock) as mock_mhq:
             # Mock a successful path response
+            # Real Kestrel shape: results -> per-result paths (CURIE-string lists) + end_node_id;
+            # names from the top-level nodes dict (NOT a per-path {nodes,predicates} dict).
             mock_mhq.return_value = {
                 "content": [{
                     "type": "text",
                     "text": json.dumps({
-                        "paths": [{
-                            "nodes": ["CHEBI:17234", "HGNC:6081"],
-                            "predicates": ["biolink:affects"],
-                            "node_names": ["glucose", "INS"],
-                        }]
+                        "results": [{"end_node_id": "HGNC:6081",
+                                     "paths": [["CHEBI:17234", "HGNC:6081"]]}],
+                        "nodes": {"CHEBI:17234": {"name": "glucose"},
+                                  "HGNC:6081": {"name": "INS"}},
                     })
                 }],
                 "isError": False,
@@ -177,7 +178,7 @@ class TestDetectBridgesViaAPI:
             bridges, errors = await detect_bridges_via_api(entities, max_hops=2)
 
             assert len(bridges) == 1
-            assert bridges[0].tier == 2  # 2-hop path
+            assert bridges[0].tier == 2  # 1-hop path (<=2 hops) -> tier 2
             assert "CHEBI:17234" in bridges[0].entities
             assert "HGNC:6081" in bridges[0].entities
 
@@ -191,11 +192,15 @@ class TestParseMultiHopResult:
             "content": [{
                 "type": "text",
                 "text": json.dumps({
-                    "paths": [{
-                        "nodes": ["CHEBI:17234", "HGNC:6081", "MONDO:0005148"],
-                        "predicates": ["biolink:affects", "biolink:associated_with"],
-                        "node_names": ["glucose", "INS", "type 2 diabetes"],
-                    }]
+                    "results": [{
+                        "end_node_id": "MONDO:0005148",
+                        "paths": [["CHEBI:17234", "HGNC:6081", "MONDO:0005148"]],
+                    }],
+                    "nodes": {
+                        "CHEBI:17234": {"name": "glucose"},
+                        "HGNC:6081": {"name": "INS"},
+                        "MONDO:0005148": {"name": "type 2 diabetes"},
+                    },
                 })
             }]
         }
@@ -237,6 +242,47 @@ class TestParseMultiHopResult:
         assert bridge.entities[-1] == "MONDO:0005148"
         assert bridge.tier == 2  # 3 nodes = 2 hops = tier 2
         assert bridge.novelty == "known"
+        # No edges in the response -> predicates/directions are all-None placeholders, hop-aligned.
+        assert bridge.predicates == ["", ""]
+        assert bridge.predicate_directions == [None, None]
+
+    def test_parse_populates_hop_aligned_predicates_and_directions(self):
+        """With edges/edge_schema, the builder fills Bridge.predicates + orientation per hop (U0)."""
+        result = {
+            "content": [{
+                "type": "text",
+                "text": json.dumps({
+                    "results": [{
+                        "end_node_id": "MONDO:0005148",
+                        "paths": [["CHEBI:17234", "HGNC:6081", "MONDO:0005148"]],
+                        "edge_ids": [1, 2],
+                    }],
+                    "nodes": {
+                        "CHEBI:17234": {"name": "glucose"},
+                        "HGNC:6081": {"name": "INS"},
+                        "MONDO:0005148": {"name": "type 2 diabetes"},
+                    },
+                    "edge_schema": ["subject", "predicate", "object"],
+                    "edges": {
+                        # hop 1 forward: glucose -> INS
+                        "1": ["CHEBI:17234", "biolink:affects", "HGNC:6081"],
+                        # hop 2 stored REVERSED: disease -> gene (orientation must be recovered)
+                        "2": ["MONDO:0005148", "biolink:gene_associated_with_condition", "HGNC:6081"],
+                    },
+                })
+            }]
+        }
+        start = [EntityResolution(raw_name="glucose", curie="CHEBI:17234", resolved_name="glucose",
+                                  category="biolink:ChemicalEntity", confidence=1.0, method="exact")]
+        end = [EntityResolution(raw_name="type 2 diabetes", curie="MONDO:0005148",
+                                resolved_name="type 2 diabetes", category="biolink:Disease",
+                                confidence=1.0, method="exact")]
+        bridges = parse_multi_hop_result(result, start, end,
+                                         "biolink:ChemicalEntity", "biolink:Disease")
+        bridge = bridges[0]
+        assert bridge.predicates == ["biolink:affects", "biolink:gene_associated_with_condition"]
+        # hop 1 runs with the path (forward); hop 2 edge is stored reversed -> forward=False.
+        assert bridge.predicate_directions == [True, False]
 
     def test_parse_empty_result(self):
         """Test parsing empty result."""
@@ -288,16 +334,16 @@ class TestValidateBridgeHypotheses:
             significance="Test bridge",
         )
 
-        with patch('src.kestrel_backend.graph.nodes.synthesis.multi_hop_query', new_callable=AsyncMock) as mock_mhq:
-            # Mock successful validation
+        with patch('src.kestrel_backend.graph.nodes.hypothesis_extraction.multi_hop_query', new_callable=AsyncMock) as mock_mhq:
+            # Mock successful validation — real shape with a reachable path.
             mock_mhq.return_value = {
                 "content": [{
                     "type": "text",
                     "text": json.dumps({
-                        "paths": [{
-                            "nodes": ["CHEBI:17234", "HGNC:6081"],
-                            "predicates": ["biolink:affects"],
-                        }]
+                        "results": [{"end_node_id": "HGNC:6081",
+                                     "paths": [["CHEBI:17234", "HGNC:6081"]]}],
+                        "nodes": {"CHEBI:17234": {"name": "glucose"},
+                                  "HGNC:6081": {"name": "INS"}},
                     })
                 }],
                 "isError": False,
@@ -323,12 +369,12 @@ class TestValidateBridgeHypotheses:
             significance="Test bridge",
         )
 
-        with patch('src.kestrel_backend.graph.nodes.synthesis.multi_hop_query', new_callable=AsyncMock) as mock_mhq:
-            # Mock no paths found
+        with patch('src.kestrel_backend.graph.nodes.hypothesis_extraction.multi_hop_query', new_callable=AsyncMock) as mock_mhq:
+            # Mock no paths found (real empty shape).
             mock_mhq.return_value = {
                 "content": [{
                     "type": "text",
-                    "text": json.dumps({"paths": []})
+                    "text": json.dumps({"results": []})
                 }],
                 "isError": False,
             }
@@ -366,27 +412,27 @@ class TestFindTwoHopSharedNeighbors:
             # Mock responses for two entities sharing a neighbor
             def mock_response(start_node_ids, **kwargs):
                 if start_node_ids == ["CHEBI:17234"]:
-                    # Glucose connects to HGNC:6081 (INS) in 2 hops
+                    # Glucose reaches GO:0005737 and HGNC:6081 (real shape: CURIE-list path).
                     return {
                         "content": [{
                             "type": "text",
                             "text": json.dumps({
-                                "paths": [{
-                                    "nodes": ["CHEBI:17234", "GO:0005737", "HGNC:6081"],
-                                }]
+                                "results": [{"end_node_id": "HGNC:6081",
+                                             "paths": [["CHEBI:17234", "GO:0005737", "HGNC:6081"]]}],
+                                "nodes": {},
                             })
                         }],
                         "isError": False,
                     }
                 elif start_node_ids == ["CHEBI:28757"]:
-                    # Fructose also connects to HGNC:6081 (INS) in 2 hops
+                    # Fructose also reaches GO:0005737 and HGNC:6081.
                     return {
                         "content": [{
                             "type": "text",
                             "text": json.dumps({
-                                "paths": [{
-                                    "nodes": ["CHEBI:28757", "GO:0005737", "HGNC:6081"],
-                                }]
+                                "results": [{"end_node_id": "HGNC:6081",
+                                             "paths": [["CHEBI:28757", "GO:0005737", "HGNC:6081"]]}],
+                                "nodes": {},
                             })
                         }],
                         "isError": False,
@@ -416,9 +462,9 @@ class TestFindTwoHopSharedNeighbors:
                         "content": [{
                             "type": "text",
                             "text": json.dumps({
-                                "paths": [{
-                                    "nodes": ["CHEBI:17234", "UNIQUE:001"],
-                                }]
+                                "results": [{"end_node_id": "UNIQUE:001",
+                                             "paths": [["CHEBI:17234", "UNIQUE:001"]]}],
+                                "nodes": {},
                             })
                         }],
                         "isError": False,
@@ -428,9 +474,9 @@ class TestFindTwoHopSharedNeighbors:
                         "content": [{
                             "type": "text",
                             "text": json.dumps({
-                                "paths": [{
-                                    "nodes": ["CHEBI:28757", "UNIQUE:002"],
-                                }]
+                                "results": [{"end_node_id": "UNIQUE:002",
+                                             "paths": [["CHEBI:28757", "UNIQUE:002"]]}],
+                                "nodes": {},
                             })
                         }],
                         "isError": False,

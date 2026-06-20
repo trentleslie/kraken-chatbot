@@ -1,0 +1,13 @@
+{
+  "description": "Human gene/protein resolution gold set for the biomapper pre-resolver merge gate.",
+  "oracle_note": "expected_curie values are canonical HUMAN NCBIGene IDs from an external authority (NCBI Gene), NOT 'which ID has KG edges' — edge-presence and human-correctness are different properties.",
+  "entities": [
+    {"name": "TNFRSF1A", "entity_type_hint": "gene", "expected_curie": "NCBIGene:7132", "verified_live": true, "note": "originating frailty incident; was pig/rat ortholog NCBIGene:397020"},
+    {"name": "TNFRSF1B", "entity_type_hint": "gene", "expected_curie": "NCBIGene:7133", "verified_live": true},
+    {"name": "LDLR", "entity_type_hint": "gene", "expected_curie": "NCBIGene:3949", "verified_live": true, "note": "was ortholog NCBIGene:281276"},
+    {"name": "IL6", "entity_type_hint": "gene", "expected_curie": "NCBIGene:3569", "verified_live": false, "note": "held-out: not from the originating run (measures generalization)"},
+    {"name": "TNF", "entity_type_hint": "gene", "expected_curie": "NCBIGene:7124", "verified_live": false, "note": "held-out"},
+    {"name": "APOE", "entity_type_hint": "gene", "expected_curie": "NCBIGene:348", "verified_live": false, "note": "held-out"},
+    {"name": "GH1", "entity_type_hint": "gene", "expected_curie": "NCBIGene:2688", "verified_live": false, "known_residual": true, "note": "human node absent from Kestrel hybrid-search (recall gap) — expected to fall back to the ortholog; counts against the gate until Kestrel indexes it"}
+  ]
+}

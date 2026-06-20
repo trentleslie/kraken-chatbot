@@ -26,7 +26,7 @@ from ..state import (
     DiseaseAssociation, PathwayMembership, InferredAssociation, BiologicalTheme,
     EntityResolution
 )
-from ...kestrel_client import multi_hop_query, call_kestrel_tool
+from ...kestrel_client import multi_hop_query, call_kestrel_tool, parse_kestrel_response
 from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
 from ..state_contracts import validate_state, IntegrationInput, IntegrationOutput
 from ..pipeline_config import get_pipeline_config
@@ -297,73 +297,37 @@ def parse_multi_hop_result(
     """
     bridges: list[Bridge] = []
 
-    try:
-        # Extract JSON content from MCP response
-        content = result.get("content", [])
-        if not content:
-            return bridges
+    # Parse via the shared helper — the real response is {"results":[{"paths":[[curie,...]]}],
+    # "nodes":{...}}, NOT {"paths":[...]}. The helper fails loudly to [] on a bad shape and
+    # never falls back to the raw dict (the silent-fallback bug that emitted zero bridges).
+    parsed = parse_kestrel_response(result)
 
-        # The first content item should be JSON text
-        json_text = content[0].get("text", "")
-        if not json_text:
-            return bridges
+    cat1_short = cat1.replace("biolink:", "")
+    cat2_short = cat2.replace("biolink:", "")
 
-        # Parse JSON response
-        data = json.loads(json_text)
-
-        # Handle different response formats
-        # Expected format: {"paths": [...]} or direct list of paths
-        paths = data.get("paths", data) if isinstance(data, dict) else data
-
-        if not isinstance(paths, list):
-            logger.warning("parse_multi_hop_result: unexpected format, expected list of paths")
-            return bridges
-
-        # Convert each path to a Bridge
-        for path_data in paths[:10]:  # Limit to top 10 paths
-            try:
-                # Extract path components
-                # Expected: {"nodes": [...], "edges": [...], "predicates": [...]}
-                nodes = path_data.get("nodes", [])
-                predicates = path_data.get("predicates", [])
-                node_names = path_data.get("node_names", [])
-
-                if len(nodes) < 2:
-                    continue
-
-                # Build path description
-                cat1_short = cat1.replace("biolink:", "")
-                cat2_short = cat2.replace("biolink:", "")
-                hop_count = len(nodes) - 1  # Number of hops = nodes - 1
-                path_description = f"{cat1_short} → {cat2_short} ({hop_count} hops)"
-
-                # Determine tier: 2 if path is short (1-2 hops), else 3
-                tier = 2 if hop_count <= 2 else 3
-
-                # Generate significance from path structure
-                if node_names and len(node_names) == len(nodes):
-                    significance = f"Path connects {node_names[0]} to {node_names[-1]}"
-                else:
-                    significance = f"Path connects {nodes[0]} to {nodes[-1]}"
-
-                bridges.append(Bridge(
-                    path_description=path_description,
-                    entities=nodes,
-                    entity_names=node_names if node_names else [],
-                    predicates=predicates if predicates else [],
-                    tier=tier,
-                    novelty="known",  # From KG, not inferred
-                    significance=significance,
-                ))
-
-            except Exception as e:
-                logger.warning("Error parsing path: %s", str(e))
-                continue
-
-    except json.JSONDecodeError as e:
-        logger.error("Failed to parse multi_hop_query JSON: %s", str(e))
-    except Exception as e:
-        logger.error("Unexpected error parsing multi_hop_result: %s", str(e))
+    for path in parsed["paths"][:10]:  # Limit to top 10 paths
+        curies = path["curies"]
+        names = path["names"]
+        # parse_kestrel_response guarantees len(curies) >= 2, so hop_count >= 1 here.
+        hop_count = len(curies) - 1
+        path_description = f"{cat1_short} → {cat2_short} ({hop_count} hops)"
+        tier = 2 if hop_count <= 2 else 3
+        significance = f"Path connects {names[0]} to {names[-1]}"
+        # Hop-aligned predicates + orientation from the KG edges (parse_kestrel_response, U0).
+        # `predicates` is parallel to hops (== len(curies) - 1); "" / None where no edge was found.
+        hop_preds = path.get("predicates", [])
+        predicates = [(p.get("predicate") or "") for p in hop_preds]
+        predicate_directions = [p.get("forward") for p in hop_preds]
+        bridges.append(Bridge(
+            path_description=path_description,
+            entities=curies,
+            entity_names=names,
+            predicates=predicates,
+            predicate_directions=predicate_directions,
+            tier=tier,
+            novelty="known",  # From KG, not inferred
+            significance=significance,
+        ))
 
     return bridges
 

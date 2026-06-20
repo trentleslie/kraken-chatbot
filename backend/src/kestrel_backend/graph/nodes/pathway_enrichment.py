@@ -23,7 +23,7 @@ from typing import Any
 from ..state import (
     DiscoveryState, SharedNeighbor, BiologicalTheme, Finding
 )
-from ...kestrel_client import multi_hop_query
+from ...kestrel_client import multi_hop_query, parse_kestrel_response
 from .cold_start import get_entity_connections
 from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
 from ..pipeline_config import get_pipeline_config
@@ -243,45 +243,22 @@ async def find_two_hop_shared_neighbors(
                 errors.append(f"multi_hop_query error for {curie}: {error_text}")
                 continue
 
-            # Extract reachable nodes from result
-            content = result.get("content", [])
-            if not content:
-                continue
-
-            json_text = content[0].get("text", "")
-            if not json_text:
-                continue
-
-            data = json.loads(json_text)
-            # Kestrel's multi-hop response is {"results": [...], "nodes": {...},
-            # "edges": {...}} — there is NO top-level "paths" key. Each result item
-            # carries its own node sequences under result["paths"] (lists of CURIE
-            # strings) plus a terminal result["end_node_id"]. Collect every node this
-            # entity can reach (deduped per input), drop the start node, then count it
-            # as ONE input connection so the >=2 filter below means "reachable from 2+
-            # distinct input entities" (not "appeared on 2+ paths").
-            results = data.get("results", []) if isinstance(data, dict) else []
-            if not isinstance(results, list):
-                continue
-
-            reached: set[str] = set()
-            for res in results:
-                if not isinstance(res, dict):
-                    continue
-                end_id = res.get("end_node_id")
-                if isinstance(end_id, str) and end_id:
-                    reached.add(end_id)
-                for path in res.get("paths", []):
-                    if isinstance(path, list):
-                        reached.update(n for n in path if isinstance(n, str))
+            # Parse via the shared helper. Kestrel's multi-hop response is
+            # {"results": [...], "nodes": {...}, "edges": {...}} — there is NO top-level
+            # "paths" key; the helper reads result["end_node_id"] + result["paths"] (CURIE
+            # lists) and fails loudly to empty on a bad shape. Collect every node this entity
+            # can reach (end-nodes + intermediates, deduped per input), drop the start node,
+            # then count it as ONE input connection so the >=2 filter below means "reachable
+            # from 2+ distinct input entities" (not "appeared on 2+ paths").
+            parsed = parse_kestrel_response(result)
+            reached: set[str] = set(parsed["end_node_ids"])
+            for path in parsed["paths"]:
+                reached.update(path["curies"])
 
             reached.discard(curie)  # exclude the start node itself
             for node in reached:
                 neighbor_counts[node] = neighbor_counts.get(node, 0) + 1
 
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse multi_hop_query result for %s: %s", curie, str(e))
-            errors.append(f"JSON parse error for {curie}")
         except Exception as e:
             logger.error("Error in two-hop search for %s: %s", curie, str(e))
             errors.append(f"Exception for {curie}: {str(e)}")

@@ -27,6 +27,8 @@ import time
 from typing import Any
 
 from ...kestrel_client import call_kestrel_tool
+from ...biomapper_client import resolve_entity as biomapper_resolve, biolink_class_for
+from ...config import get_settings, resolve_biomapper_base_url
 from ..state import DiscoveryState, EntityResolution
 from ..sdk_utils import HAS_SDK, query_with_usage, ClaudeAgentOptions, chunk
 from ..pipeline_config import get_pipeline_config
@@ -89,12 +91,20 @@ If no candidate fits: {"curie": null, "confidence": 0.0}"""
 
 
 
-async def resolve_via_api(entity: str) -> EntityResolution | None:
+async def resolve_via_api(
+    entity: str, category: str | None = None
+) -> EntityResolution | None:
     """
     Tier 1: Attempt to resolve entity via direct Kestrel API call.
 
     Uses hybrid_search and takes the top-scored result if confidence is high enough.
     Returns None if resolution fails or confidence is too low (triggering Tier 2).
+
+    ``category`` (a Biolink class, e.g. "biolink:Disease") constrains hybrid_search to that
+    class so a same-text node from another namespace cannot win (the Tier 1 wrong-namespace
+    fix). When set: an in-category hit at/below ``tier1_min_score`` or an empty result returns
+    None (routes to Tier 2); an ``isError`` falls back to the unconstrained call at
+    ``tier1_fallback_confidence``. When None, behavior is byte-identical to the legacy path.
 
     Confidence mapping from hybrid_search score:
     - score > 1.5 → confidence 0.95 (exact + vector match)
@@ -105,10 +115,15 @@ async def resolve_via_api(entity: str) -> EntityResolution | None:
     """
     try:
         # Call hybrid_search directly - parameter is 'search_text' not 'query'
-        result = await call_kestrel_tool("hybrid_search", {
+        search_args: dict = {
             "search_text": entity,
             "limit": 1,  # Only need top result
-        })
+        }
+        if category is not None:
+            # Constrain to the expected Biolink class. Matching is list-membership (a node
+            # matches if the class is anywhere in its categories array) — verified live 2026-06-17.
+            search_args["category"] = category
+        result = await call_kestrel_tool("hybrid_search", search_args)
 
         # Debug logging - show raw API response
         is_error = result.get("isError", False)
@@ -119,6 +134,21 @@ async def resolve_via_api(entity: str) -> EntityResolution | None:
         )
 
         if is_error:
+            if category is not None:
+                # The category-filter mechanism itself failed (e.g. a future arg drift). Degrade
+                # gracefully to today's unconstrained behavior, flagged at a reduced confidence so
+                # the degraded path is visible. (R5; mirrors the direction-param cold-start lesson.)
+                logger.info(
+                    "FALLBACK_EVENT node=entity_resolution reason=category_iserror entity=%s",
+                    entity,
+                )
+                fallback = await resolve_via_api(entity, category=None)
+                if fallback is None:
+                    return None
+                return fallback.model_copy(update={
+                    "confidence": _config.tier1_fallback_confidence,
+                    "method": "category-fallback",
+                })
             logger.debug("Tier 1 '%s': API returned error", entity)
             return None
 
@@ -155,9 +185,11 @@ async def resolve_via_api(entity: str) -> EntityResolution | None:
         score = float(top.get("score", 0))
         curie = top.get("id") or top.get("curie")
         name = top.get("name") or top.get("label")
-        # categories is a list in the API response
+        # categories is a list in the API response. Named node_category (not category) so it does
+        # not shadow the function's `category` constraint parameter — this is the resolved node's
+        # own Biolink class, which may differ from the requested filter (list-membership match).
         categories = top.get("categories", [])
-        category = categories[0] if categories else top.get("category")
+        node_category = categories[0] if categories else top.get("category")
 
         # Map score to confidence
         if score > 1.5:
@@ -193,7 +225,7 @@ async def resolve_via_api(entity: str) -> EntityResolution | None:
             raw_name=entity,
             curie=curie,
             resolved_name=name,
-            category=category,
+            category=node_category,
             confidence=confidence,
             method=method,
         )
@@ -313,6 +345,117 @@ def _extract_search_results(data: Any, search_text: str) -> list:
             results = list(data.values())[0]
         return results or []
     return data or []
+
+
+# ============================ Biomapper pre-resolver helpers (Unit 3) ============================
+# HGNC is human-only by construction; an HGNC equivalent on a gene/protein KG node is the human
+# marker. biomapper2 now prefers the human candidate upstream (PR #69), so this gate is
+# defense-in-depth: it catches any residual wrong-species CURIE before it enters the pipeline.
+_HGNC_MARKER = "HGNC:"
+_HGNC_GATED_CLASSES = {"gene", "protein"}
+
+
+def _tier_to_confidence(tier: str | None) -> float:
+    """Map a Biomapper confidence tier to the EntityResolution 0–1 confidence (provenance-cosmetic)."""
+    return {"high": 0.95, "medium": 0.8}.get(tier or "", 0.7)
+
+
+def _parse_get_nodes(result: Any, curie: str) -> dict | None:
+    """Return the Kestrel node dict for `curie` from a get_nodes MCP envelope, or None.
+
+    Envelope (confirmed live 2026-06-16): present → ``{"<curie>": {node...}}`` (top-level key IS the
+    queried CURIE; value is the node **dict** — some tool versions wrap it as a single-element list,
+    so both are accepted); invalid prefix → ``{"error": true, ...}``; absent → empty value.
+    """
+    if not isinstance(result, dict) or result.get("isError"):
+        return None
+    content = result.get("content", [])
+    if not content:
+        return None
+    text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
+    try:
+        body = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(body, dict) or body.get("error"):
+        return None
+    payload = body.get(curie)
+    if isinstance(payload, dict):
+        return payload
+    if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+        return payload[0]
+    return None
+
+
+def _node_has_human_marker(node: dict) -> bool:
+    """True if the Kestrel node carries an HGNC equivalent id (human-only marker)."""
+    eq = node.get("equivalent_ids") or []
+    return any(str(x).upper().startswith(_HGNC_MARKER) for x in eq)
+
+
+def _node_category(node: dict) -> str | None:
+    """The node's Kestrel-native category (so the biomapper path emits Kestrel spellings)."""
+    cats = node.get("categories")
+    if isinstance(cats, list) and cats:
+        return cats[0]
+    return node.get("category")
+
+
+def _biomapper_candidate_curies(biomapper_result: dict, hint: str | None) -> list[str]:
+    """Ordered CURIE candidates: primary_curie first, then xrefs by per-class namespace_preference.
+
+    ``xrefs`` is ``dict[prefix -> list[local_id]]`` (verified live: ``{"NCBIGene": ["7132"], ...}``),
+    so a candidate CURIE is built as ``f"{prefix}:{local_id}"``.
+    """
+    prefs = get_pipeline_config().entity_resolution.biomapper.namespace_preference.get(
+        (hint or "").lower(), []
+    )
+    xrefs: dict[str, list] = biomapper_result.get("xrefs") or {}
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def _add(curie: str | None) -> None:
+        canon = _canonical_curie(curie)
+        if curie and canon and canon not in seen:
+            seen.add(canon)
+            ordered.append(curie)
+
+    _add(biomapper_result.get("curie"))
+    # xrefs in configured preference order, then any remaining namespaces (lowest priority).
+    pref_upper = [p.upper() for p in prefs]
+    for ns in sorted(xrefs, key=lambda n: pref_upper.index(n.upper()) if n.upper() in pref_upper else 999):
+        for local in (xrefs[ns] if isinstance(xrefs[ns], list) else [xrefs[ns]]):
+            local_s = str(local)
+            _add(local_s if ":" in local_s else f"{ns}:{local_s}")
+    return ordered
+
+
+async def reconcile_to_kestrel(
+    biomapper_result: dict, hint: str | None
+) -> tuple[str, str | None] | None:
+    """Confirm a Biomapper result against the Kestrel KG; return (confirmed_curie, kestrel_category).
+
+    Walks the candidate CURIEs (primary first, then namespace-preferred xrefs), accepting the first
+    that ``get_nodes`` confirms. For gene/protein, the confirmed node must carry the HGNC human
+    marker (defense-in-depth) or the candidate is skipped. Returns the node's canonical id +
+    Kestrel-native category, or None if nothing confirms (caller falls back to Kestrel tiers).
+    """
+    gated = (hint or "").lower() in _HGNC_GATED_CLASSES
+    for candidate in _biomapper_candidate_curies(biomapper_result, hint):
+        try:
+            result = await call_kestrel_tool("get_nodes", {"curies": candidate})
+        except Exception as e:  # noqa: BLE001 — transport failure for this candidate; try next
+            logger.debug("Biomapper reconcile: get_nodes('%s') failed: %s", candidate, e)
+            continue
+        node = _parse_get_nodes(result, candidate)
+        if node is None:
+            continue
+        if gated and not _node_has_human_marker(node):
+            # Confirmed in Kestrel but no HGNC marker → non-human ortholog; reject (defense-in-depth).
+            logger.info("FALLBACK_EVENT node=entity_resolution reason=biomapper_non_human curie=%s", candidate)
+            continue
+        return node.get("id") or candidate, _node_category(node)
+    return None
 
 
 async def prefetch_resolution_candidates(entity: str, limit: int = 10) -> list[dict]:
@@ -484,20 +627,101 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     all_results: list[EntityResolution | None] = [None] * len(entities)
     errors: list[str] = []
 
-    # ========== TIER 1: API Resolution ==========
-    tier1_start = time.time()
-    logger.info("Tier 1 (API): Attempting direct resolution for %d entities", len(entities))
+    # ========== BIOMAPPER PRE-RESOLVER (flag-gated; Unit 4) ==========
+    # Read the flag fresh (not the import-time _config) so get_pipeline_config.cache_clear() in
+    # tests takes effect. Flag-off → this whole block is skipped and behavior is byte-identical.
+    biomapper_cfg = get_pipeline_config().entity_resolution.biomapper
+    entity_type_hints: dict[str, str] = state.get("entity_type_hints", {})
+    biomapper_confirmed: set[int] = set()
+    biomapper_resolved = 0
+    if biomapper_cfg.enabled:
+        # Resolve the prod/dev biomapper2 endpoint from the per-run toggle (state["biomapper_env"]).
+        # An invalid/unconfigured env → log and skip biomapper this run (safe fall back to Kestrel),
+        # rather than failing the whole discovery run.
+        try:
+            biomapper_base_url = resolve_biomapper_base_url(state.get("biomapper_env"), get_settings())
+            env_ok = True
+        except ValueError as e:
+            logger.warning("Biomapper env toggle error (%s); skipping biomapper, using Kestrel", e)
+            biomapper_base_url = None
+            env_ok = False
+        # Only attempt entities whose intake hint maps to a Biolink class (else fall back to Kestrel).
+        targets = [
+            (i, e) for i, e in enumerate(entities)
+            if env_ok and biolink_class_for(entity_type_hints.get(e)) is not None
+        ]
+        if targets:
+            sem = asyncio.Semaphore(max(1, biomapper_cfg.http_concurrency))
+            node_timeout = biomapper_cfg.node_timeout_seconds
 
-    # Run all API calls in parallel (they're fast and independent)
+            async def _biomapper_one(idx: int, name: str) -> tuple[int, EntityResolution | None]:
+                hint = entity_type_hints.get(name)
+                async with sem:
+                    # BioMapperAuthError intentionally propagates out of run() (fail loud, R6).
+                    try:
+                        r = await asyncio.wait_for(
+                            biomapper_resolve(name, hint, base_url=biomapper_base_url),
+                            timeout=node_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.info(
+                            "FALLBACK_EVENT node=entity_resolution reason=biomapper_timeout entity=%s",
+                            name,
+                        )
+                        return idx, None
+                if r is None:
+                    logger.info(
+                        "FALLBACK_EVENT node=entity_resolution reason=biomapper_miss entity=%s", name
+                    )
+                    return idx, None
+                reconciled = await reconcile_to_kestrel(r, hint)
+                if reconciled is None:
+                    logger.info(
+                        "FALLBACK_EVENT node=entity_resolution reason=biomapper_unconfirmed entity=%s",
+                        name,
+                    )
+                    return idx, None
+                curie, category = reconciled
+                return idx, EntityResolution(
+                    raw_name=name,
+                    curie=curie,
+                    resolved_name=r.get("resolved_name") or name,
+                    category=category,
+                    confidence=_tier_to_confidence(r.get("tier")),
+                    method="biomapper",
+                )
+
+            prepass = await asyncio.gather(*[_biomapper_one(i, e) for (i, e) in targets])
+            for idx, res in prepass:
+                if res is not None:
+                    all_results[idx] = res
+                    biomapper_confirmed.add(idx)
+                    biomapper_resolved += 1
+            logger.info(
+                "Biomapper pre-resolver confirmed %d/%d hinted entities",
+                biomapper_resolved, len(targets),
+            )
+
+    # ========== TIER 1: API Resolution (skips Biomapper-confirmed indices) ==========
+    tier1_start = time.time()
+    tier1_targets = [(i, e) for i, e in enumerate(entities) if i not in biomapper_confirmed]
+    logger.info("Tier 1 (API): Attempting direct resolution for %d entities", len(tier1_targets))
+
+    # Run all API calls in parallel (they're fast and independent). Pass the Biolink category
+    # the intake hint maps to (None when no/unknown hint) so hybrid_search resolves to the right
+    # namespace instead of a same-text node from another category (Tier 1 wrong-namespace fix).
     tier1_results = await asyncio.gather(
-        *[resolve_via_api(e) for e in entities],
+        *[
+            resolve_via_api(e, category=biolink_class_for(entity_type_hints.get(e)))
+            for (_i, e) in tier1_targets
+        ],
         return_exceptions=True,
     )
 
     tier1_resolved = 0
     tier1_failed_indices = []
 
-    for i, (entity, result) in enumerate(zip(entities, tier1_results)):
+    for (i, entity), result in zip(tier1_targets, tier1_results):
         if isinstance(result, Exception):
             logger.debug("Tier 1 '%s': Exception - %s", entity, str(result))
             tier1_failed_indices.append(i)
@@ -530,8 +754,12 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                        len(entity_aliases), entity, entity_aliases)
             
             resolved_via_alias = False
+            # Constrain the alias lookup to the PARENT entity's category (hints are keyed on the
+            # original name, not the alias). A type-mismatched alias yields an empty in-category
+            # result and routes to Tier 2, exactly as an over-fired hint does.
+            alias_category = biolink_class_for(entity_type_hints.get(entity))
             for alias in entity_aliases:
-                alias_result = await resolve_via_api(alias)
+                alias_result = await resolve_via_api(alias, category=alias_category)
                 if alias_result is not None:
                     # Use alias resolution but keep original raw_name
                     all_results[idx] = EntityResolution(
@@ -672,9 +900,10 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     duration = time.time() - start
     rate = 100 * len(resolved) / len(final_results) if final_results else 0
 
-    # Count by tier
+    # Count by tier. Subtract biomapper (pre-pass) too, else the tier2 count is inflated by the
+    # pre-resolver's hits once the flag is on.
     alias_resolved = sum(1 for r in final_results if r.method and r.method.startswith("alias:"))
-    llm_resolved = len(resolved) - tier1_resolved - alias_resolved
+    llm_resolved = len(resolved) - tier1_resolved - alias_resolved - biomapper_resolved
 
     if failed:
         failed_names = [r.raw_name for r in failed[:5]]
@@ -684,8 +913,9 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         )
 
     logger.info(
-        "Completed entity_resolution in %.1fs — resolved=%d (tier1=%d, alias=%d, tier2=%d), failed=%d (%.0f%%)",
-        duration, len(resolved), tier1_resolved, alias_resolved, llm_resolved, len(failed), rate
+        "Completed entity_resolution in %.1fs — resolved=%d (tier1=%d, biomapper=%d, alias=%d, tier2=%d), failed=%d (%.0f%%)",
+        duration, len(resolved), tier1_resolved, biomapper_resolved, alias_resolved, llm_resolved,
+        len(failed), rate
     )
 
     result = {

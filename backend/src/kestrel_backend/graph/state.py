@@ -30,8 +30,13 @@ class EntityResolution(BaseModel):
     resolved_name: str | None = Field(None, description="Canonical name from KG")
     category: str | None = Field(None, description="Biolink category (e.g., biolink:ChemicalEntity)")
     confidence: float = Field(0.0, ge=0.0, le=1.0, description="Resolution confidence score")
-    method: Literal["exact", "fuzzy", "semantic", "failed"] = Field(
-        "failed", description="Resolution method used"
+    # Free string, not a Literal: admits "biomapper" (pre-resolver) and the pre-existing
+    # f"alias:{alias}" value the Tier-1.5 path constructs (which raised ValidationError against
+    # the old Literal — a live crash on its success branch). "failed" remains the sentinel triage
+    # routes to cold_start; readers use == "failed" / startswith("alias:"), both still valid.
+    method: str = Field(
+        "failed",
+        description='Resolution method: "exact"|"fuzzy"|"semantic"|"failed"|"biomapper"|"alias:<name>"',
     )
 
 
@@ -163,6 +168,38 @@ class BiologicalTheme(BaseModel):
 # Phase 4b: Integration Models (Bridges + Gap Analysis)
 # =============================================================================
 
+class LegSummary(BaseModel):
+    """Per-leg evidence-provenance summary for one hop of a grounded bridge chain (A–B or B–C).
+
+    Deterministic KG-edge provenance (no co-occurrence, no score): the best evidence tier over the
+    leg's KG edges, computed by ``bridge_grounding.provenance.leg_tier``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    from_curie: str = Field(..., description="Source CURIE of this leg")
+    to_curie: str = Field(..., description="Target CURIE of this leg")
+    evidence_tier: str = Field(
+        ...,
+        description="Best evidence tier over the leg's KG edges: curated-causal | "
+        "curated-associative | curated-neutral | text-mined | none",
+    )
+
+
+class BridgeGrounding(BaseModel):
+    """Deterministic evidence-provenance label attached to a 3-node Bridge (no score, no LLM).
+
+    Per leg, the best evidence tier from the leg's KG edges; per bridge, a human-readable chain
+    summary (``label``) composed by ``bridge_grounding.provenance.bridge_label``. Makes no
+    confidence/mechanism claim — it reports *what kind of evidence* backs each leg.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    legs: list[LegSummary] = Field(default_factory=list, description="Per-leg evidence tiers")
+    label: str = Field(..., description="Chain summary, e.g. 'both legs curated-causal' / 'no KG edge'")
+
+
 class Bridge(BaseModel):
     """Cross-entity-type connection discovered through multi-hop analysis."""
 
@@ -172,9 +209,17 @@ class Bridge(BaseModel):
     entities: list[str] = Field(..., description="CURIEs along the path")
     entity_names: list[str] = Field(default_factory=list, description="Names along the path")
     predicates: list[str] = Field(default_factory=list, description="Predicate at each hop")
+    predicate_directions: list[bool | None] = Field(
+        default_factory=list,
+        description="Per-hop orientation parallel to predicates: True if the KG edge runs "
+        "subject→object along the path (forward), False if reversed, None if no edge found. "
+        "Populated for multi-hop bridges; empty for subgraph/legacy bridges.",
+    )
     tier: Literal[2, 3] = Field(3, description="Evidence tier (2=moderate, 3=speculative)")
     novelty: Literal["known", "inferred"] = Field("inferred", description="Known from KG or inferred")
     significance: str = Field(..., description="Why this bridge matters for the study")
+    grounding: BridgeGrounding | None = Field(
+        None, description="Literature grounding signal (attached by bridge_grounding via model_copy)")
 
 
 class GapEntity(BaseModel):
@@ -326,6 +371,7 @@ class DiscoveryState(TypedDict, total=False):
     query_type: Literal["retrieval", "discovery", "hybrid"]
     raw_entities: list[str]  # Extracted entity names before resolution
     conversation_history: list[tuple[str, str]]  # (role, content) pairs
+    biomapper_env: str | None  # prod/dev biomapper2 API toggle ("production"|"dev"); None = default
 
     # === Study Context (for longitudinal analysis) ===
     is_longitudinal: bool
@@ -335,7 +381,7 @@ class DiscoveryState(TypedDict, total=False):
 
     # === Structured Intake Context (from intake node) ===
     entity_aliases: dict[str, list[str]]  # primary_name -> [alias1, alias2, ...]
-    entity_type_hints: dict[str, str]  # entity_name -> "metabolite"|"protein"|"gene"
+    entity_type_hints: dict[str, str]  # entity_name -> "metabolite"|"protein"|"gene"|"disease"
     study_context: dict[str, str]  # Structured study metadata (type, design, timepoints, etc.)
     analytical_directives: list[str]  # User's specific analysis priorities/requests
 
@@ -372,7 +418,12 @@ class DiscoveryState(TypedDict, total=False):
     pathway_enrichment_degraded: bool
 
     # === Phase 4b: Integration (Bridges + Gap Analysis) ===
-    bridges: Annotated[list[Bridge], operator.add]
+    # Plain last-write-wins (NOT operator.add): integration writes the raw bridges once, then
+    # hypothesis_extraction RE-EMITS the *validated* bridge list (Unit 1/Unit 2). With an
+    # operator.add reducer the re-emit would concatenate onto the originals (duplicating/
+    # un-validating); last-write-wins lets the validated list replace the raw one. Dropping the
+    # reducer also auto-removes `bridges` from CONCAT_LIST_FIELDS via _get_concat_fields().
+    bridges: list[Bridge]
     gap_entities: Annotated[list[GapEntity], operator.add]
 
     # === Phase 4b: Temporal Analysis (Conditional) ===
@@ -388,6 +439,12 @@ class DiscoveryState(TypedDict, total=False):
 
     # === Phase 5b: Literature Grounding ===
     literature_errors: Annotated[list[str], operator.add]
+
+    # === Phase 5c: Bridge Grounding (per-bridge literature confidence) ===
+    # NOT using operator.add - written once by bridge_grounding (a separate key from `bridges`,
+    # whose operator.add reducer is load-bearing for integration/synthesis writes; see plan U1).
+    grounded_bridges: list[Bridge]
+    bridge_grounding_errors: Annotated[list[str], operator.add]
 
     # === Cost Tracking ===
     # Uses operator.add reducer for parallel writes from concurrent branches

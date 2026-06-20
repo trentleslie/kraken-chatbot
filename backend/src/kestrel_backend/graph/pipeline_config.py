@@ -80,6 +80,57 @@ class PathwayEnrichmentConfig(BaseModel):
     )
 
 
+class BiomapperConfig(BaseModel):
+    """Configuration for the Biomapper pre-resolver in entity_resolution.
+
+    Default-off feature flag plus the namespace/species policy knobs the pre-resolver
+    needs. Secrets (BIOMAPPER_API_KEY / BIOMAPPER_BASE_URL) live in config.Settings, not
+    here — this model is never sourced from environment variables. See
+    docs/plans/2026-06-11-001-feat-biomapper-entity-resolution-plan.md (Unit 1).
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Default-off flag: when True, entity_resolution resolves each hinted "
+        "entity via Biomapper first (namespace/species-correct CURIE), confirms it in Kestrel, "
+        "and falls back to the Kestrel Tier 1/1.5/2 path on any miss. Flag-off behavior is "
+        "byte-identical to today. Mirrors the multi_hop_enabled / subgraph_enabled demo-slice "
+        "flags; a follow-up PR flips it after the gold-set eval confirms improvement.",
+    )
+    namespace_preference: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "gene": ["HGNC", "NCBIGene", "UniProtKB"],
+            "protein": ["HGNC", "NCBIGene", "UniProtKB"],
+            "metabolite": ["CHEBI", "HMDB", "RM", "LM"],
+        },
+        description="Per-class ordered namespace preference for reconciling a Biomapper CURIE "
+        "against the Kestrel KG (R5: explicit config, not implicit ranking). Genes/proteins "
+        "anchor on HGNC (human-only by construction; Kestrel normalizes HGNC/UniProt/NCBIGene to "
+        "the same human node and keys edges on NCBIGene — verified 2026-06-15). Metabolite order "
+        "(CHEBI-first) is the starting hypothesis; confirm which namespace Kestrel keys metabolite "
+        "edges on at impl.",
+    )
+    species_default: str = Field(
+        default="human",
+        description="Default species for resolution (R5: explicit). For genes/proteins, "
+        "humanness is enforced at confirmation time by the HGNC-marker gate in Unit 3 (an HGNC "
+        "equivalent id is required), not by an implicit Biomapper default — so this field is "
+        "documentation/metabolite-relevant.",
+    )
+    http_concurrency: int = Field(
+        default=8,
+        description="Max concurrent Biomapper HTTP calls (its own semaphore, independent of the "
+        "entity_resolution SDK semaphore=1) — bounds fan-out without serializing, avoiding the "
+        "throttling-as-no-match gotcha.",
+    )
+    node_timeout_seconds: float = Field(
+        default=30.0,
+        description="Per-entity asyncio.wait_for timeout around each Biomapper map_entity call. "
+        "A stalled call falls back to Kestrel for that entity only; already-resolved entities are "
+        "retained (caps added latency at ~http_concurrency × this).",
+    )
+
+
 class EntityResolutionConfig(BaseModel):
     """Configuration for the entity_resolution node."""
 
@@ -95,6 +146,17 @@ class EntityResolutionConfig(BaseModel):
     tier1_min_score: float = Field(
         default=0.6,
         description="Minimum API resolution score to accept a tier-1 match.",
+    )
+    tier1_fallback_confidence: float = Field(
+        default=0.5,
+        description="Confidence assigned when a category-constrained hybrid_search errors and "
+        "resolution falls back to the unconstrained Kestrel result. Honesty signal only — the value "
+        "is not compared against any threshold. (Returning a non-None result here does suppress "
+        "Tier 2 for that entity, but that is driven by the fallback succeeding, not by this number.)",
+    )
+    biomapper: BiomapperConfig = Field(
+        default_factory=BiomapperConfig,
+        description="Biomapper pre-resolver config (default-off flag + namespace/species policy).",
     )
 
 
@@ -158,6 +220,30 @@ class LiteratureGroundingConfig(BaseModel):
         "Defaults to False (current 'supporting' behavior). Flag flip is a "
         "separate follow-up PR after quality measurement confirms improvement.",
     )
+    overall_timeout_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description="R13 latency ceiling: wall-clock cap on the whole grounding body "
+        "(4-provider fan-out + EFetch backfill). On expiry, asyncio.timeout raises "
+        "TimeoutError, caught by the node's degrade boundary, which returns the upstream "
+        "hypotheses ungrounded so synthesis still runs. Value tuned vs a representative "
+        "high-bridge run; existence + mechanism are decided, not deferred.",
+    )
+
+
+class HypothesisExtractionConfig(BaseModel):
+    """Configuration for the hypothesis_extraction node."""
+
+    validate_timeout_seconds: float = Field(
+        default=180.0,
+        gt=0,
+        description="R13 latency ceiling: wall-clock cap on the serial validate_bridge_hypotheses "
+        "loop (each doubly-pinned multi_hop_query can run up to the ~60s Kestrel client timeout). "
+        "On expiry, asyncio.timeout raises TimeoutError, caught by the node's degrade boundary, "
+        "which returns {bridges: upstream, hypotheses: []} so synthesis still runs. A grounding-only "
+        "timeout cannot bound this loop — it lives in a different node. Value tuned vs a "
+        "representative high-bridge run; existence + mechanism are decided, not deferred.",
+    )
 
 
 class IntegrationConfig(BaseModel):
@@ -181,6 +267,25 @@ class IntegrationConfig(BaseModel):
     )
 
 
+class BridgeGroundingConfig(BaseModel):
+    """Configuration for the bridge_grounding node (deterministic evidence-provenance labeler)."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Enabled (L4 flip, 2026-06-18). The L4 validation eval over real bridges passed: "
+        "no all-`none` collapse and a 33% curated-causal leg fraction (>= the ~23% baseline) under "
+        "correct Tier 1 + Tier 2 resolution — see assessment_data/bridge_grounding_eval.py and "
+        "docs/plans/2026-06-17-002-feat-bridge-evidence-provenance-labeler-plan.md. When False the "
+        "node is a no-op (no Kestrel calls).",
+    )
+    max_scored_bridges: int = Field(
+        default=20,
+        description="Cap on ordered 3-node bridges labeled per run. Each costs 2 one_hop_query "
+        "full calls, so this bounds the added Kestrel load (2 * max_scored_bridges per run). "
+        "(The per-leg edge limit is fixed at L1's leg_tier constant.)",
+    )
+
+
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration with per-node sub-models.
 
@@ -195,7 +300,9 @@ class PipelineConfig(BaseModel):
     triage: TriageConfig = Field(default_factory=TriageConfig)
     cold_start: ColdStartConfig = Field(default_factory=ColdStartConfig)
     literature_grounding: LiteratureGroundingConfig = Field(default_factory=LiteratureGroundingConfig)
+    hypothesis_extraction: HypothesisExtractionConfig = Field(default_factory=HypothesisExtractionConfig)
     integration: IntegrationConfig = Field(default_factory=IntegrationConfig)
+    bridge_grounding: BridgeGroundingConfig = Field(default_factory=BridgeGroundingConfig)
 
 
 @lru_cache(maxsize=1)

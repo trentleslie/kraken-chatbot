@@ -8,7 +8,9 @@ Phase 1: intake, entity_resolution, synthesis
 Phase 2: + triage, direct_kg, cold_start
 Phase 4a: + pathway_enrichment
 Phase 4b: + integration, temporal
+Phase 5: + hypothesis_extraction
 Phase 5b: + literature_grounding
+L3: + bridge_grounding (evidence-provenance labeler, before synthesis)
 """
 
 from . import intake
@@ -18,7 +20,9 @@ from . import direct_kg
 from . import cold_start
 from . import pathway_enrichment
 from . import integration
+from . import bridge_grounding
 from . import temporal
+from . import hypothesis_extraction
 from . import synthesis
 from . import literature_grounding
 
@@ -30,7 +34,9 @@ __all__ = [
     "cold_start",
     "pathway_enrichment",
     "integration",
+    "bridge_grounding",
     "temporal",
+    "hypothesis_extraction",
     "synthesis",
     "literature_grounding",
 ]

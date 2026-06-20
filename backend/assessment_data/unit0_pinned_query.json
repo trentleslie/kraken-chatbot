@@ -1,0 +1,8 @@
+[
+  {
+    "query": "Discover novel mechanisms and disease associations for these gut-microbiome-derived ellagitannin metabolites.\nMetabolites:\nurolithin B\nurolithin C\ncalebin A",
+    "id": "unit0_baseline_ellagitannin_coldstart",
+    "path_type": "sparse",
+    "note": "Pinned Unit-0 baseline query: the Spike-0 ellagitannin cold-start panel (urolithin B(5), urolithin C(6), calebin A(4) edges — all sparse → cold_start). Reused verbatim from spike0_runs/20260613_151759 so the PR-1 regression gate is coherent with Spike-0 and the Unit-7 panel. Labeled 'Metabolites:' section is what intake's heuristic extractor parses into entities; a bare prose question yields 0 entities and fails at integration."
+  }
+]

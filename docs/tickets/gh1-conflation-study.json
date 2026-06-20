@@ -1,0 +1,641 @@
+{
+  "generated_utc": "2026-06-16T07:42:48.249707+00:00",
+  "biologic": [
+    {
+      "symbol": "GH1",
+      "curie": "NCBIGene:2688",
+      "node_name": "SOMATROPIN",
+      "categories": [
+        "ChemicalEntity",
+        "Drug",
+        "Gene",
+        "Protein",
+        "SmallMolecule"
+      ],
+      "drug_conflated": true,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 4073,
+      "curie_in_hybrid_rank": null,
+      "hgnc_symbolmatch_retrievable": false,
+      "status": "ok"
+    },
+    {
+      "symbol": "INS",
+      "curie": "NCBIGene:3630",
+      "node_name": "INS",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 8156,
+      "curie_in_hybrid_rank": 4,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "EPO",
+      "curie": "NCBIGene:2056",
+      "node_name": "EPO",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 3156,
+      "curie_in_hybrid_rank": 1,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "CSF3",
+      "curie": "NCBIGene:1440",
+      "node_name": "CSF3",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 3408,
+      "curie_in_hybrid_rank": 3,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "CSF2",
+      "curie": "NCBIGene:1437",
+      "node_name": "CSF2",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 4163,
+      "curie_in_hybrid_rank": 3,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "IFNA2",
+      "curie": "NCBIGene:3440",
+      "node_name": "IFNA2",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 2099,
+      "curie_in_hybrid_rank": 1,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "IFNB1",
+      "curie": "NCBIGene:3456",
+      "node_name": "IFNB1",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 3020,
+      "curie_in_hybrid_rank": 1,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "IFNG",
+      "curie": "NCBIGene:3458",
+      "node_name": "IFNG",
+      "categories": [
+        "ChemicalEntity",
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": true,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 7923,
+      "curie_in_hybrid_rank": 2,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "IGF1",
+      "curie": "NCBIGene:3479",
+      "node_name": "IGF1",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 6058,
+      "curie_in_hybrid_rank": 6,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "PTH",
+      "curie": "NCBIGene:5741",
+      "node_name": "PTH",
+      "categories": [
+        "ChemicalEntity",
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": true,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 2455,
+      "curie_in_hybrid_rank": 4,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "GCG",
+      "curie": "NCBIGene:2641",
+      "node_name": "GCG",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 3551,
+      "curie_in_hybrid_rank": 5,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "FSHB",
+      "curie": "NCBIGene:2488",
+      "node_name": "FSHB",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 1427,
+      "curie_in_hybrid_rank": 6,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "LHB",
+      "curie": "NCBIGene:3972",
+      "node_name": "LHB",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 1582,
+      "curie_in_hybrid_rank": 3,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "TSHB",
+      "curie": "NCBIGene:7252",
+      "node_name": "TSHB",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 1535,
+      "curie_in_hybrid_rank": 3,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "F8",
+      "curie": "NCBIGene:2157",
+      "node_name": "F8",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 3152,
+      "curie_in_hybrid_rank": 1,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "F9",
+      "curie": "NCBIGene:2158",
+      "node_name": "F9",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 2680,
+      "curie_in_hybrid_rank": 5,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "F7",
+      "curie": "NCBIGene:2155",
+      "node_name": "F7",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 3079,
+      "curie_in_hybrid_rank": 6,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "IL2",
+      "curie": "NCBIGene:3558",
+      "node_name": "IL2",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 6276,
+      "curie_in_hybrid_rank": 4,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "IL11",
+      "curie": "NCBIGene:3589",
+      "node_name": "IL11",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 2074,
+      "curie_in_hybrid_rank": 3,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "BMP2",
+      "curie": "NCBIGene:650",
+      "node_name": "BMP2",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 3872,
+      "curie_in_hybrid_rank": 3,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "SERPINC1",
+      "curie": "NCBIGene:462",
+      "node_name": "SERPINC1",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 4164,
+      "curie_in_hybrid_rank": 5,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "OXT",
+      "curie": "NCBIGene:5020",
+      "node_name": "OXT",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 2467,
+      "curie_in_hybrid_rank": 5,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "AVP",
+      "curie": "NCBIGene:551",
+      "node_name": "AVP",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 2320,
+      "curie_in_hybrid_rank": 4,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "CALCA",
+      "curie": "NCBIGene:796",
+      "node_name": "calcitonin",
+      "categories": [
+        "ChemicalEntity",
+        "Drug",
+        "Gene",
+        "Protein",
+        "SmallMolecule"
+      ],
+      "drug_conflated": true,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 2868,
+      "curie_in_hybrid_rank": null,
+      "hgnc_symbolmatch_retrievable": false,
+      "status": "ok"
+    }
+  ],
+  "control": [
+    {
+      "symbol": "TP53",
+      "curie": "NCBIGene:7157",
+      "node_name": "TP53",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 12347,
+      "curie_in_hybrid_rank": 7,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "LDLR",
+      "curie": "NCBIGene:3949",
+      "node_name": "LDLR",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 5306,
+      "curie_in_hybrid_rank": 4,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "TNFRSF1A",
+      "curie": "NCBIGene:7132",
+      "node_name": "TNFRSF1A",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 3777,
+      "curie_in_hybrid_rank": 4,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "TNFRSF1B",
+      "curie": "NCBIGene:7133",
+      "node_name": "TNFRSF1B",
+      "categories": [
+        "ChemicalEntity",
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": true,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 2378,
+      "curie_in_hybrid_rank": 4,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "BRCA1",
+      "curie": "NCBIGene:672",
+      "node_name": "BRCA1",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 13205,
+      "curie_in_hybrid_rank": 5,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "BRCA2",
+      "curie": "NCBIGene:675",
+      "node_name": "BRCA2",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 13572,
+      "curie_in_hybrid_rank": 7,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "EGFR",
+      "curie": "NCBIGene:1956",
+      "node_name": "EGFR",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 22264,
+      "curie_in_hybrid_rank": 5,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "APOE",
+      "curie": "NCBIGene:348",
+      "node_name": "APOE",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 20057,
+      "curie_in_hybrid_rank": 5,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "CFTR",
+      "curie": "NCBIGene:1080",
+      "node_name": "CFTR",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 9974,
+      "curie_in_hybrid_rank": 4,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "MTHFR",
+      "curie": "NCBIGene:4524",
+      "node_name": "MTHFR",
+      "categories": [
+        "ChemicalEntity",
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": true,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 3315,
+      "curie_in_hybrid_rank": 6,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "PAH",
+      "curie": "NCBIGene:5053",
+      "node_name": "PAH",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 2318,
+      "curie_in_hybrid_rank": 3,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "G6PD",
+      "curie": "NCBIGene:2539",
+      "node_name": "G6PD",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 3129,
+      "curie_in_hybrid_rank": 3,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "HBB",
+      "curie": "NCBIGene:3043",
+      "node_name": "HBB",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 6667,
+      "curie_in_hybrid_rank": 2,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "KRAS",
+      "curie": "NCBIGene:3845",
+      "node_name": "KRAS",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 14449,
+      "curie_in_hybrid_rank": 5,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    },
+    {
+      "symbol": "APP",
+      "curie": "NCBIGene:351",
+      "node_name": "APP",
+      "categories": [
+        "Gene",
+        "Protein"
+      ],
+      "drug_conflated": false,
+      "symbol_in_text": true,
+      "has_hgnc": true,
+      "neighbors": 9828,
+      "curie_in_hybrid_rank": 8,
+      "hgnc_symbolmatch_retrievable": true,
+      "status": "ok"
+    }
+  ]
+}

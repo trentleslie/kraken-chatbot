@@ -74,7 +74,7 @@ class PipelineProgressMessage(BaseModel):
     node: str                    # Current node name (e.g., "entity_resolution")
     message: str                 # User-friendly status message
     nodes_completed: int         # Number of nodes finished
-    total_nodes: int = 10        # Total nodes in pipeline
+    total_nodes: int = 12        # Total nodes in pipeline (keep in sync with NODE_STATUS_MESSAGES)
 
 
 class PipelineNodeDetailMessage(BaseModel):
@@ -136,7 +136,9 @@ NODE_STATUS_MESSAGES = {
     "cold_start": "Investigating sparse entities...",
     "pathway_enrichment": "Finding shared biological pathways...",
     "integration": "Detecting cross-type bridges...",
+    "bridge_grounding": "Labeling bridge evidence provenance...",
     "temporal": "Applying temporal reasoning...",
-    "synthesis": "Generating discovery report...",
+    "hypothesis_extraction": "Extracting and validating hypotheses...",
     "literature_grounding": "Grounding hypotheses with literature citations...",
+    "synthesis": "Generating discovery report...",
 }

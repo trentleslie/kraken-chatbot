@@ -14,7 +14,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Requ
 from fastapi.middleware.cors import CORSMiddleware
 from langfuse import get_client
 
-from .config import get_settings
+from .config import biomapper_misconfig_reason, get_settings
 from .agent import run_agent_turn
 from .logging_config import configure_logging, generate_correlation_id, correlation_id
 from .clerk_auth import get_current_user, validate_ws_clerk_token
@@ -229,6 +229,19 @@ if settings.clerk_auth_enabled:
             "Set these env vars or set CLERK_AUTH_ENABLED=false.",
             ", ".join(_missing),
         )
+
+# Fail-closed: warn if the Biomapper pre-resolver flag is on but its API key is unset.
+# The flag lives in pipeline_config (tuning), the secret in Settings (deployment); cross-check
+# both at startup so a flag-flip surfaces a misconfig immediately, not per-request. Lazy import
+# keeps pipeline_config off the module-import critical path and avoids any import cycle.
+from .graph.pipeline_config import get_pipeline_config  # noqa: E402
+
+_biomapper_reason = biomapper_misconfig_reason(
+    get_pipeline_config().entity_resolution.biomapper.enabled,
+    settings.biomapper_api_key,
+)
+if _biomapper_reason:
+    logging.getLogger(__name__).critical(_biomapper_reason)
 
 
 def check_langfuse_health() -> tuple[bool, str | None]:
@@ -490,6 +503,7 @@ async def handle_pipeline_mode(
     websocket: WebSocket,
     content: str,
     connection_id: str,
+    biomapper_env: str | None = None,
 ) -> None:
     """
     Handle discovery pipeline mode - LangGraph multi-node workflow.
@@ -567,6 +581,7 @@ async def handle_pipeline_mode(
             query=content,
             conversation_history=list(history),
             config=pipeline_config,
+            biomapper_env=biomapper_env,
         ):
             if event["type"] != "node_update":
                 continue
@@ -836,10 +851,12 @@ async def websocket_chat(websocket: WebSocket):
 
             # Route based on agent_mode
             agent_mode = data.get("agent_mode", "classic")
+            # Optional prod/dev biomapper2 API toggle (mirrors biomapper-ui env routing).
+            biomapper_env = data.get("biomapper_env")
 
             try:
                 if agent_mode == "pipeline":
-                    await handle_pipeline_mode(websocket, content, connection_id)
+                    await handle_pipeline_mode(websocket, content, connection_id, biomapper_env)
                 else:
                     await handle_classic_mode(websocket, content, connection_id)
             except Exception as e:

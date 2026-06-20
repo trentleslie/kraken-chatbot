@@ -1601,3 +1601,84 @@ class TestBackfillAbstracts:
         updated, filled = await backfill_abstracts(hyps)
         assert filled == 0 and called is False
         assert updated[0].literature_support[0].abstract is None
+
+
+class TestGroundingRunReportAgnostic:
+    """Unit 3 — run() is report-agnostic (no synthesis_report) and cannot abort the run (R13)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_hypotheses_noop_no_report(self):
+        """Empty hypotheses → no-op return with no synthesis_report key."""
+        result = await lit_grounding_module.run({"hypotheses": []})
+        assert result == {"hypotheses": [], "literature_errors": []}
+        assert "synthesis_report" not in result
+
+    @pytest.mark.asyncio
+    async def test_success_returns_hypotheses_and_errors_only(self, monkeypatch):
+        """Happy path: run returns {hypotheses, literature_errors} and NO synthesis_report,
+        even though state carries one (grounding stops reading/appending it)."""
+        async def fake_search(hypothesis, disease_context="", entity_names=None):
+            return [], [], {"kg": 0, "pubmed": 0, "openalex": 0, "exa": 0, "s2": 0}
+
+        async def fake_backfill(hyps):
+            return hyps, 0
+
+        monkeypatch.setattr(lit_grounding_module, "collect_pmids_from_state", lambda state: {})
+        monkeypatch.setattr(lit_grounding_module, "parallel_search_hypothesis", fake_search)
+        monkeypatch.setattr(lit_grounding_module, "backfill_abstracts", fake_backfill)
+
+        hyp = _make_hypothesis("H1", [])
+        result = await lit_grounding_module.run({
+            "hypotheses": [hyp],
+            "synthesis_report": "# Pre-existing report that grounding must NOT touch",
+        })
+        assert set(result.keys()) == {"hypotheses", "literature_errors"}
+        assert "synthesis_report" not in result
+        assert len(result["hypotheses"]) == 1
+        assert result["literature_errors"] == []
+
+    @pytest.mark.asyncio
+    async def test_r13_degrades_on_unguarded_exception(self, monkeypatch):
+        """R13: an unguarded grounding exception (e.g. backfill raising) degrades to a no-op return
+        carrying the upstream hypotheses + a surfaced error — it does NOT propagate (which would
+        become PIPELINE_ERROR with no report, since grounding now runs upstream of synthesis)."""
+        async def fake_search(hypothesis, disease_context="", entity_names=None):
+            return [], [], {"kg": 0, "pubmed": 0, "openalex": 0, "exa": 0, "s2": 0}
+
+        async def boom_backfill(hyps):
+            raise RuntimeError("EFetch exploded")
+
+        monkeypatch.setattr(lit_grounding_module, "collect_pmids_from_state", lambda state: {})
+        monkeypatch.setattr(lit_grounding_module, "parallel_search_hypothesis", fake_search)
+        monkeypatch.setattr(lit_grounding_module, "backfill_abstracts", boom_backfill)
+
+        upstream = [_make_hypothesis("H1", []), _make_hypothesis("H2", [])]
+        result = await lit_grounding_module.run({"hypotheses": upstream})  # must NOT raise
+
+        assert result["hypotheses"] == upstream  # ungrounded pass-through
+        assert len(result["literature_errors"]) == 1
+        assert result["literature_errors"][0].startswith("grounding failed:")
+        assert "synthesis_report" not in result
+
+    @pytest.mark.asyncio
+    async def test_overall_timeout_degrades(self, monkeypatch):
+        """R13 latency ceiling: a slow grounding body hits asyncio.timeout (TimeoutError, an
+        Exception) and degrades to the no-op return — the run is bounded, not stalled, and still
+        reaches synthesis."""
+        import asyncio
+
+        monkeypatch.setattr(lit_grounding_module._config, "overall_timeout_seconds", 0.05)
+        monkeypatch.setattr(lit_grounding_module, "collect_pmids_from_state", lambda state: {})
+
+        async def slow_search(hypothesis, disease_context="", entity_names=None):
+            await asyncio.sleep(1.0)  # exceeds the 0.05s ceiling
+            return [], [], {"kg": 0, "pubmed": 0, "openalex": 0, "exa": 0, "s2": 0}
+
+        monkeypatch.setattr(lit_grounding_module, "parallel_search_hypothesis", slow_search)
+
+        upstream = [_make_hypothesis("H1", [])]
+        result = await lit_grounding_module.run({"hypotheses": upstream})  # must NOT raise/hang
+
+        assert result["hypotheses"] == upstream
+        assert result["literature_errors"][0].startswith("grounding failed:")
+        assert "synthesis_report" not in result

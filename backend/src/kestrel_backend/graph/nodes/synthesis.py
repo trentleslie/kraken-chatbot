@@ -7,14 +7,13 @@ Architecture:
 - Phase A: assemble_synthesis_context() - gather all state into context block
 - Phase B: LLM query() call for natural language discovery report (if SDK available)
 - Fallback: fallback_report() - structured markdown sections (current logic)
-- Hypothesis Extraction: extract_hypotheses() - build Hypothesis objects from state
 
-The ~18% validation gap calibration is applied to all Tier 3 hypotheses, based on
-systematic review data showing that approximately 18% of computational predictions
-progress to clinical investigation.
+Hypotheses are no longer produced here: hypothesis_extraction.run() builds them upstream
+and literature_grounding.run() grounds them, both before synthesis. Synthesis reads the
+already-validated `bridges` and grounded `hypotheses` from state (Unit 2 of the
+ground-before-synthesis reorg).
 """
 
-import json
 import logging
 import time
 from typing import Any
@@ -22,18 +21,17 @@ from ..state import (
     DiscoveryState, EntityResolution, NoveltyScore, Finding,
     DiseaseAssociation, PathwayMembership, InferredAssociation, AnalogueEntity,
     SharedNeighbor, BiologicalTheme, Bridge, GapEntity, TemporalClassification,
-    Hypothesis
+    Hypothesis,
 )
 from ...literature_utils import format_pmid_link
-from ...kestrel_client import multi_hop_query
 from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
 from ..state_contracts import validate_state, SynthesisInput, SynthesisOutput
+# References-table assembly lives with grounding's module but is OWNED by synthesis now (R6):
+# synthesis appends it from the grounded hypotheses in state. (literature_grounding does not
+# import synthesis, so this one-way import introduces no cycle.)
+from .literature_grounding import build_references_table
 
 logger = logging.getLogger(__name__)
-
-
-# Validation gap calibration constant
-VALIDATION_GAP_NOTE = "~18% of computational predictions reach clinical investigation (systematic review calibration)"
 
 
 # =============================================================================
@@ -96,12 +94,19 @@ Prioritized next steps:
 
 Every factual claim in the report MUST be tagged with its evidence source:
 - [KG Evidence] — finding came from Kestrel knowledge graph query results (direct_findings, disease_associations, pathway data, edge counts)
-- [Model Knowledge] — claim is from general biomedical knowledge, not backed by KG query results in this analysis
-- [Inferred] — derived by combining KG evidence with model knowledge
+- [Literature] — claim is supported by a grounded abstract/passage in the "Literature Evidence" section below (cite it: author/year or title)
+- [Model Knowledge] — claim is from general biomedical knowledge, not backed by KG query results or grounded literature in this analysis
+- [Inferred] — derived by combining KG evidence, grounded literature, and/or model knowledge
+
+When a hypothesis has grounded literature in the "Literature Evidence" section, cite that evidence with a
+[Literature] tag in its structural-logic / logic-chain narrative — do not leave grounded evidence unused.
+Only tag [Literature] when the cited abstract genuinely supports the claim; a tangential paper is not support
+(say so rather than over-claiming). The presence of grounded abstracts means literature was *fetched* for that
+hypothesis, NOT that the claim is verified — calibrate confidence on the evidence content, not its mere presence.
 
 If a section has no KG-backed findings, state this explicitly: "No direct KG evidence was found for this connection. The following is based on [Model Knowledge]."
 
-Do NOT present model knowledge as if it were KG-derived. Scientific integrity requires honest attribution.
+Do NOT present model knowledge as if it were KG-derived or literature-backed. Scientific integrity requires honest attribution.
 
 Generate a clear, scientific report in markdown format.
 """
@@ -424,13 +429,46 @@ def format_hub_warnings(hub_flags: list[str]) -> str:
     return "\n".join(lines)
 
 
-def format_bridges(bridges: list[Bridge]) -> str:
-    """Format cross-type bridges discovered during integration analysis."""
+def format_bridges(
+    bridges: list[Bridge],
+    grounding_labels: dict[tuple[str, ...], str] | None = None,
+) -> str:
+    """Format cross-type bridges discovered during integration analysis.
+
+    ``grounding_labels`` maps a bridge's ``tuple(entities)`` to its evidence-provenance chain
+    label (from the bridge_grounding node, via ``grounded_bridges``). When present, the label is
+    rendered per bridge so the researcher sees what kind of evidence backs each leg.
+    """
     if not bridges:
         return ""
 
+    labels = grounding_labels or {}
+
+    # Initialise `lines` BEFORE the _render closure that appends to it: the closure captures it by
+    # reference, so defining the list first keeps the dependency obvious and avoids an UnboundLocalError
+    # if a future refactor ever calls _render before this point.
     lines = ["## Cross-Type Bridges\n"]
     lines.append("*Multi-hop paths connecting different entity types across the analysis.*\n")
+
+    def _render(b: Bridge, show_predicates: bool) -> None:
+        # show_predicates preserves the original behavior: Tier 2 lists per-hop predicates,
+        # Tier 3 (speculative) deliberately omits them.
+        novelty_tag = "Known" if b.novelty == "known" else "Inferred"
+        lines.append(f"\n**{b.path_description}** [{novelty_tag}]")
+        if b.entity_names:
+            path_with_names = " -> ".join(
+                f"{name} (`{curie}`)" for name, curie in zip(b.entity_names, b.entities)
+            )
+            lines.append(f"  - Path: {path_with_names}")
+        else:
+            lines.append(f"  - Entities: {' -> '.join(b.entities)}")
+        if show_predicates and b.predicates:
+            lines.append(f"  - Predicates: {' -> '.join(b.predicates)}")
+        if b.significance:
+            lines.append(f"  - **Significance**: {b.significance}")
+        label = labels.get(tuple(b.entities))
+        if label:
+            lines.append(f"  - **Evidence provenance**: {label}")
 
     # Separate by tier
     tier2 = [b for b in bridges if b.tier == 2]
@@ -439,40 +477,26 @@ def format_bridges(bridges: list[Bridge]) -> str:
     if tier2:
         lines.append("### High-Confidence Bridges (Tier 2)")
         for b in tier2:
-            novelty_tag = "Known" if b.novelty == "known" else "Inferred"
-            lines.append(f"\n**{b.path_description}** [{novelty_tag}]")
-            if b.entity_names:
-                path_with_names = " -> ".join(
-                    f"{name} (`{curie}`)"
-                    for name, curie in zip(b.entity_names, b.entities)
-                )
-                lines.append(f"  - Path: {path_with_names}")
-            else:
-                lines.append(f"  - Entities: {' -> '.join(b.entities)}")
-            if b.predicates:
-                lines.append(f"  - Predicates: {' -> '.join(b.predicates)}")
-            if b.significance:
-                lines.append(f"  - **Significance**: {b.significance}")
+            _render(b, show_predicates=True)
         lines.append("")
 
     if tier3:
         lines.append("### Speculative Bridges (Tier 3)")
         for b in tier3:
-            novelty_tag = "Known" if b.novelty == "known" else "Inferred"
-            lines.append(f"\n**{b.path_description}** [{novelty_tag}]")
-            if b.entity_names:
-                path_with_names = " -> ".join(
-                    f"{name} (`{curie}`)"
-                    for name, curie in zip(b.entity_names, b.entities)
-                )
-                lines.append(f"  - Path: {path_with_names}")
-            else:
-                lines.append(f"  - Entities: {' -> '.join(b.entities)}")
-            if b.significance:
-                lines.append(f"  - **Significance**: {b.significance}")
+            _render(b, show_predicates=False)
         lines.append("")
 
     return "\n".join(lines)
+
+
+def grounding_labels_from_state(state: DiscoveryState) -> dict[tuple[str, ...], str]:
+    """Build a {tuple(entities) -> chain label} map from grounded_bridges for bridge rendering."""
+    labels: dict[tuple[str, ...], str] = {}
+    for gb in state.get("grounded_bridges", []) or []:
+        grounding = getattr(gb, "grounding", None)
+        if grounding is not None and getattr(grounding, "label", ""):
+            labels[tuple(gb.entities)] = grounding.label
+    return labels
 
 
 def format_gap_entities(gaps: list[GapEntity]) -> str:
@@ -601,10 +625,93 @@ def format_study_context(state: DiscoveryState) -> str:
     return "\n".join(lines)
 
 
+# Caps for rendering grounded literature into the synthesis context (R5). Based on the Spike-0 budget
+# (max_papers_per_hyp=4, max_abstract_chars=1500) and kept well under max_buffer_size.
+# NOTE: this is a DISPLAY cap, deliberately >= LiteratureGroundingConfig.papers_per_hypothesis
+# (default 3) so the renderer never hides papers that grounding actually attached. Under the default
+# config a hypothesis carries <= 3 entries, so the slice and the "+N more papers" path only activate
+# if that grounding config value is raised above 4 — intentional operator headroom, not dead code.
+MAX_LIT_PAPERS_PER_HYPOTHESIS = 4
+MAX_LIT_ABSTRACT_CHARS = 1500
+
+
+def _truncate_abstract(text: str, limit: int = MAX_LIT_ABSTRACT_CHARS) -> str:
+    """Trim an abstract/passage to the per-entry budget, marking truncation."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "… [truncated]"
+
+
+def format_literature_evidence(hypotheses: list[Hypothesis]) -> str:
+    """Render grounded literature (abstracts / key passages) for the synthesis context (R5).
+
+    Ground-before-synthesis delivers value here: synthesis reasons over the grounded abstracts, not
+    just a trailing references table. Only S2-inline and PMID-backfilled entries carry an ``abstract``
+    body; OpenAlex/Exa entries carry only title/citation (sometimes a ``key_passage``) — render what
+    exists, never fabricate.
+
+    Legibility + calibration (guards mis-calibrated trust): each hypothesis carries a grounded/ungrounded
+    marker so a reader can tell "not grounded" from "unsupported". "Grounded" means abstracts were
+    *fetched* for the hypothesis (only the top hypotheses by tier are attempted), NOT that the claim is
+    verified or stronger; "ungrounded" spans both "no papers found" and "ranked below the grounding cap",
+    so the absence of a [Literature] citation is not evidence of weakness.
+    """
+    if not hypotheses:
+        return ""
+
+    grounded = [h for h in hypotheses if getattr(h, "literature_support", None)]
+    ungrounded = [h for h in hypotheses if not getattr(h, "literature_support", None)]
+
+    if not grounded:
+        # Hypotheses exist but none carry literature (well-characterized-only run, all below the cap,
+        # or no papers found). Emit only a short calibration note so the absence reads correctly.
+        return (
+            "## Literature Evidence\n\n"
+            "_No hypotheses in this run have grounded literature attached. Absence of literature here "
+            "means none was fetched or found — NOT that the hypotheses are unsupported._"
+        )
+
+    lines = [
+        "## Literature Evidence\n",
+        "_\"Grounded\" means abstracts were fetched for a hypothesis (top hypotheses by tier only); it "
+        "does NOT mean the claim is verified or stronger. Cite these with a [Literature] tag only where "
+        "they genuinely support a claim._\n",
+    ]
+
+    for h in grounded:
+        all_lits = list(h.literature_support or [])
+        lits = all_lits[:MAX_LIT_PAPERS_PER_HYPOTHESIS]
+        more = f" (+{len(all_lits) - len(lits)} more papers)" if len(all_lits) > len(lits) else ""
+        lines.append(f"### {h.title}  — ✓ literature-grounded{more}")
+        for lit in lits:
+            cite_bits = [b for b in [lit.authors, str(lit.year) if lit.year else None] if b]
+            citation = ", ".join(cite_bits) if cite_bits else (lit.source or "source unknown")
+            header = f"- **{lit.title or 'Untitled'}** ({citation})"
+            if lit.doi:
+                header += f" doi:{lit.doi}"
+            lines.append(header)
+            body = lit.abstract or lit.key_passage or ""
+            if body:
+                lines.append(f"  {_truncate_abstract(body)}")
+            # else: OpenAlex/Exa entry with no abstract body — title/citation already rendered.
+        lines.append("")
+
+    if ungrounded:
+        names = ", ".join(h.title for h in ungrounded[:10])
+        extra = f" (+{len(ungrounded) - 10} more)" if len(ungrounded) > 10 else ""
+        lines.append(
+            f"_Ungrounded hypotheses (no abstracts fetched — speculative, ranked below the grounding "
+            f"cap, or no papers found; not a sign of weakness): {names}{extra}._"
+        )
+
+    return "\n".join(lines)
+
+
 def assemble_synthesis_context(state: DiscoveryState) -> str:
     """
     Assemble all accumulated state into a context block for LLM synthesis.
-    
+
     This function gathers data from all previous nodes and formats it into
     a comprehensive context that the LLM can use to generate a discovery report.
     """
@@ -659,7 +766,7 @@ def assemble_synthesis_context(state: DiscoveryState) -> str:
     
     # Cross-type bridges
     bridges = state.get("bridges", [])
-    bridges_section = format_bridges(bridges)
+    bridges_section = format_bridges(bridges, grounding_labels_from_state(state))
     if bridges_section:
         sections.append(bridges_section)
     
@@ -688,7 +795,15 @@ def assemble_synthesis_context(state: DiscoveryState) -> str:
     findings_section = format_findings_summary(direct_findings, cold_start_findings)
     if findings_section:
         sections.append(findings_section)
-    
+
+    # Grounded literature evidence (R5): abstracts/passages the model should reason over and cite
+    # with [Literature]. This is the value-delivering change — synthesis now sees the grounded
+    # abstracts (produced upstream by literature_grounding), not just a trailing references table.
+    hypotheses = state.get("hypotheses", [])
+    literature_section = format_literature_evidence(hypotheses)
+    if literature_section:
+        sections.append(literature_section)
+
     return "\n".join(sections)
 
 
@@ -753,7 +868,7 @@ def fallback_report(state: DiscoveryState) -> str:
         report_lines.append(enrichment_section)
 
     # Cross-type bridges - Phase 4b
-    bridges_section = format_bridges(bridges)
+    bridges_section = format_bridges(bridges, grounding_labels_from_state(state))
     if bridges_section:
         report_lines.append(bridges_section)
 
@@ -841,205 +956,21 @@ def fallback_report(state: DiscoveryState) -> str:
     return "\n".join(report_lines)
 
 
-async def validate_bridge_hypotheses(bridges: list[Bridge]) -> list[Bridge]:
-    """
-    Validate Tier 3 bridge hypotheses using doubly-pinned multi_hop_query.
-
-    For each Tier 3 bridge, attempt to verify the path exists in the KG.
-    If verified, upgrade to Tier 2. If not verified, keep as Tier 3.
-
-    Args:
-        bridges: List of Bridge objects to validate
-
-    Returns:
-        Updated list of bridges with validated ones upgraded to Tier 2
-    """
-    if not bridges:
-        return bridges
-
-    validated_bridges: list[Bridge] = []
-    tier3_bridges = [b for b in bridges if b.tier == 3]
-    other_bridges = [b for b in bridges if b.tier != 3]
-
-    logger.info("validate_bridge_hypotheses: validating %d Tier 3 bridges", len(tier3_bridges))
-
-    for bridge in tier3_bridges:
-        if len(bridge.entities) < 2:
-            # Can't validate without start/end
-            validated_bridges.append(bridge)
-            continue
-
-        start_curie = bridge.entities[0]
-        end_curie = bridge.entities[-1]
-
-        try:
-            # Use doubly-pinned search with max_hops based on path length
-            expected_hops = len(bridge.entities) - 1
-            result = await multi_hop_query(
-                start_node_ids=[start_curie],
-                end_node_ids=[end_curie],
-                max_hops=min(expected_hops + 1, 5),  # Allow 1 extra hop, cap at 5
-                limit=1,  # We just need to know if ANY path exists
-            )
-
-            if result.get("isError"):
-                # Validation failed, keep as Tier 3
-                validated_bridges.append(bridge)
-                continue
-
-            # Check if we got any paths back
-            content = result.get("content", [])
-            if not content:
-                validated_bridges.append(bridge)
-                continue
-
-            json_text = content[0].get("text", "")
-            if not json_text:
-                validated_bridges.append(bridge)
-                continue
-
-            data = json.loads(json_text)
-            paths = data.get("paths", data) if isinstance(data, dict) else data
-
-            if paths and len(paths) > 0:
-                # Path verified! Upgrade to Tier 2
-                logger.info(
-                    "validate_bridge_hypotheses: VALIDATED %s -> %s, upgrading to Tier 2",
-                    start_curie, end_curie
-                )
-                validated_bridges.append(Bridge(
-                    path_description=bridge.path_description,
-                    entities=bridge.entities,
-                    entity_names=bridge.entity_names,
-                    predicates=bridge.predicates,
-                    tier=2,  # UPGRADED
-                    novelty="known",  # Now verified in KG
-                    significance=bridge.significance + " [KG-validated]",
-                ))
-            else:
-                # No path found, keep as Tier 3
-                validated_bridges.append(bridge)
-
-        except Exception as e:
-            logger.warning("Error validating bridge %s -> %s: %s", start_curie, end_curie, str(e))
-            # Keep as Tier 3 on error
-            validated_bridges.append(bridge)
-
-    # Combine validated bridges with other tiers
-    all_bridges = other_bridges + validated_bridges
-    logger.info(
-        "validate_bridge_hypotheses: %d bridges after validation (%d upgraded to Tier 2)",
-        len(all_bridges),
-        sum(1 for b in validated_bridges if b.tier == 2)
-    )
-
-    return all_bridges
-
-
-def extract_hypotheses(state: DiscoveryState) -> list[Hypothesis]:
-    """
-    Extract structured Hypothesis objects from accumulated state.
-    
-    Builds hypotheses programmatically from:
-    - cold_start_findings (Tier 3 inferences)
-    - bridges (Tier 2-3 cross-type connections)
-    
-    All hypotheses include the ~18% validation gap note.
-    """
-    hypotheses: list[Hypothesis] = []
-    
-    # From cold-start findings (Tier 3 inferences)
-    cold_start_findings = state.get("cold_start_findings", [])
-    for finding in cold_start_findings:
-        # Skip placeholder or pending findings
-        if not finding.claim or "pending" in finding.claim.lower():
-            continue
-        
-        # Only process Tier 3 findings (speculative)
-        if finding.tier == 3:
-            hypotheses.append(Hypothesis(
-                title=f"Inferred role of {finding.entity}",
-                tier=3,
-                claim=finding.claim,
-                supporting_entities=[finding.entity],
-                contradicting_entities=[],
-                structural_logic=finding.logic_chain or "Based on analogue inference",
-                confidence=finding.confidence,
-                validation_steps=[
-                    f"Search literature for {finding.entity} associations",
-                    f"Validate in independent cohort",
-                ],
-                validation_gap_note=VALIDATION_GAP_NOTE,
-            ))
-    
-    # From cross-type bridges
-    bridges = state.get("bridges", [])
-    for bridge in bridges:
-        if not isinstance(bridge, Bridge):
-            continue
-        
-        # Only create hypothesis if bridge has significance
-        if not bridge.significance:
-            continue
-        
-        # Build the logic chain from path
-        if bridge.entity_names and bridge.predicates:
-            logic = f"{' -> '.join(bridge.entity_names)} via {', '.join(bridge.predicates)}"
-        else:
-            logic = bridge.path_description
-        
-        # Get target entity name for validation step
-        target_name = bridge.entity_names[-1] if bridge.entity_names else "target"
-        
-        hypotheses.append(Hypothesis(
-            title=f"Bridge: {bridge.path_description}",
-            tier=bridge.tier,
-            claim=bridge.significance,
-            supporting_entities=bridge.entities,
-            contradicting_entities=[],
-            structural_logic=logic,
-            confidence="moderate",
-            validation_steps=[
-                f"Verify path in literature",
-                f"Check {target_name} in GWAS Catalog",
-            ],
-            validation_gap_note=VALIDATION_GAP_NOTE,
-        ))
-    
-    # From inferred associations (cold-start analogues)
-    inferred_associations = state.get("inferred_associations", [])
-    for inference in inferred_associations:
-        if not isinstance(inference, InferredAssociation):
-            continue
-        
-        hypotheses.append(Hypothesis(
-            title=f"Inferred: {inference.source_entity} -> {inference.target_name}",
-            tier=3,
-            claim=f"{inference.source_entity} may be associated with {inference.target_name} via {inference.predicate}",
-            supporting_entities=[inference.source_entity, inference.target_curie],
-            contradicting_entities=[],
-            structural_logic=inference.logic_chain,
-            confidence=inference.confidence,
-            validation_steps=[inference.validation_step],
-            validation_gap_note=VALIDATION_GAP_NOTE,
-        ))
-    
-    return hypotheses
-
-
 @validate_state(SynthesisInput, SynthesisOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
-    Generate a synthesis report and extract hypotheses from all analysis phases.
+    Generate the final synthesis report from all analysis phases.
 
-    Phase 5 architecture:
+    Reads the already-validated `bridges` and the grounded `hypotheses` from state (produced
+    upstream by hypothesis_extraction and literature_grounding) and renders the report:
     - Phase A: Assemble all state into context block
     - Phase B: LLM synthesis (if SDK available) or fallback report
-    - Hypothesis extraction: Build structured Hypothesis objects from state
+    - R6: append the references table (built from the grounded hypotheses) to both paths
 
     Returns:
-        synthesis_report: Formatted markdown report
-        hypotheses: List of Hypothesis objects with validation steps and gap calibration
+        synthesis_report: Formatted markdown report (the only domain output — hypotheses and
+            bridges are owned upstream and are NOT re-emitted here)
+        model_usages: SDK usage record(s) for cost tracking, if any
     """
     # Count input findings
     direct_findings = state.get("direct_findings", [])
@@ -1048,16 +979,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     logger.info("Starting synthesis with %d findings", total_findings)
     start = time.time()
 
-    # Phase A: Validate bridge hypotheses
+    # Bridges are already validated and hypotheses already produced upstream by the
+    # hypothesis_extraction node (and grounded by literature_grounding); synthesis reads them
+    # from state rather than recomputing — no validation happens here anymore.
     bridges = state.get("bridges", [])
-    validated_bridges = await validate_bridge_hypotheses(bridges)
-
-    # Update state with validated bridges for context assembly
-    state_with_validated = dict(state)
-    state_with_validated["bridges"] = validated_bridges
 
     # Phase B: Assemble context (always done)
-    context = assemble_synthesis_context(state_with_validated)
+    context = assemble_synthesis_context(state)
 
     # Phase C: LLM synthesis or fallback
     usage_record = None
@@ -1085,20 +1013,28 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             # Could log error here if needed
     else:
         report = fallback_report(state)
-    
-    # Extract structured hypotheses (always, from state not LLM output)
-    # Use the validated bridges for hypothesis generation
-    hypotheses = extract_hypotheses(state_with_validated)
+
+    # Hypotheses are produced upstream (hypothesis_extraction) and grounded by
+    # literature_grounding; read them from state.
+    hypotheses = state.get("hypotheses", [])
+
+    # R6: synthesis owns the references table now (grounding stopped appending it in Unit 3).
+    # Append it AFTER the SDK/fallback convergence point so BOTH the LLM-success path and the
+    # fallback_report path emit it — the fallback omission was the highest-risk silent regression.
+    references_table = build_references_table(hypotheses)
+    if references_table:
+        report = report + "\n" + references_table
 
     duration = time.time() - start
     logger.info(
-        "Completed synthesis in %.1fs — hypotheses=%d, report_length=%d, validated_bridges=%d",
-        duration, len(hypotheses), len(report), len(validated_bridges)
+        "Completed synthesis in %.1fs — hypotheses=%d, report_length=%d, bridges=%d",
+        duration, len(hypotheses), len(report), len(bridges)
     )
 
+    # Report-only return (R4/R12): hypotheses and bridges are produced/owned upstream now, so
+    # synthesis must NOT re-emit them. extra='ignore' on SynthesisOutput would silently let a
+    # stray `bridges` return through, so it is removed deliberately, not relied on to be dropped.
     return {
         "synthesis_report": report,
-        "hypotheses": hypotheses,
-        "bridges": validated_bridges,  # Return validated bridges
         "model_usages": [usage_record] if usage_record else [],
     }

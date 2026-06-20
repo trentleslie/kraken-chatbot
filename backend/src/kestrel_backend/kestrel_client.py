@@ -411,3 +411,163 @@ async def multi_hop_query(
         arguments["mode"] = mode
 
     return await call_kestrel_tool("multi_hop_query", arguments)
+
+
+def parse_kestrel_response(envelope: dict[str, Any]) -> dict[str, Any]:
+    """Parse a multi_hop_query / subgraph_query MCP envelope into normalized paths.
+
+    Replaces the drift-prone ``data.get("paths", data)`` parse that shipped to prod in
+    three nodes for ~3.5 months. The real response (see .claude/skills/kestrel-api) has NO
+    top-level ``"paths"`` key — it is ``{"results": [...], "nodes": {...}, "edges": {...}}``
+    where each ``result["paths"]`` is a list of **CURIE-string lists** (not dicts).
+
+    FAILS LOUDLY: on a missing/mis-shaped ``results`` (or a bad envelope) it returns an
+    EMPTY path set and logs — it NEVER falls back to the raw dict (the silent-fallback bug).
+
+    Args:
+        envelope: the MCP tool result ``{"content": [{"text": "<json>"}], "isError": ...}``.
+
+    Returns:
+        ``{"paths": [{"curies": [...], "names": [...],
+        "predicates": [{"predicate": str|None, "forward": bool|None}, ...] (one per hop),
+        "end_node_id": str, "degree": int, "score": float}], "nodes": {curie: {...}},
+        "end_node_ids": [str, ...], "n_paths": int}`` — ``end_node_ids`` lists every result's
+        ``end_node_id`` (order-preserving, deduped), for callers that need reachable end-nodes
+        rather than full paths (e.g. pathway_enrichment's shared-neighbor counting).
+    """
+    empty = {"paths": [], "nodes": {}, "end_node_ids": [], "n_paths": 0}
+    try:
+        content = envelope.get("content", []) if isinstance(envelope, dict) else []
+        if not content:
+            return empty
+        json_text = content[0].get("text", "")
+        if not json_text:
+            return empty
+        data = json.loads(json_text)
+    except (json.JSONDecodeError, AttributeError, IndexError, TypeError) as e:
+        logger.warning("parse_kestrel_response: bad envelope (%s)", e)
+        return empty
+
+    if not isinstance(data, dict):
+        logger.warning("parse_kestrel_response: inner data not a dict: %s", type(data).__name__)
+        return empty
+
+    results = data.get("results", [])
+    if not isinstance(results, list):
+        logger.warning("parse_kestrel_response: 'results' not a list (keys=%s)", list(data)[:5])
+        return empty
+
+    nodes = data.get("nodes", {})
+    if not isinstance(nodes, dict):
+        nodes = {}
+
+    def _name(curie: str) -> str:
+        info = nodes.get(curie)
+        if isinstance(info, dict) and info.get("name"):
+            return str(info["name"])
+        return curie
+
+    # --- Per-hop predicate derivation (U0) -------------------------------------------------
+    # The response carries `edges` (edge-id -> compact tuple) + `edge_schema` (column order).
+    # Map each consecutive path pair to its edge predicate, recording orientation vs the path.
+    edges = data.get("edges", {})
+    if not isinstance(edges, dict):
+        edges = {}
+    norm_edges = {str(k): v for k, v in edges.items()}  # edge_ids may be ints; keys may be str
+    edge_schema = data.get("edge_schema", [])
+    sub_i = pred_i = obj_i = None
+    if isinstance(edge_schema, list):
+        for _idx, _col in enumerate(edge_schema):
+            if _col == "subject":
+                sub_i = _idx
+            elif _col == "predicate":
+                pred_i = _idx
+            elif _col == "object":
+                obj_i = _idx
+
+    def _edge_triple(e: Any) -> tuple[str, str, str] | None:
+        """Extract (subject, predicate, object) from a compact edge tuple via edge_schema.
+
+        Reads positions from edge_schema rather than hardcoding index 1 (robust to reorder).
+        """
+        if not isinstance(e, list) or sub_i is None or pred_i is None or obj_i is None:
+            return None
+        if max(sub_i, pred_i, obj_i) >= len(e):
+            return None
+        s, p, o = e[sub_i], e[pred_i], e[obj_i]
+        if not (isinstance(s, str) and isinstance(p, str) and isinstance(o, str)):
+            return None
+        return s, p, o
+
+    def _triple_map(edge_values: list) -> dict[frozenset, list[tuple[str, str, str]]]:
+        """frozenset({subject, object}) -> predicate-sorted (s, p, o) triples (deterministic)."""
+        m: dict[frozenset, list[tuple[str, str, str]]] = {}
+        for e in edge_values:
+            t = _edge_triple(e)
+            if t is None or t[0] == t[2]:  # skip unparseable / self-loops
+                continue
+            m.setdefault(frozenset((t[0], t[2])), []).append(t)
+        for _k in m:
+            m[_k].sort(key=lambda t: t[1])
+        return m
+
+    def _hop_predicates(curies: list[str], tmap: dict) -> list[dict[str, Any]]:
+        """Per-hop {predicate, forward}; forward=True when the edge runs A->B along the path.
+
+        Missing edge for a hop -> {None, None} at that position (never a positional shift).
+        Prefers a forward-oriented edge; falls back to a reverse one (the direction signal).
+        """
+        out: list[dict[str, Any]] = []
+        for i in range(len(curies) - 1):
+            a, b = curies[i], curies[i + 1]
+            cands = tmap.get(frozenset((a, b)), []) if a != b else []
+            fwd = [t for t in cands if t[0] == a and t[2] == b]
+            rev = [t for t in cands if t[0] == b and t[2] == a]
+            if fwd:
+                out.append({"predicate": fwd[0][1], "forward": True})
+            elif rev:
+                out.append({"predicate": rev[0][1], "forward": False})
+            else:
+                out.append({"predicate": None, "forward": None})
+        return out
+
+    parsed_paths: list[dict[str, Any]] = []
+    end_node_ids: list[str] = []
+    seen_ends: set[str] = set()
+    for res in results:
+        if not isinstance(res, dict):
+            continue
+        end_id = res.get("end_node_id")
+        if isinstance(end_id, str) and end_id and end_id not in seen_ends:
+            seen_ends.add(end_id)
+            end_node_ids.append(end_id)
+        # Scope edges to this result's edge_ids when present. If edge_ids are specified but none
+        # resolve in norm_edges, do NOT fall back to all edges — in a multi-result response that
+        # borrows edges from other results and mis-attributes predicates/directions to this path's
+        # hops. Use the (possibly empty) scoped set instead; _hop_predicates then emits {None, None}
+        # for unresolved hops (honest "unknown") rather than a wrong predicate. Only when there is no
+        # edge_ids scoping at all do we scan the full edge map.
+        eids = res.get("edge_ids")
+        if isinstance(eids, list) and eids:
+            cand = [norm_edges[str(eid)] for eid in eids if str(eid) in norm_edges]
+        else:
+            cand = list(edges.values())
+        tmap = _triple_map(cand)
+        for path in res.get("paths", []) or []:
+            # A path is a list of CURIE strings. Reject the old dict shape loudly.
+            if not isinstance(path, list) or len(path) < 2:
+                continue
+            curies = [c for c in path if isinstance(c, str)]
+            if len(curies) < 2:
+                continue
+            parsed_paths.append({
+                "curies": curies,
+                "names": [_name(c) for c in curies],
+                "predicates": _hop_predicates(curies, tmap),
+                "end_node_id": res.get("end_node_id", curies[-1]),
+                "degree": res.get("degree", 0),
+                "score": res.get("score", 0.0),
+            })
+
+    return {"paths": parsed_paths, "nodes": nodes,
+            "end_node_ids": end_node_ids, "n_paths": len(parsed_paths)}

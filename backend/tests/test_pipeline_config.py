@@ -3,6 +3,7 @@
 import pytest
 
 from kestrel_backend.graph.pipeline_config import (
+    BiomapperConfig,
     ColdStartConfig,
     DirectKGConfig,
     EntityResolutionConfig,
@@ -34,6 +35,25 @@ class TestPipelineConfig:
         assert config.sdk_semaphore == 1
         assert config.batch_size == 6
         assert config.tier1_min_score == 0.6
+
+    def test_biomapper_defaults_flag_off(self):
+        """The biomapper pre-resolver is default-off (byte-identical to today when off)."""
+        biomapper = get_pipeline_config().entity_resolution.biomapper
+        assert biomapper.enabled is False
+        assert biomapper.species_default == "human"
+        assert biomapper.http_concurrency == 8
+        assert biomapper.node_timeout_seconds == 30.0
+
+    def test_biomapper_namespace_preference_has_required_classes(self):
+        """R5: per-class namespace preference is explicit config with gene/protein/metabolite."""
+        prefs = get_pipeline_config().entity_resolution.biomapper.namespace_preference
+        assert set(prefs) >= {"gene", "protein", "metabolite"}
+        # Genes/proteins anchor on the human-only HGNC namespace first (spike 2026-06-15).
+        assert prefs["gene"][0] == "HGNC"
+        assert prefs["protein"][0] == "HGNC"
+        # Metabolites have no HGNC analogue; CHEBI-first hypothesis.
+        assert prefs["metabolite"][0] == "CHEBI"
+        assert "HGNC" not in prefs["metabolite"]
 
     def test_triage_defaults(self):
         config = get_pipeline_config().triage
@@ -78,6 +98,17 @@ class TestConfigOverride:
             literature_grounding=LiteratureGroundingConfig(use_llm_classifier=True)
         )
         assert custom.literature_grounding.use_llm_classifier is True
+
+    def test_override_biomapper_enabled_flag(self):
+        """The biomapper flag round-trips True when overridden (the eventual flag-flip path)."""
+        custom = PipelineConfig(
+            entity_resolution=EntityResolutionConfig(
+                biomapper=BiomapperConfig(enabled=True)
+            )
+        )
+        assert custom.entity_resolution.biomapper.enabled is True
+        # Other entity_resolution fields keep defaults.
+        assert custom.entity_resolution.sdk_semaphore == 1
 
     def test_invalid_semaphore_raises(self):
         """Semaphore values must be positive."""
