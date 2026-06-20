@@ -1141,6 +1141,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     logger.info("Starting literature_grounding (parallel hybrid search)")
     start = time.time()
 
+    # Read the runtime config fresh per invocation (not the import-time module-level _config) so
+    # get_pipeline_config.cache_clear() in tests takes effect — matching the bridge_grounding node.
+    # (The module-level _config remains for helper default-arg values, which are import-time by nature.)
+    cfg = get_pipeline_config().literature_grounding
+
     hypotheses = state.get("hypotheses", [])
     if not hypotheses:
         logger.info("No hypotheses to ground")
@@ -1163,7 +1168,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         # Exception) on expiry, caught by the degrade boundary below → ungrounded hypotheses pass
         # through and synthesis still runs. asyncio.timeout (not manual cancel) so the cancellation
         # surfaces as TimeoutError, not a raw CancelledError that would escape `except Exception`.
-        async with asyncio.timeout(_config.overall_timeout_seconds):
+        async with asyncio.timeout(cfg.overall_timeout_seconds):
             # Step 1: Collect KG PMIDs from findings
             kg_pmids = collect_pmids_from_state(state)
 
@@ -1183,8 +1188,8 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
             # Prioritize hypotheses by tier
             sorted_hypotheses = sorted(hypotheses, key=lambda h: h.tier)
-            to_ground = sorted_hypotheses[:_config.max_hypotheses]
-            remaining = sorted_hypotheses[_config.max_hypotheses:]
+            to_ground = sorted_hypotheses[:cfg.max_hypotheses]
+            remaining = sorted_hypotheses[cfg.max_hypotheses:]
 
             logger.info(
                 "Grounding %d/%d hypotheses (tiers: %s)",
