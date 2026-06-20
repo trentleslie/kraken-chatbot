@@ -203,13 +203,27 @@ def test_predicates_empty_edges_all_none_length_preserved():
     assert preds == [{"predicate": None, "forward": None}, {"predicate": None, "forward": None}]
 
 
-def test_predicate_edge_ids_scope_falls_back_to_all_when_unresolved():
-    # edge_ids reference ids absent from the edges dict -> fall back to scanning all edges.
+def test_predicate_edge_ids_specified_but_unresolved_does_not_borrow_other_edges():
+    # edge_ids are specified for this result but none resolve in the edges map. The scope must NOT
+    # fall back to all edges (that borrows edges from other results and mis-attributes predicates);
+    # the hop is honestly "unknown" -> {None, None}. (Greptile PR #79 fix.)
     env = _envelope({
         "results": [{"end_node_id": "B", "paths": [["A", "B"]], "edge_ids": [999]}],
         "nodes": {"A": {"name": "a"}, "B": {"name": "b"}},
         "edge_schema": SCHEMA,
-        "edges": {"7": _edge("A", "biolink:affects", "B", 7)},  # key 7, not 999
+        "edges": {"7": _edge("A", "biolink:affects", "B", 7)},  # key 7, not 999 -> unresolved
+    })
+    preds = parse_kestrel_response(env)["paths"][0]["predicates"]
+    assert preds == [{"predicate": None, "forward": None}]
+
+
+def test_predicate_no_edge_ids_scans_all_edges():
+    # When a result carries NO edge_ids scoping at all, scanning the full edge map is still correct.
+    env = _envelope({
+        "results": [{"end_node_id": "B", "paths": [["A", "B"]]}],  # no edge_ids
+        "nodes": {"A": {"name": "a"}, "B": {"name": "b"}},
+        "edge_schema": SCHEMA,
+        "edges": {"7": _edge("A", "biolink:affects", "B", 7)},
     })
     preds = parse_kestrel_response(env)["paths"][0]["predicates"]
     assert preds == [{"predicate": "biolink:affects", "forward": True}]
