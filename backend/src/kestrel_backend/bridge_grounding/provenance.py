@@ -80,25 +80,51 @@ def _parse_full_edges(resp: Any) -> list[dict[str, Any]]:
     return [e for e in values if isinstance(e, dict)]
 
 
+# one_hop_query edge cap. If a node returns this many edges the result is likely TRUNCATED, so a
+# missing X–Y edge may simply lie beyond the cap (a hub-node false 'none').
+_LEG_EDGE_LIMIT = 3000
+
+
+async def _leg_edges_from(curie_start: str) -> tuple[list[dict[str, Any]], bool]:
+    """Full one-hop edges from a node + whether the result was likely truncated. Best-effort."""
+    try:
+        resp = await call_kestrel_tool(
+            "one_hop_query", {"start_node_ids": curie_start, "mode": "full", "limit": _LEG_EDGE_LIMIT})
+    except Exception as e:  # best-effort: a Kestrel failure on one leg → no edges
+        logger.warning("bridge provenance: one_hop_query failed for %s: %s", curie_start, e)
+        return [], False
+    edges = _parse_full_edges(resp)
+    return edges, len(edges) >= _LEG_EDGE_LIMIT
+
+
+def _best_tier(edges: list[dict[str, Any]], other_curie: str) -> str:
+    """Best evidence tier over edges that touch other_curie, or 'none'."""
+    best = "none"
+    for edge in edges:
+        if other_curie not in (edge.get("subject"), edge.get("object")):
+            continue
+        tier = evidence_tier(edge)
+        if TIER_RANK[tier] > TIER_RANK[best]:
+            best = tier
+    return best
+
+
 async def leg_tier(curie_x: str, curie_y: str) -> str:
     """Best evidence tier over the X–Y edges, or 'none' if there is no edge.
 
     Fetches one_hop_query from X in full mode (the proven probe call — start-only, NOT end_node_ids),
     then filters client-side to edges that also touch Y. Best-effort: returns 'none' on any failure.
+
+    Hub guard: if X is a high-degree node its edge list may be truncated at the cap, so the true X–Y
+    edge can lie beyond it (a false 'none' that mislabels a well-supported bridge). When the X fetch
+    is truncated AND no X–Y edge is found, retry from Y (often the lower-degree endpoint) before
+    concluding 'none'. Both-hub bridges can still miss, but that is rare and degrades conservatively.
     """
-    try:
-        resp = await call_kestrel_tool(
-            "one_hop_query", {"start_node_ids": curie_x, "mode": "full", "limit": 3000})
-    except Exception as e:  # best-effort: a Kestrel failure on one leg → 'none'
-        logger.warning("bridge provenance: one_hop_query failed for %s: %s", curie_x, e)
-        return "none"
-    best = "none"
-    for edge in _parse_full_edges(resp):
-        if curie_y not in (edge.get("subject"), edge.get("object")):
-            continue
-        tier = evidence_tier(edge)
-        if TIER_RANK[tier] > TIER_RANK[best]:
-            best = tier
+    edges_x, truncated_x = await _leg_edges_from(curie_x)
+    best = _best_tier(edges_x, curie_y)
+    if best == "none" and truncated_x:
+        edges_y, _ = await _leg_edges_from(curie_y)
+        best = _best_tier(edges_y, curie_x)
     return best
 
 

@@ -123,6 +123,47 @@ async def test_leg_tier_filters_to_target(monkeypatch):
     assert await leg_tier("A", "B") == "none"
 
 
+async def test_leg_tier_retries_from_other_endpoint_on_truncation(monkeypatch):
+    # Hub guard: X's edge list is TRUNCATED (hits the cap) with no A-B edge, so the true A-B edge
+    # may lie beyond the cap. The retry from B (lower-degree) finds the curated edge -> labeled,
+    # not a false 'none'. (Greptile PR #79 fix.)
+    import json
+    monkeypatch.setattr(provenance, "_LEG_EDGE_LIMIT", 2)
+    ab_edge = _edge("biolink:causes", "knowledge_assertion", "manual_agent", "A", "B")
+
+    class _DirectionalFake:
+        def __init__(self):
+            self.calls = []
+
+        async def __call__(self, tool, args):
+            start = args.get("start_node_ids")
+            self.calls.append(start)
+            if start == "A":  # hub: truncated (== cap) and no A-B edge
+                edges = [
+                    _edge("biolink:related_to", "not_provided", "text_mining_agent", "A", "Z1"),
+                    _edge("biolink:related_to", "not_provided", "text_mining_agent", "A", "Z2"),
+                ]
+            else:  # retry from B finds the real A-B edge
+                edges = [ab_edge]
+            body = json.dumps(
+                {"results": [], "nodes": {}, "edges": {str(i): e for i, e in enumerate(edges)}})
+            return {"content": [{"type": "text", "text": body}], "isError": False}
+
+    fake = _DirectionalFake()
+    monkeypatch.setattr(provenance, "call_kestrel_tool", fake)
+    assert await leg_tier("A", "B") == "curated-causal"
+    assert fake.calls == ["A", "B"]  # retried from the other endpoint
+
+
+async def test_leg_tier_no_retry_when_not_truncated(monkeypatch):
+    # Below the cap (not truncated) with no A-B edge -> 'none', and NO second probe call.
+    monkeypatch.setattr(provenance, "_LEG_EDGE_LIMIT", 100)
+    fake = _FakeKestrel([_edge("biolink:causes", "knowledge_assertion", "manual_agent", "A", "Z")])
+    monkeypatch.setattr(provenance, "call_kestrel_tool", fake)
+    assert await leg_tier("A", "B") == "none"
+    assert len(fake.calls) == 1  # no retry
+
+
 # --- bridge_label (compose two legs) ---------------------------------------------------
 
 def test_bridge_label_both_curated_causal():

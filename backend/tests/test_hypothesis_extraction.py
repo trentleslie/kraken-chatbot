@@ -100,6 +100,33 @@ class TestHypothesisExtractionRun:
         assert bridge_hyps[0].tier == 3
 
     @pytest.mark.asyncio
+    async def test_upgraded_bridge_preserves_predicate_directions(self):
+        """Regression (Greptile P1): a Tier-3 bridge upgraded to Tier-2 must carry its
+        predicate_directions through, or bridge_grounding._is_scoreable silently skips exactly the
+        KG-validated bridges (it gates on a truthy predicate_directions)."""
+        bridge = Bridge(
+            path_description="glucose -> INS",
+            entities=["CHEBI:17234", "HGNC:6081"],
+            entity_names=["glucose", "INS"],
+            predicates=["biolink:affects"],
+            predicate_directions=[True],  # forward; list[bool | None] per the Bridge model
+            tier=3,
+            novelty="inferred",
+            significance="Speculative glucose-insulin bridge",
+        )
+        state = {"direct_findings": [_gate_finding()], "bridges": [bridge]}
+        with patch(
+            "src.kestrel_backend.graph.nodes.hypothesis_extraction.multi_hop_query",
+            new_callable=AsyncMock,
+        ) as mock_mhq:
+            mock_mhq.return_value = _path_found_response()
+            result = await run(state)
+
+        upgraded = result["bridges"][0]
+        assert upgraded.tier == 2
+        assert upgraded.predicate_directions == [True]  # carried through, not dropped to []
+
+    @pytest.mark.asyncio
     async def test_cold_start_only_empty_bridges(self):
         """No bridges, only a Tier-3 cold-start finding → hypotheses from cold-start, bridges []."""
         state = {

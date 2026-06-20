@@ -541,12 +541,15 @@ def parse_kestrel_response(envelope: dict[str, Any]) -> dict[str, Any]:
         if isinstance(end_id, str) and end_id and end_id not in seen_ends:
             seen_ends.add(end_id)
             end_node_ids.append(end_id)
-        # Scope edges to this result's edge_ids when resolvable, else scan all edges.
+        # Scope edges to this result's edge_ids when present. If edge_ids are specified but none
+        # resolve in norm_edges, do NOT fall back to all edges — in a multi-result response that
+        # borrows edges from other results and mis-attributes predicates/directions to this path's
+        # hops. Use the (possibly empty) scoped set instead; _hop_predicates then emits {None, None}
+        # for unresolved hops (honest "unknown") rather than a wrong predicate. Only when there is no
+        # edge_ids scoping at all do we scan the full edge map.
         eids = res.get("edge_ids")
         if isinstance(eids, list) and eids:
             cand = [norm_edges[str(eid)] for eid in eids if str(eid) in norm_edges]
-            if not cand:
-                cand = list(edges.values())
         else:
             cand = list(edges.values())
         tmap = _triple_map(cand)
