@@ -98,6 +98,11 @@ async def validate_bridge_hypotheses(bridges: list[Bridge]) -> list[Bridge]:
                     entities=bridge.entities,
                     entity_names=bridge.entity_names,
                     predicates=bridge.predicates,
+                    # Carry predicate_directions through the upgrade: bridge_grounding._is_scoreable
+                    # gates on a truthy predicate_directions, so dropping it here would silently
+                    # exclude exactly the KG-validated bridges (the most confidently confirmed ones)
+                    # from provenance labeling.
+                    predicate_directions=bridge.predicate_directions,
                     tier=2,  # UPGRADED
                     novelty="known",  # Now verified in KG
                     significance=bridge.significance + " [KG-validated]",

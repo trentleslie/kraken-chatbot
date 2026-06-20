@@ -444,6 +444,12 @@ def format_bridges(
 
     labels = grounding_labels or {}
 
+    # Initialise `lines` BEFORE the _render closure that appends to it: the closure captures it by
+    # reference, so defining the list first keeps the dependency obvious and avoids an UnboundLocalError
+    # if a future refactor ever calls _render before this point.
+    lines = ["## Cross-Type Bridges\n"]
+    lines.append("*Multi-hop paths connecting different entity types across the analysis.*\n")
+
     def _render(b: Bridge, show_predicates: bool) -> None:
         # show_predicates preserves the original behavior: Tier 2 lists per-hop predicates,
         # Tier 3 (speculative) deliberately omits them.
@@ -463,9 +469,6 @@ def format_bridges(
         label = labels.get(tuple(b.entities))
         if label:
             lines.append(f"  - **Evidence provenance**: {label}")
-
-    lines = ["## Cross-Type Bridges\n"]
-    lines.append("*Multi-hop paths connecting different entity types across the analysis.*\n")
 
     # Separate by tier
     tier2 = [b for b in bridges if b.tier == 2]
