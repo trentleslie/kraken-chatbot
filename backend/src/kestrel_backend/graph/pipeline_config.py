@@ -220,6 +220,30 @@ class LiteratureGroundingConfig(BaseModel):
         "Defaults to False (current 'supporting' behavior). Flag flip is a "
         "separate follow-up PR after quality measurement confirms improvement.",
     )
+    overall_timeout_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description="R13 latency ceiling: wall-clock cap on the whole grounding body "
+        "(4-provider fan-out + EFetch backfill). On expiry, asyncio.timeout raises "
+        "TimeoutError, caught by the node's degrade boundary, which returns the upstream "
+        "hypotheses ungrounded so synthesis still runs. Value tuned vs a representative "
+        "high-bridge run; existence + mechanism are decided, not deferred.",
+    )
+
+
+class HypothesisExtractionConfig(BaseModel):
+    """Configuration for the hypothesis_extraction node."""
+
+    validate_timeout_seconds: float = Field(
+        default=180.0,
+        gt=0,
+        description="R13 latency ceiling: wall-clock cap on the serial validate_bridge_hypotheses "
+        "loop (each doubly-pinned multi_hop_query can run up to the ~60s Kestrel client timeout). "
+        "On expiry, asyncio.timeout raises TimeoutError, caught by the node's degrade boundary, "
+        "which returns {bridges: upstream, hypotheses: []} so synthesis still runs. A grounding-only "
+        "timeout cannot bound this loop — it lives in a different node. Value tuned vs a "
+        "representative high-bridge run; existence + mechanism are decided, not deferred.",
+    )
 
 
 class IntegrationConfig(BaseModel):
@@ -276,6 +300,7 @@ class PipelineConfig(BaseModel):
     triage: TriageConfig = Field(default_factory=TriageConfig)
     cold_start: ColdStartConfig = Field(default_factory=ColdStartConfig)
     literature_grounding: LiteratureGroundingConfig = Field(default_factory=LiteratureGroundingConfig)
+    hypothesis_extraction: HypothesisExtractionConfig = Field(default_factory=HypothesisExtractionConfig)
     integration: IntegrationConfig = Field(default_factory=IntegrationConfig)
     bridge_grounding: BridgeGroundingConfig = Field(default_factory=BridgeGroundingConfig)
 

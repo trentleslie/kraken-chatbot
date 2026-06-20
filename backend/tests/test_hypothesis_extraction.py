@@ -167,3 +167,27 @@ class TestHypothesisExtractionRun:
         """The OR-gate rejects a genuinely empty pipeline (no direct and no cold-start findings)."""
         with pytest.raises(StateValidationError, match="input"):
             await run({"direct_findings": [], "cold_start_findings": [], "bridges": []})
+
+    @pytest.mark.asyncio
+    async def test_validate_timeout_degrades_to_failure_payload(self, monkeypatch):
+        """R13 latency ceiling: a slow validate loop hits asyncio.timeout (TimeoutError, an Exception)
+        and degrades to the failure-boundary payload {bridges: upstream, hypotheses: []} — the run is
+        bounded, not stalled, and still reaches synthesis."""
+        import asyncio
+        from src.kestrel_backend.graph.pipeline_config import get_pipeline_config
+
+        monkeypatch.setattr(
+            get_pipeline_config().hypothesis_extraction, "validate_timeout_seconds", 0.05
+        )
+
+        async def slow_validate(bridges):
+            await asyncio.sleep(1.0)  # exceeds the 0.05s ceiling
+            return bridges
+
+        monkeypatch.setattr(hypothesis_extraction, "validate_bridge_hypotheses", slow_validate)
+
+        original = [_tier3_bridge()]
+        result = await run({"direct_findings": [_gate_finding()], "bridges": original})
+        assert result["hypotheses"] == []
+        assert result["bridges"] == original  # upstream passthrough
+        HypothesisExtractionOutput.model_validate(result)

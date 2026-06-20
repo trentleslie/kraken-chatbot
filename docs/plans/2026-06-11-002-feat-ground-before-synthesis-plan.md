@@ -880,7 +880,15 @@ the full suite has ~16-18 pre-existing unrelated failures (see backend test-suit
 
 ### Phase 2 — Evidence injection (PR 2, R5)
 
-- [ ] **Unit 7: Render grounded literature into synthesis context + prompt**
+- [x] **Unit 7: Render grounded literature into synthesis context + prompt** — DONE on
+  `feat/synthesis-literature-rendering` (PR combines Unit 7 + the two standalone cleanups). The R5
+  rendering (`format_literature_evidence` + `[Literature]` prompt tag + grounded/ungrounded legibility
+  marker) and its unit-test suite landed. Also shipped in the same PR (Decision 4 standalone cleanups):
+  dead `build_discovery_graph_v1()` deleted, and both R13 latency ceilings (`asyncio.timeout` on the
+  validate loop in `hypothesis_extraction` and on the grounding body in `literature_grounding`, with
+  config-tunable defaults). **Still manual/deferred:** the before/after panel acceptance run (3–5
+  queries, LLM-as-judge + human sign-off) and tuning the concrete timeout values against a representative
+  high-bridge run — code mechanism is in place; the acceptance is a reviewer step, not code.
 
 **Goal:** The value-delivering change — synthesis reasons over grounded abstracts, not just a trailing
 references table.
