@@ -355,6 +355,26 @@ class ModelUsageRecord(BaseModel):
     available_tools: list[str] | None = Field(None, description="Tool names from SDK init event, if exposed")
 
 
+def merge_node_timings(
+    left: dict[str, float] | None,
+    right: dict[str, float] | None,
+) -> dict[str, float]:
+    """Reducer for ``node_timings``: key-merge per-node durations.
+
+    Required because parallel branches (direct_kg + cold_start) write
+    ``node_timings`` in the same superstep; without a reducer LangGraph raises
+    ``InvalidUpdateError``. Distinct node keys merge cleanly; a key collision
+    keeps the right-hand (later) value. Treats ``None``/missing as empty and
+    never raises (a reducer failure would break the whole run).
+    """
+    merged: dict[str, float] = {}
+    if left:
+        merged.update(left)
+    if right:
+        merged.update(right)
+    return merged
+
+
 class DiscoveryState(TypedDict, total=False):
     """
     State schema for the KRAKEN discovery workflow.
@@ -453,5 +473,10 @@ class DiscoveryState(TypedDict, total=False):
     # === Metadata ===
     # Uses operator.add reducer to accumulate errors from all nodes
     errors: Annotated[list[str], operator.add]
-    node_timings: dict[str, float]  # Performance tracking
+    # Per-node wall-clock, merged via merge_node_timings. A reducer is REQUIRED here:
+    # parallel branches (direct_kg + cold_start) write node_timings in the same superstep,
+    # and LangGraph raises InvalidUpdateError on concurrent writes to a non-reducer field.
+    node_timings: Annotated[dict[str, float], merge_node_timings]  # Performance tracking
     cold_start_skipped_count: int  # Number of entities skipped by cold-start optimization
+    # Path to the performance report written by the terminal reporting node (observability).
+    report_path: str

@@ -989,6 +989,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     # Phase C: LLM synthesis or fallback
     usage_record = None
+    # Run-level marker emitted when synthesis silently degrades to the deterministic
+    # fallback (plan Unit 7). The motivating case — context overflow — succeeds at the
+    # HTTP level but returns empty text, so the run otherwise reads as status=complete,
+    # errors=0 and the degradation is invisible. The marker surfaces it in the report.
+    fallback_marker: str | None = None
     if HAS_SDK:
         try:
             options = ClaudeAgentOptions(
@@ -1006,12 +1011,24 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             # NOTE: query_with_usage joins text blocks with "", not "\n" (previous behavior).
             # All other nodes use "".join(); synthesis now matches them.
 
-            report = text if text.strip() else fallback_report(state)
+            if text.strip():
+                report = text
+            else:
+                report = fallback_report(state)
+                fallback_marker = (
+                    "synthesis: LLM returned empty output; fell back to deterministic "
+                    "report (possible context overflow)"
+                )
         except Exception as e:
             # Fallback on any SDK error
             report = fallback_report(state)
-            # Could log error here if needed
+            fallback_marker = (
+                f"synthesis: LLM call failed ({type(e).__name__}); fell back to "
+                "deterministic report"
+            )
     else:
+        # SDK unavailable is an environment condition, not a run-time degradation —
+        # no marker (avoids polluting errors in SDK-less dev/test environments).
         report = fallback_report(state)
 
     # Hypotheses are produced upstream (hypothesis_extraction) and grounded by
@@ -1034,7 +1051,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     # Report-only return (R4/R12): hypotheses and bridges are produced/owned upstream now, so
     # synthesis must NOT re-emit them. extra='ignore' on SynthesisOutput would silently let a
     # stray `bridges` return through, so it is removed deliberately, not relied on to be dropped.
-    return {
+    result: dict[str, Any] = {
         "synthesis_report": report,
         "model_usages": [usage_record] if usage_record else [],
     }
+    # errors uses an operator.add reducer; only emit on a degraded fallback (Unit 7).
+    if fallback_marker:
+        result["errors"] = [fallback_marker]
+    return result
