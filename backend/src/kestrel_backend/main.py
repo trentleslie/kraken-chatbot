@@ -520,8 +520,10 @@ async def handle_pipeline_mode(
     start_time = time.time()
     nodes_completed = 0
     accumulated_state: dict[str, Any] = {}
+    # node_timings is authoritative from the timed_node wrapper (graph/timing.py),
+    # accumulated below via an explicit dict-merge. Initialized empty for the
+    # no-nodes-ran case.
     node_timings: dict[str, float] = {}
-    node_start_times: dict[str, float] = {}
 
     langfuse = _get_pipeline_langfuse()
     trace = None
@@ -594,20 +596,28 @@ async def handle_pipeline_mode(
 
             for key, value in node_output.items():
                 existing = accumulated_state.get(key)
+                # node_timings is a dict reducer field (merge_node_timings) — merge it,
+                # don't last-write-wins. _get_concat_fields() only detects operator.add,
+                # so node_timings is NOT in CONCAT_LIST_FIELDS and would otherwise be
+                # overwritten on every yield, collapsing to the last node only.
+                if key == "node_timings" and isinstance(value, dict):
+                    merged = dict(existing) if isinstance(existing, dict) else {}
+                    merged.update(value)
+                    accumulated_state[key] = merged
                 # Only concatenate lists for fields with operator.add reducer
                 # Other fields use last-write-wins (e.g., hypotheses, synthesis_report)
-                if isinstance(existing, list) and isinstance(value, list) and key in CONCAT_LIST_FIELDS:
+                elif isinstance(existing, list) and isinstance(value, list) and key in CONCAT_LIST_FIELDS:
                     accumulated_state[key] = existing + value
                 else:
                     accumulated_state[key] = value
 
-            now = time.time()
-            node_start = node_start_times.get(node_name, now)
-            duration_ms = int((now - node_start) * 1000)
-            node_timings[node_name] = now - node_start
-
-            if node_name not in node_start_times:
-                node_start_times[node_name] = now
+            # Authoritative per-node duration comes from the timed_node wrapper
+            # (graph/timing.py), surfaced as node_output["node_timings"][node_name].
+            # This replaces the old first-seen/overwrite inline timing (which produced
+            # 0s on a node's only yield and over-counted multi-yield nodes).
+            node_duration = (node_output.get("node_timings") or {}).get(node_name)
+            duration_ms = int((node_duration or 0.0) * 1000)
+            node_timings = accumulated_state.get("node_timings", {})
 
             nodes_completed += 1
 

@@ -355,52 +355,7 @@ def test_context_backstop_logs_warning(monkeypatch, caplog):
     assert "token" in msgs or "max_context_chars" in msgs or "exceeds" in msgs
 
 
-# --- Unit 5: visible SDK-fallback degradation ------------------------------------------
-
-
-def _findings_state():
-    """Minimal state that passes SynthesisInput (needs a non-empty findings branch)."""
-    return {
-        "raw_query": "q",
-        "query_type": "discovery",
-        "resolved_entities": [_entity("g1")],
-        "direct_findings": [_finding("g1")],
-    }
-
-
-async def test_run_records_synthesis_degraded_on_sdk_failure(monkeypatch, caplog):
-    """An SDK synthesis crash returns the fallback report AND records a visible errors entry."""
-    monkeypatch.setattr(synthesis, "HAS_SDK", True)
-    monkeypatch.setattr(synthesis, "ClaudeAgentOptions", lambda **kw: object())
-
-    async def boom(**kw):
-        raise RuntimeError("kaboom")
-
-    monkeypatch.setattr(synthesis, "query_with_usage", boom)
-    with caplog.at_level(logging.WARNING):
-        result = await synthesis.run(_findings_state())
-    assert result["synthesis_report"]  # fallback report still produced
-    assert any("synthesis_degraded" in e for e in result.get("errors", []))
-    assert any("kaboom" in r.getMessage() or "fail" in r.getMessage().lower() for r in caplog.records)
-
-
-async def test_run_no_sdk_is_not_recorded_as_degradation(monkeypatch):
-    """The no-SDK/test path uses the fallback but must NOT record a degradation (no false positives)."""
-    monkeypatch.setattr(synthesis, "HAS_SDK", False)
-    result = await synthesis.run(_findings_state())
-    assert result["synthesis_report"]
-    assert not any("synthesis_degraded" in e for e in result.get("errors", []))
-
-
-async def test_run_empty_sdk_text_uses_fallback_without_error(monkeypatch):
-    """Empty SDK text falls back but is not a degradation error (expected, e.g. in tests)."""
-    monkeypatch.setattr(synthesis, "HAS_SDK", True)
-    monkeypatch.setattr(synthesis, "ClaudeAgentOptions", lambda **kw: object())
-
-    async def empty(**kw):
-        return "   ", None
-
-    monkeypatch.setattr(synthesis, "query_with_usage", empty)
-    result = await synthesis.run(_findings_state())
-    assert result["synthesis_report"]
-    assert not any("synthesis_degraded" in e for e in result.get("errors", []))
+# NOTE: the run()-level visible-fallback degradation marker (formerly this file's "Unit 5") is
+# now covered by tests/test_synthesis_fallback_marker.py, which shipped on dev with the
+# performance-report feature (PR #84). That implementation also marks the empty-output case, so the
+# duplicate tests here were dropped on merge rather than maintained in two places.

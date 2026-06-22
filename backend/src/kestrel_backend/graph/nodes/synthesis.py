@@ -1210,7 +1210,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     # Phase C: LLM synthesis or fallback
     usage_record = None
-    degraded_error: str | None = None
+    # Run-level marker emitted when synthesis silently degrades to the deterministic
+    # fallback (plan Unit 7). The motivating case — context overflow — succeeds at the
+    # HTTP level but returns empty text, so the run otherwise reads as status=complete,
+    # errors=0 and the degradation is invisible. The marker surfaces it in the report.
+    fallback_marker: str | None = None
     if HAS_SDK:
         try:
             options = ClaudeAgentOptions(
@@ -1231,10 +1235,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             if text.strip():
                 report = text
             else:
-                # Expected in some runs (e.g. tests / empty completion) — NOT a degradation, so
-                # do not pollute state["errors"] with a false positive. Log at INFO for visibility.
-                logger.info("synthesis SDK returned empty text; using fallback report")
                 report = fallback_report(state)
+                fallback_marker = (
+                    "synthesis: LLM returned empty output; fell back to deterministic "
+                    "report (possible context overflow)"
+                )
         except Exception as e:
             # R3: a genuine SDK synthesis failure must be VISIBLE, never silent. Log with the
             # traceback and record it in the additive state["errors"] channel (so coverage/monitoring
@@ -1243,10 +1248,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 "synthesis LLM call failed, using fallback report: %s", e, exc_info=True
             )
             report = fallback_report(state)
-            degraded_error = f"synthesis_degraded: {type(e).__name__}: {e}"
+            fallback_marker = (
+                f"synthesis: LLM call failed ({type(e).__name__}); fell back to "
+                "deterministic report"
+            )
     else:
-        # No SDK (test/offline path) — fallback is expected, not a degradation.
-        logger.debug("synthesis running without SDK; using fallback report")
+        # SDK unavailable is an environment condition, not a run-time degradation —
+        # no marker (avoids polluting errors in SDK-less dev/test environments).
         report = fallback_report(state)
 
     # Hypotheses are produced upstream (hypothesis_extraction) and grounded by
@@ -1273,7 +1281,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         "synthesis_report": report,
         "model_usages": [usage_record] if usage_record else [],
     }
-    # R3: surface a real SDK-synthesis failure in the additive errors channel (visible degradation).
-    if degraded_error:
-        result["errors"] = [degraded_error]
+    # errors uses an operator.add reducer; only emit on a degraded fallback (Unit 7).
+    if fallback_marker:
+        result["errors"] = [fallback_marker]
     return result
