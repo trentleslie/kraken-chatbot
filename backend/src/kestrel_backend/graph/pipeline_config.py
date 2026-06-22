@@ -295,6 +295,75 @@ class BridgeGroundingConfig(BaseModel):
     )
 
 
+class SynthesisConfig(BaseModel):
+    """Configuration for the synthesis node's context-assembly caps.
+
+    At module scale the assembled LLM context overflowed the model's ~200K-token input
+    window (48-analyte Brown run, 2026-06-22: ~882K chars ~= 230K tokens; findings 58%,
+    disease 21%, pathway 17% of the dump). These caps bound the context against a
+    token-derived budget and switch multi-entity ("module") queries to cross-entity
+    aggregation + a per-member table instead of per-entity dumps. See
+    docs/plans/2026-06-22-001-feat-module-aware-synthesis-context-plan.md.
+    """
+
+    max_findings_per_tier: int = Field(
+        default=50,
+        ge=1,
+        description="Max findings rendered per tier (1/2/3), ranked by confidence "
+        "high->moderate->low; the rest are elided as '... and N more (tier T)'. Findings are "
+        "the dominant context section (58% of the 882K dump, 4,099 entries), so this is the "
+        "load-bearing cut. 50/tier (<=150 total) is ample for a narrative and ~27x below 4,099; "
+        "tune against the R7 run.",
+    )
+    max_aggregated_diseases: int = Field(
+        default=30,
+        ge=1,
+        description="Max diseases in the Module-Level Disease Recurrence section (ranked by "
+        "distinct-member count, then evidence strength). Replaces the per-entity disease dump "
+        "(21% of the overflow) for module queries.",
+    )
+    max_aggregated_pathways: int = Field(
+        default=30,
+        ge=1,
+        description="Max pathways in the Module-Level Pathway Recurrence section. Replaces the "
+        "per-entity pathway dump (17% of the overflow) for module queries.",
+    )
+    module_mode_min_entities: int = Field(
+        default=5,
+        ge=2,
+        description="Resolved-entity count at/above which assembly switches to module-aware mode "
+        "(aggregation + member table) instead of per-entity sections. Defaults to 5 (>2) so genuine "
+        "single/pair/triple queries keep the per-entity report shape (R5); operators may lower it to 2 "
+        "to treat pairs as modules. Distinct from min_members_for_recurrence: this gates *whether* "
+        "module mode engages, not *which* diseases/pathways qualify for the recurrence lists.",
+    )
+    min_members_for_recurrence: int = Field(
+        default=2,
+        ge=2,
+        description="Minimum distinct member entities sharing a disease/pathway for it to appear in "
+        "the Module-Level Recurrence sections. Inclusive (2 = shared by any pair). Distinct from "
+        "module_mode_min_entities: a low value keeps recurrence inclusive without forcing small "
+        "queries into module mode.",
+    )
+    max_member_table_rows: int = Field(
+        default=50,
+        ge=1,
+        description="Max rows in the per-member prioritization table (top-N by edge_count, rest "
+        "elided). A no-op at 48 analytes; bounds the table at the 217-analyte target where a full "
+        "table (~217 rows) would itself become a dump.",
+    )
+    max_context_chars: int = Field(
+        default=350_000,
+        ge=1,
+        description="Char budget for the assembled synthesis context — a PROXY for the model's "
+        "~200K-token input window (the real ceiling). ~350K chars ~= 100K tokens at the measured "
+        "3.5-3.8 chars/token for this CURIE-dense content, leaving ~100K-token headroom for the "
+        "system prompt + output. ~2.5x below the 882K/230K that crashed. A backstop logs a WARNING "
+        "(with an estimated token count) if assembly exceeds this; the per-section caps should "
+        "prevent reaching it. Tune downward if R7 shows headroom is tight.",
+    )
+
+
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration with per-node sub-models.
 
@@ -312,6 +381,7 @@ class PipelineConfig(BaseModel):
     hypothesis_extraction: HypothesisExtractionConfig = Field(default_factory=HypothesisExtractionConfig)
     integration: IntegrationConfig = Field(default_factory=IntegrationConfig)
     bridge_grounding: BridgeGroundingConfig = Field(default_factory=BridgeGroundingConfig)
+    synthesis: SynthesisConfig = Field(default_factory=SynthesisConfig)
 
 
 @lru_cache(maxsize=1)
