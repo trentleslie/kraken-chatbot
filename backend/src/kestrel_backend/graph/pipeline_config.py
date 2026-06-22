@@ -330,12 +330,12 @@ class SynthesisConfig(BaseModel):
     )
     module_mode_min_entities: int = Field(
         default=5,
-        ge=3,
+        ge=2,
         description="Resolved-entity count at/above which assembly switches to module-aware mode "
-        "(aggregation + member table) instead of per-entity sections. >2 by construction so genuine "
-        "single/pair/triple queries keep the per-entity report shape (R5). Distinct from "
-        "min_members_for_recurrence: this gates *whether* module mode engages, not *which* "
-        "diseases/pathways qualify for the recurrence lists.",
+        "(aggregation + member table) instead of per-entity sections. Defaults to 5 (>2) so genuine "
+        "single/pair/triple queries keep the per-entity report shape (R5); operators may lower it to 2 "
+        "to treat pairs as modules. Distinct from min_members_for_recurrence: this gates *whether* "
+        "module mode engages, not *which* diseases/pathways qualify for the recurrence lists.",
     )
     min_members_for_recurrence: int = Field(
         default=2,

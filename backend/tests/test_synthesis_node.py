@@ -4,17 +4,42 @@ cap, module-vs-per-entity assembly switch, and visible SDK-fallback degradation.
 Plan: docs/plans/2026-06-22-001-feat-module-aware-synthesis-context-plan.md
 """
 
+import logging
+
+from kestrel_backend.graph.nodes import synthesis
 from kestrel_backend.graph.nodes.synthesis import (
     aggregate_shared_diseases,
     aggregate_shared_pathways,
+    format_findings_summary,
     format_member_table,
 )
+from kestrel_backend.graph.pipeline_config import PipelineConfig, SynthesisConfig
 from kestrel_backend.graph.state import (
     DiseaseAssociation,
     EntityResolution,
+    Finding,
     NoveltyScore,
     PathwayMembership,
 )
+
+
+def _finding(entity, tier=1, confidence="high", claim="claimX"):
+    return Finding(
+        entity=entity,
+        claim=claim,
+        tier=tier,
+        predicate=None,
+        source="direct_kg",
+        pmids=[],
+        confidence=confidence,
+        logic_chain=None,
+    )
+
+
+def _use_cfg(monkeypatch, **synthesis_kwargs):
+    cfg = PipelineConfig(synthesis=SynthesisConfig(**synthesis_kwargs))
+    monkeypatch.setattr(synthesis, "get_pipeline_config", lambda: cfg)
+    return cfg
 
 
 def _entity(curie, name="GeneX", category="biolink:Gene"):
@@ -223,3 +248,108 @@ def test_member_table_caps_rows():
     assert "E6" in out and "E5" in out and "E4" in out
     assert "E0" not in out and "E1" not in out
     assert "more members" in out
+
+
+# --- Unit 4: findings cap + module-aware assembly + backstop ---------------------------
+
+
+def test_findings_cap_per_tier_keeps_highest_confidence():
+    """Cap per tier, ranked by confidence high->low; the rest are elided."""
+    findings = [
+        _finding("E_hi1", tier=1, confidence="high"),
+        _finding("E_hi2", tier=1, confidence="high"),
+        _finding("E_lo1", tier=1, confidence="low"),
+        _finding("E_lo2", tier=1, confidence="low"),
+        _finding("E_lo3", tier=1, confidence="low"),
+    ]
+    out = format_findings_summary(findings, [], max_per_tier=2)
+    assert "E_hi1" in out and "E_hi2" in out
+    assert "E_lo1" not in out
+    assert "more (tier 1)" in out  # elision line names the remainder
+
+
+def test_findings_unbounded_when_no_cap():
+    """Backward-compatible: no cap renders every finding (existing callers unaffected)."""
+    findings = [_finding(f"E{i}", tier=1, confidence="low") for i in range(40)]
+    out = format_findings_summary(findings, [], max_per_tier=None)
+    assert "E39" in out
+    assert "more (tier 1)" not in out
+
+
+def test_module_assembly_uses_aggregation_not_per_entity(monkeypatch):
+    """At module scale, assembly emits aggregation + member table, NOT per-entity dumps."""
+    _use_cfg(monkeypatch, module_mode_min_entities=3, min_members_for_recurrence=2)
+    state = {
+        "resolved_entities": [_entity("g1"), _entity("g2"), _entity("g3")],
+        "disease_associations": [_disease("g1", "MONDO:9", "Cancer"), _disease("g2", "MONDO:9", "Cancer")],
+        "pathway_memberships": [_pathway("g1", "GO:1"), _pathway("g2", "GO:1")],
+        "novelty_scores": [_novelty("g1", 100), _novelty("g2", 200), _novelty("g3", 5)],
+    }
+    out = synthesis.assemble_synthesis_context(state)
+    assert "Module-Level Disease Recurrence" in out
+    assert "Member Prioritization Table" in out
+    assert "## Disease Associations" not in out  # per-entity header omitted
+    assert "## Pathway & Biological Process Memberships" not in out
+
+
+def test_single_entity_keeps_per_entity_sections(monkeypatch):
+    """A single-entity query keeps the per-entity report shape (R5)."""
+    _use_cfg(monkeypatch, module_mode_min_entities=5)
+    state = {
+        "resolved_entities": [_entity("g1")],
+        "disease_associations": [_disease("g1", "MONDO:9", "Cancer")],
+        "pathway_memberships": [_pathway("g1", "GO:1")],
+        "novelty_scores": [_novelty("g1", 100)],
+    }
+    out = synthesis.assemble_synthesis_context(state)
+    assert "## Disease Associations" in out
+    assert "Module-Level Disease Recurrence" not in out
+
+
+def test_two_entity_boundary_respects_threshold(monkeypatch):
+    """A 2-entity (pair) query keeps per-entity shape unless module_mode_min_entities<=2 (R5)."""
+    state = {
+        "resolved_entities": [_entity("g1"), _entity("g2")],
+        "disease_associations": [_disease("g1", "MONDO:9", "Cancer"), _disease("g2", "MONDO:9", "Cancer")],
+        "pathway_memberships": [],
+        "novelty_scores": [_novelty("g1", 100), _novelty("g2", 200)],
+    }
+    _use_cfg(monkeypatch, module_mode_min_entities=5)
+    assert "## Disease Associations" in synthesis.assemble_synthesis_context(state)
+    _use_cfg(monkeypatch, module_mode_min_entities=2, min_members_for_recurrence=2)
+    assert "Module-Level Disease Recurrence" in synthesis.assemble_synthesis_context(state)
+
+
+def test_module_context_stays_under_token_budget(monkeypatch):
+    """Core R1 guard: 50 well-char entities x inflated data stay under char + token budget."""
+    cfg = _use_cfg(monkeypatch, module_mode_min_entities=5)
+    entities = [_entity(f"g{i}", f"E{i}") for i in range(50)]
+    novelty = [_novelty(f"g{i}", 500) for i in range(50)]
+    diseases = [_disease(f"g{i}", f"MONDO:{j}", f"Disease{j}") for i in range(50) for j in range(40)]
+    pathways = [_pathway(f"g{i}", f"GO:{j}", f"Pathway{j}") for i in range(50) for j in range(40)]
+    findings = [_finding(f"E{i}-{k}", tier=((k % 3) + 1)) for i in range(50) for k in range(40)]
+    state = {
+        "resolved_entities": entities,
+        "novelty_scores": novelty,
+        "disease_associations": diseases,
+        "pathway_memberships": pathways,
+        "direct_findings": findings,
+        "cold_start_findings": [],
+    }
+    out = synthesis.assemble_synthesis_context(state)
+    assert len(out) < cfg.synthesis.max_context_chars
+    assert len(out) / 3.5 < 100_000  # estimated tokens under budget
+
+
+def test_context_backstop_logs_warning(monkeypatch, caplog):
+    """If assembled context exceeds max_context_chars, a WARNING (with token estimate) is logged."""
+    _use_cfg(monkeypatch, module_mode_min_entities=5, max_context_chars=50)
+    state = {
+        "resolved_entities": [_entity("g1")],
+        "disease_associations": [_disease("g1", "MONDO:9", "Cancer")],
+        "novelty_scores": [_novelty("g1", 100)],
+    }
+    with caplog.at_level(logging.WARNING):
+        synthesis.assemble_synthesis_context(state)
+    msgs = " ".join(r.getMessage().lower() for r in caplog.records)
+    assert "token" in msgs or "max_context_chars" in msgs or "exceeds" in msgs

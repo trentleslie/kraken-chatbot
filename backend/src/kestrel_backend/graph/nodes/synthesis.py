@@ -24,6 +24,7 @@ from ..state import (
     Hypothesis,
 )
 from ...literature_utils import format_pmid_link
+from ..pipeline_config import get_pipeline_config
 from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
 from ..state_contracts import validate_state, SynthesisInput, SynthesisOutput
 # References-table assembly lives with grounding's module but is OWNED by synthesis now (R6):
@@ -107,6 +108,17 @@ hypothesis, NOT that the claim is verified — calibrate confidence on the evide
 If a section has no KG-backed findings, state this explicitly: "No direct KG evidence was found for this connection. The following is based on [Model Knowledge]."
 
 Do NOT present model knowledge as if it were KG-derived or literature-backed. Scientific integrity requires honest attribution.
+
+## Module-Level Reasoning (multi-entity input)
+
+If the input is a module (many entities analyzed together — you will see "Module-Level Disease
+Recurrence", "Module-Level Pathway Recurrence", and a "Member Prioritization Table" instead of
+per-entity dumps), treat the entities as a coordinated group, not a list:
+- LEAD with the unifying biological theme that explains why these entities co-vary as a module.
+- Build the Key Findings from the Module-Level Recurrence sections (diseases/pathways shared across
+  members) and use the Member Prioritization Table to call out the highest-leverage individual members.
+- Do not enumerate every member; synthesize the module's story, then highlight outliers.
+For a single entity (per-entity sections present, no module sections), report as usual.
 
 Generate a clear, scientific report in markdown format.
 """
@@ -520,19 +532,27 @@ def format_inferred_associations(
     return "\n".join(lines)
 
 
+# Within-tier confidence ranking (high first) for capping the findings section.
+_CONFIDENCE_RANK = {"high": 0, "moderate": 1, "low": 2}
+
+
 def format_findings_summary(
     direct_findings: list[Finding],
-    cold_start_findings: list[Finding]
+    cold_start_findings: list[Finding],
+    max_per_tier: int | None = None,
 ) -> str:
-    """Format analysis findings into a summary report."""
+    """Format analysis findings into a summary report.
+
+    When ``max_per_tier`` is set, each tier is ranked by confidence (high->moderate->low) and capped to
+    that many findings, with a "… and N more (tier T)" elision line for the remainder. Findings are the
+    dominant synthesis-context section at module scale (58% of the 882K overflow), so this cap is the
+    load-bearing reduction. ``max_per_tier=None`` keeps the historical unbounded behavior.
+    """
     all_findings = direct_findings + cold_start_findings
     if not all_findings:
         return ""
 
     lines = ["## Analysis Findings Summary\n"]
-
-    # Sort by tier (1 = high confidence first)
-    sorted_findings = sorted(all_findings, key=lambda f: f.tier)
 
     # Group by tier
     tier_labels = {
@@ -542,19 +562,26 @@ def format_findings_summary(
     }
 
     for tier in [1, 2, 3]:
-        tier_findings = [f for f in sorted_findings if f.tier == tier]
-        if tier_findings:
-            lines.append(f"### {tier_labels[tier]}")
-            for f in tier_findings:
-                source_tag = f"[{f.source}]" if f.source else ""
-                confidence_marker = {"high": "[HIGH]", "moderate": "[MOD]", "low": "[LOW]"}.get(f.confidence, "")
-                lines.append(f"- {confidence_marker} **{f.entity}**: {f.claim} {source_tag}")
-                if f.pmids:
-                    pmid_links = [format_pmid_link(pmid) for pmid in f.pmids[:5]]
-                    lines.append(f"  - PMIDs: {', '.join(pmid_links)}")
-                if f.logic_chain:
-                    lines.append(f"  - _Logic: {f.logic_chain}_")
-            lines.append("")
+        tier_findings = [f for f in all_findings if f.tier == tier]
+        if not tier_findings:
+            continue
+        # Strongest-confidence first so the cap keeps the most reliable findings, not an arbitrary slice.
+        tier_findings.sort(key=lambda f: _CONFIDENCE_RANK.get(f.confidence, 3))
+        shown = tier_findings if max_per_tier is None else tier_findings[:max_per_tier]
+        elided = len(tier_findings) - len(shown)
+        lines.append(f"### {tier_labels[tier]}")
+        for f in shown:
+            source_tag = f"[{f.source}]" if f.source else ""
+            confidence_marker = {"high": "[HIGH]", "moderate": "[MOD]", "low": "[LOW]"}.get(f.confidence, "")
+            lines.append(f"- {confidence_marker} **{f.entity}**: {f.claim} {source_tag}")
+            if f.pmids:
+                pmid_links = [format_pmid_link(pmid) for pmid in f.pmids[:5]]
+                lines.append(f"  - PMIDs: {', '.join(pmid_links)}")
+            if f.logic_chain:
+                lines.append(f"  - _Logic: {f.logic_chain}_")
+        if elided > 0:
+            lines.append(f"- … and {elided} more (tier {tier})")
+        lines.append("")
 
     return "\n".join(lines)
 
@@ -855,6 +882,46 @@ def format_literature_evidence(hypotheses: list[Hypothesis]) -> str:
     return "\n".join(lines)
 
 
+def _disease_pathway_sections(state: DiscoveryState) -> list[str]:
+    """Disease + pathway sections, module-aware.
+
+    For module queries (>= ``module_mode_min_entities`` distinct resolved entities) emit cross-entity
+    recurrence aggregation + the per-member table in place of the unbounded per-entity dumps (which
+    were 21% + 17% of the module-scale overflow). Below that threshold (single/pair/triple queries)
+    keep the existing per-entity sections verbatim (R5). The threshold is the *module-mode* switch,
+    distinct from ``min_members_for_recurrence`` (which gates the recurrence lists).
+    """
+    cfg = get_pipeline_config().synthesis
+    disease_associations = state.get("disease_associations", [])
+    pathway_memberships = state.get("pathway_memberships", [])
+    resolved = state.get("resolved_entities", [])
+    novelty_scores = state.get("novelty_scores", [])
+    distinct_entities = len({e.curie for e in resolved if e.curie})
+
+    out: list[str] = []
+    if distinct_entities >= cfg.module_mode_min_entities:
+        candidates = [
+            aggregate_shared_diseases(
+                disease_associations, cfg.min_members_for_recurrence, cfg.max_aggregated_diseases
+            ),
+            aggregate_shared_pathways(
+                pathway_memberships, cfg.min_members_for_recurrence, cfg.max_aggregated_pathways
+            ),
+            format_member_table(
+                resolved, novelty_scores, disease_associations, cfg.max_member_table_rows
+            ),
+        ]
+    else:
+        candidates = [
+            format_disease_associations(disease_associations),
+            format_pathway_memberships(pathway_memberships),
+        ]
+    for section in candidates:
+        if section:
+            out.append(section)
+    return out
+
+
 def assemble_synthesis_context(state: DiscoveryState) -> str:
     """
     Assemble all accumulated state into a context block for LLM synthesis.
@@ -862,6 +929,7 @@ def assemble_synthesis_context(state: DiscoveryState) -> str:
     This function gathers data from all previous nodes and formats it into
     a comprehensive context that the LLM can use to generate a discovery report.
     """
+    cfg = get_pipeline_config().synthesis
     sections = []
     
     # Query context
@@ -892,18 +960,10 @@ def assemble_synthesis_context(state: DiscoveryState) -> str:
     if hub_section:
         sections.append(hub_section)
     
-    # Disease associations
-    disease_associations = state.get("disease_associations", [])
-    disease_section = format_disease_associations(disease_associations)
-    if disease_section:
-        sections.append(disease_section)
-    
-    # Pathway memberships
-    pathway_memberships = state.get("pathway_memberships", [])
-    pathway_section = format_pathway_memberships(pathway_memberships)
-    if pathway_section:
-        sections.append(pathway_section)
-    
+    # Disease associations + pathway memberships (module-aware: aggregation + member table at
+    # module scale, per-entity dumps for small queries — these two sections were 38% of the overflow)
+    sections.extend(_disease_pathway_sections(state))
+
     # Pathway enrichment (shared neighbors and themes)
     shared_neighbors = state.get("shared_neighbors", [])
     biological_themes = state.get("biological_themes", [])
@@ -936,10 +996,12 @@ def assemble_synthesis_context(state: DiscoveryState) -> str:
     if inference_section:
         sections.append(inference_section)
     
-    # All findings
+    # All findings (capped per tier — the dominant section, 58% of the module-scale overflow)
     direct_findings = state.get("direct_findings", [])
     cold_start_findings = state.get("cold_start_findings", [])
-    findings_section = format_findings_summary(direct_findings, cold_start_findings)
+    findings_section = format_findings_summary(
+        direct_findings, cold_start_findings, max_per_tier=cfg.max_findings_per_tier
+    )
     if findings_section:
         sections.append(findings_section)
 
@@ -951,7 +1013,20 @@ def assemble_synthesis_context(state: DiscoveryState) -> str:
     if literature_section:
         sections.append(literature_section)
 
-    return "\n".join(sections)
+    context = "\n".join(sections)
+
+    # Backstop tripwire (not a truncator): the per-section caps should keep us well under budget.
+    # The real ceiling is the model's ~200K-token input window; max_context_chars is a char proxy,
+    # so log an estimated token count (~3.5 chars/token for this CURIE-dense content) to make the
+    # warning interpretable. Reaching here means a cap is mis-set — surface it loudly.
+    if len(context) > cfg.max_context_chars:
+        logger.warning(
+            "synthesis context %d chars (~%dK est. tokens) exceeds max_context_chars=%d "
+            "(~200K-token window) — a per-section cap is likely mis-set",
+            len(context), round(len(context) / 3.5 / 1000), cfg.max_context_chars,
+        )
+
+    return context
 
 
 def fallback_report(state: DiscoveryState) -> str:
@@ -959,8 +1034,11 @@ def fallback_report(state: DiscoveryState) -> str:
     Generate a structured markdown report without LLM synthesis.
     
     This is the fallback used when the Claude Agent SDK is not available
-    or when running tests. It preserves the existing report format.
+    or when running tests. It preserves the existing report format, and — like
+    assemble_synthesis_context — is module-aware (aggregation + member table at module scale)
+    so the degraded path is also bounded, not an 882KB raw dump.
     """
+    cfg = get_pipeline_config().synthesis
     resolved = state.get("resolved_entities", [])
     query_type = state.get("query_type", "unknown")
     raw_query = state.get("raw_query", "")
@@ -1029,23 +1107,19 @@ def fallback_report(state: DiscoveryState) -> str:
     if temporal_section:
         report_lines.append(temporal_section)
 
-    # Disease associations (structured data)
-    disease_section = format_disease_associations(disease_associations)
-    if disease_section:
-        report_lines.append(disease_section)
-
-    # Pathway memberships (structured data)
-    pathway_section = format_pathway_memberships(pathway_memberships)
-    if pathway_section:
-        report_lines.append(pathway_section)
+    # Disease + pathway (module-aware: aggregation + member table at module scale, per-entity
+    # dumps for small queries — keeps the fallback path bounded too)
+    report_lines.extend(_disease_pathway_sections(state))
 
     # Inferred associations from cold-start (structured data)
     inference_section = format_inferred_associations(inferred_associations, analogues_found)
     if inference_section:
         report_lines.append(inference_section)
 
-    # Analysis findings (summary from both branches)
-    findings_section = format_findings_summary(direct_findings, cold_start_findings)
+    # Analysis findings (summary from both branches) — capped per tier (dominant section)
+    findings_section = format_findings_summary(
+        direct_findings, cold_start_findings, max_per_tier=cfg.max_findings_per_tier
+    )
     if findings_section:
         report_lines.append(findings_section)
 
