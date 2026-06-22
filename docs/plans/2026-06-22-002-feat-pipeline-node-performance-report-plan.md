@@ -1,7 +1,7 @@
 ---
 title: "feat: Per-node pipeline performance report (disk-only v1)"
 type: feat
-status: active
+status: completed
 date: 2026-06-22
 deepened: 2026-06-22
 origin: docs/brainstorms/2026-06-22-pipeline-node-performance-report-requirements.md
