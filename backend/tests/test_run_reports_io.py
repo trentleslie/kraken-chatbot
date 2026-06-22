@@ -83,11 +83,31 @@ def test_prune_keeps_newest_cap_pairs(tmp_path):
     assert "r005" in remaining
 
 
-def test_prune_ignores_tmp_files(tmp_path):
+def test_prune_ignores_fresh_tmp_files(tmp_path):
     (tmp_path / "a.json").write_text("{}")
-    (tmp_path / "inflight.json.tmp").write_text("{}")
+    (tmp_path / "inflight.json.tmp").write_text("{}")  # fresh => an in-flight write
     io.prune(tmp_path, max_pairs=200)
     assert (tmp_path / "inflight.json.tmp").exists()  # in-flight write untouched
+
+
+def test_prune_sweeps_stale_tmp_files(tmp_path):
+    # An orphaned .tmp (old mtime) left by a crashed write is swept; a fresh one is kept.
+    stale = tmp_path / "orphan.json.tmp"
+    stale.write_text("{}")
+    os.utime(stale, (1, 1))  # ancient mtime
+    fresh = tmp_path / "inflight.json.tmp"
+    fresh.write_text("{}")
+    io.prune(tmp_path, max_pairs=200)
+    assert not stale.exists()  # orphan swept
+    assert fresh.exists()  # live write preserved
+
+
+def test_prune_sweeps_stale_tmp_even_when_retention_disabled(tmp_path):
+    stale = tmp_path / "orphan.json.tmp"
+    stale.write_text("{}")
+    os.utime(stale, (1, 1))
+    io.prune(tmp_path, max_pairs=0)  # cap disabled, but temps still swept
+    assert not stale.exists()
 
 
 def test_prune_tolerates_concurrent_deletion(tmp_path):

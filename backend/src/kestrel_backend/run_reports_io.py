@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_RETENTION = 200
 ENV_RETENTION = "REPORT_RETENTION_MAX"
+# A live atomic write holds its .tmp for milliseconds; any .tmp older than this was
+# orphaned by a hard abort (SIGKILL/OOM) mid-write and is safe to sweep.
+_TMP_STALE_SECONDS = 300
 
 # backend/run_reports/. This file is backend/src/kestrel_backend/run_reports_io.py,
 # so parents[2] is the backend/ root.
@@ -119,6 +123,21 @@ def _mtime(p: Path) -> float:
         return 0.0  # concurrently deleted — sort it to the end
 
 
+def _sweep_stale_temps(d: Path) -> None:
+    """Delete orphaned ``*.tmp`` older than the stale threshold.
+
+    A concurrent writer's temp is milliseconds old, so it is never swept; only temps
+    left behind by a hard abort (SIGKILL/OOM between os.open and rename) are removed.
+    """
+    now = time.time()
+    for tmp in d.glob("*.tmp"):
+        try:
+            if now - tmp.stat().st_mtime > _TMP_STALE_SECONDS:
+                tmp.unlink()
+        except FileNotFoundError:
+            pass  # concurrently removed
+
+
 def prune(out_dir: Path, *, max_pairs: int | None = None) -> int:
     """Keep the newest ``max_pairs`` report pairs by mtime; delete older ones.
 
@@ -126,11 +145,14 @@ def prune(out_dir: Path, *, max_pairs: int | None = None) -> int:
     ignores in-flight ``*.tmp`` files and swallows ``FileNotFoundError`` from a
     concurrent pruner. Returns the number of pairs targeted for removal.
     """
-    cap = _resolve_retention(max_pairs)
-    if cap <= 0:
-        return 0
     d = Path(out_dir)
     if not d.is_dir():
+        return 0
+    # Sweep orphaned *.tmp left by a hard abort mid-write (O_EXCL can't self-heal, and
+    # the pair-cap loop below ignores *.tmp). Done regardless of the retention cap.
+    _sweep_stale_temps(d)
+    cap = _resolve_retention(max_pairs)
+    if cap <= 0:
         return 0
     jsons = [p for p in d.glob("*.json") if not p.name.endswith(".tmp")]
     jsons.sort(key=_mtime, reverse=True)  # newest first
