@@ -1210,6 +1210,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     # Phase C: LLM synthesis or fallback
     usage_record = None
+    degraded_error: str | None = None
     if HAS_SDK:
         try:
             options = ClaudeAgentOptions(
@@ -1227,12 +1228,25 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             # NOTE: query_with_usage joins text blocks with "", not "\n" (previous behavior).
             # All other nodes use "".join(); synthesis now matches them.
 
-            report = text if text.strip() else fallback_report(state)
+            if text.strip():
+                report = text
+            else:
+                # Expected in some runs (e.g. tests / empty completion) — NOT a degradation, so
+                # do not pollute state["errors"] with a false positive. Log at INFO for visibility.
+                logger.info("synthesis SDK returned empty text; using fallback report")
+                report = fallback_report(state)
         except Exception as e:
-            # Fallback on any SDK error
+            # R3: a genuine SDK synthesis failure must be VISIBLE, never silent. Log with the
+            # traceback and record it in the additive state["errors"] channel (so coverage/monitoring
+            # see the degradation) instead of silently emitting a deterministic dump as if all was well.
+            logger.warning(
+                "synthesis LLM call failed, using fallback report: %s", e, exc_info=True
+            )
             report = fallback_report(state)
-            # Could log error here if needed
+            degraded_error = f"synthesis_degraded: {type(e).__name__}: {e}"
     else:
+        # No SDK (test/offline path) — fallback is expected, not a degradation.
+        logger.debug("synthesis running without SDK; using fallback report")
         report = fallback_report(state)
 
     # Hypotheses are produced upstream (hypothesis_extraction) and grounded by
@@ -1255,7 +1269,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     # Report-only return (R4/R12): hypotheses and bridges are produced/owned upstream now, so
     # synthesis must NOT re-emit them. extra='ignore' on SynthesisOutput would silently let a
     # stray `bridges` return through, so it is removed deliberately, not relied on to be dropped.
-    return {
+    result: dict[str, Any] = {
         "synthesis_report": report,
         "model_usages": [usage_record] if usage_record else [],
     }
+    # R3: surface a real SDK-synthesis failure in the additive errors channel (visible degradation).
+    if degraded_error:
+        result["errors"] = [degraded_error]
+    return result
