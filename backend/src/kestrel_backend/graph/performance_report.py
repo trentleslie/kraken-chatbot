@@ -140,21 +140,17 @@ def build_report(state: dict, meta: dict) -> dict:
             }
         )
 
-    total_cost = pricing.estimate_cost(model_usages)
+    tok = _node_token_totals(model_usages)  # same 5 fields, computed once
     totals = {
         "wall_clock_s": round(wall_clock, 3) if wall_clock else 0.0,
-        "input_tokens": sum(_field(r, "input_tokens", 0) for r in model_usages),
-        "output_tokens": sum(_field(r, "output_tokens", 0) for r in model_usages),
-        "cache_read_tokens": sum(_field(r, "cache_read_tokens", 0) for r in model_usages),
-        "cache_creation_tokens": sum(_field(r, "cache_creation_tokens", 0) for r in model_usages),
-        "mcp_tool_calls": sum(_field(r, "mcp_tool_calls", 0) for r in model_usages),
-        "cost_usd": round(total_cost, 6),
+        **tok,
+        "cost_usd": round(pricing.estimate_cost(model_usages), 6),
     }
     totals["total_tokens"] = (
-        totals["input_tokens"]
-        + totals["output_tokens"]
-        + totals["cache_read_tokens"]
-        + totals["cache_creation_tokens"]
+        tok["input_tokens"]
+        + tok["output_tokens"]
+        + tok["cache_read_tokens"]
+        + tok["cache_creation_tokens"]
     )
 
     ran_nodes = [n for n in nodes if n["status"] == "ran"]
