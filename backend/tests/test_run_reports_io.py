@@ -113,6 +113,34 @@ def test_prune_respects_env_default(tmp_path, monkeypatch):
     assert io.prune(tmp_path) == 2  # env cap = 1
 
 
+def test_prune_invalid_env_falls_back_to_default(tmp_path, monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setenv(io.ENV_RETENTION, "not_a_number")
+    with caplog.at_level(logging.WARNING):
+        assert io._resolve_retention(None) == io.DEFAULT_RETENTION
+    assert any("invalid" in rec.message.lower() for rec in caplog.records)
+
+
+def test_write_report_unlinks_json_if_md_fails(tmp_path, monkeypatch):
+    # The pair must be atomic: a failed .md write must not leave an orphaned .json
+    # (which holds the raw query) behind.
+    calls = {"n": 0}
+    real_atomic = io._atomic_write
+
+    def flaky(path, content):
+        calls["n"] += 1
+        if calls["n"] == 2:  # second call is the .md write
+            raise OSError("md write failed")
+        return real_atomic(path, content)
+
+    monkeypatch.setattr(io, "_atomic_write", flaky)
+    with pytest.raises(OSError):
+        io.write_report({"query": "secret"}, "md", out_dir=tmp_path, run_id="r1")
+    assert list(tmp_path.glob("*.json")) == []  # json half cleaned up
+    assert list(tmp_path.glob("*.md")) == []
+
+
 def test_write_report_prune_failure_does_not_block_write(tmp_path, monkeypatch):
     monkeypatch.setattr(io, "prune", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
     result = io.write_report({"a": 1}, "md", out_dir=tmp_path)

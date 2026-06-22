@@ -14,6 +14,7 @@ unchanged. The wrapped node call itself is *not* guarded: a node raising is the
 node's own error and must surface as before.
 """
 
+import functools
 import logging
 import time
 from typing import Any, Awaitable, Callable
@@ -35,6 +36,15 @@ def _attach_timing(result: Any, name: str, duration: float) -> dict:
     if isinstance(result, dict):
         merged = dict(result)
     else:
+        if result is not None:
+            # A non-dict return is an invalid state update — we cannot merge it, so
+            # the node's output is dropped. Log it: silence would make a node that
+            # accidentally returns a non-dict a zero-signal correctness landmine.
+            logger.warning(
+                "timed_node(%s): node returned non-dict %s; state update dropped",
+                name,
+                type(result).__name__,
+            )
         merged = {}
     merged["node_timings"] = {name: duration}
     return merged
@@ -49,6 +59,7 @@ def timed_node(name: str, fn: NodeFn) -> NodeFn:
     per-node is approximate under concurrency (surfaced as a caveat in the report).
     """
 
+    @functools.wraps(fn)
     async def wrapped(state: dict) -> Any:
         start = time.time()
         result = await fn(state)  # node errors surface unchanged (not guarded)
@@ -62,5 +73,6 @@ def timed_node(name: str, fn: NodeFn) -> NodeFn:
             )
             return result
 
+    # Keep functools.wraps' metadata but give the wrapper a distinct, traceable name.
     wrapped.__name__ = f"timed_{name}"
     return wrapped

@@ -15,6 +15,7 @@ excluded from its own report: the ``timed_node`` wrapper records
 this function reads never contains it.
 """
 
+import asyncio
 import logging
 from typing import Any
 
@@ -38,8 +39,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         }
         report = build_report(state, meta)
         markdown = render_markdown(report)
-        result = run_reports_io.write_report(report, markdown, run_id=run_id)
-        logger.info("Performance report written: %s", result["json"])
+        # Offload the blocking disk write (json.dumps + file I/O + prune) to a thread so
+        # it never stalls the asyncio event loop between synthesis-complete and the final
+        # WebSocket message on the prod request path.
+        result = await asyncio.to_thread(
+            run_reports_io.write_report, report, markdown, run_id=run_id
+        )
+        logger.info("Performance report written: run_id=%s", run_id)
         return {"report_path": str(result["json"])}
     except Exception:  # noqa: BLE001 - reporting must never break a user-facing run (R4)
         logger.warning("Performance report failed; pipeline result unaffected", exc_info=True)

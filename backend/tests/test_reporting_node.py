@@ -74,3 +74,13 @@ def test_reporting_not_in_node_status_messages():
     from kestrel_backend.protocol import NODE_STATUS_MESSAGES
 
     assert "reporting" not in NODE_STATUS_MESSAGES
+
+
+def test_pipeline_nodes_matches_graph():
+    """Drift guard: every graph node (minus __start__/__end__/reporting) must be in
+    PIPELINE_NODES, else build_report silently marks a real node as an 'extra'."""
+    from kestrel_backend.graph.performance_report import PIPELINE_NODES
+
+    g = build_discovery_graph().get_graph()
+    graph_nodes = {n for n in g.nodes if n not in ("__start__", "__end__", "reporting")}
+    assert graph_nodes == set(PIPELINE_NODES)

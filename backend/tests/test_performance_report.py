@@ -129,6 +129,53 @@ def test_no_errors_renders_none():
     assert "## Errors\n\nNone." in md
 
 
+def test_node_with_usage_but_no_timing():
+    # Reverse of test_node_with_timing_but_no_usage: a node with model_usages but no
+    # node_timings entry (the extras/usages_by_node path) is reported as ran.
+    state = {
+        "node_timings": {"intake": 1.0},
+        "model_usages": [_usage("synthesis", input_tokens=500)],
+        "errors": [],
+    }
+    report = pr.build_report(state, _meta())
+    synth = next(n for n in report["nodes"] if n["node"] == "synthesis")
+    assert synth["status"] == "ran"
+    assert synth["duration_s"] is None
+    assert synth["input_tokens"] == 500
+
+
+def test_node_cost_mixed_known_and_unknown_models():
+    # A node with one known + one unknown model -> cost is the sum of the known only.
+    state = {
+        "node_timings": {"synthesis": 1.0},
+        "model_usages": [
+            _usage("synthesis", model="claude-sonnet-4-6", input_tokens=1_000_000),  # $3
+            _usage("synthesis", model="gpt-4o", input_tokens=1_000_000),  # unknown -> skipped
+        ],
+        "errors": [],
+    }
+    report = pr.build_report(state, _meta())
+    synth = next(n for n in report["nodes"] if n["node"] == "synthesis")
+    assert synth["cost_usd"] == 3.0  # known only, not None, not 0
+
+
+def test_summed_estimate_when_wall_clock_absent():
+    # The v1 reporting-node path: no wall_clock_s -> summed estimate, pct sums to 100%,
+    # and the markdown caveat reflects the estimate.
+    state = {
+        "node_timings": {"intake": 1.0, "synthesis": 3.0},
+        "model_usages": [],
+        "errors": [],
+    }
+    report = pr.build_report(state, _meta())  # no wall_clock_s
+    assert report["totals"]["wall_clock_source"] == "summed_estimate"
+    assert report["totals"]["wall_clock_s"] == 4.0
+    pcts = [n["pct_of_total"] for n in report["nodes"] if n.get("pct_of_total") is not None]
+    assert sum(pcts) == 100.0  # share-of-summed, never exceeds 100
+    md = pr.render_markdown(report)
+    assert "sum of per-node durations" in md
+
+
 def test_report_is_json_serializable():
     import json
 

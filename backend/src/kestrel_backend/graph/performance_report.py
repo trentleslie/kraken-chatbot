@@ -104,11 +104,18 @@ def build_report(state: dict, meta: dict) -> dict:
     extras = [n for n in (set(node_timings) | set(usages_by_node)) if n not in seen]
     ordered_nodes = PIPELINE_NODES + sorted(extras)
 
-    # Denominator for pct_of_total: exact wall-clock if provided, else summed durations.
+    # Denominator for pct_of_total: exact wall-clock if the caller measured it, else
+    # the sum of per-node durations. The v1 reporting node has no true elapsed-time
+    # source, so it omits wall_clock_s and this falls back to "summed_estimate" — which
+    # overstates elapsed time when parallel branches overlap, and makes pct_of_total a
+    # share-of-summed-work (always <=100%) rather than share-of-elapsed.
     summed = sum(node_timings.values())
     wall_clock = meta.get("wall_clock_s")
     if not wall_clock or wall_clock <= 0:
         wall_clock = summed
+        wall_clock_source = "summed_estimate"
+    else:
+        wall_clock_source = "measured"
     denom = wall_clock if wall_clock and wall_clock > 0 else None
 
     nodes: list[dict] = []
@@ -143,9 +150,11 @@ def build_report(state: dict, meta: dict) -> dict:
     tok = _node_token_totals(model_usages)  # same 5 fields, computed once
     totals = {
         "wall_clock_s": round(wall_clock, 3) if wall_clock else 0.0,
+        "wall_clock_source": wall_clock_source,  # "measured" | "summed_estimate"
         **tok,
         "cost_usd": round(pricing.estimate_cost(model_usages), 6),
     }
+    # total_tokens is billing tokens only; mcp_tool_calls is a call count, not tokens.
     totals["total_tokens"] = (
         tok["input_tokens"]
         + tok["output_tokens"]
@@ -208,10 +217,17 @@ def render_markdown(report: dict) -> str:
         f"**Top cost:** {h.get('top_cost_node') or 'n/a'}"
     )
     lines.append("")
-    lines.append(
-        "> Per-node durations for concurrent branches (`direct_kg` / `cold_start`) overlap, "
-        "so summed percentages can exceed 100%. Total wall-clock is the exact denominator."
-    )
+    if t.get("wall_clock_source") == "measured":
+        lines.append(
+            "> `%` is each node's share of measured wall-clock. Concurrent branches "
+            "(`direct_kg` / `cold_start`) overlap, so per-node percentages can sum to >100%."
+        )
+    else:
+        lines.append(
+            "> Wall-clock is estimated as the **sum of per-node durations** (no measured "
+            "elapsed time available); for concurrent branches this overstates true elapsed "
+            "time. `%` is each node's share of that summed time."
+        )
     lines.append("")
     lines.append("## Per-node")
     lines.append("")

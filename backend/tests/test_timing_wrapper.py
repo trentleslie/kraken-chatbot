@@ -46,12 +46,17 @@ def test_wraps_empty_dict_return():
     assert "integration" in result["node_timings"]
 
 
-def test_wraps_nondict_return_without_raising():
+def test_wraps_nondict_return_without_raising(caplog):
+    import logging
+
     async def node(state):
         return ["not", "a", "dict"]  # invalid state update, must not crash the wrapper
 
-    result = asyncio.run(timed_node("weird", node)({}))
+    with caplog.at_level(logging.WARNING):
+        result = asyncio.run(timed_node("weird", node)({}))
     assert result["node_timings"]["weird"] >= 0.0
+    # A dropped non-dict state update must not be silent.
+    assert any("non-dict" in rec.message for rec in caplog.records)
 
 
 def test_shallow_copy_preserves_reducer_values_identity():

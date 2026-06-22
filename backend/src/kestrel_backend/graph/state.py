@@ -478,3 +478,5 @@ class DiscoveryState(TypedDict, total=False):
     # and LangGraph raises InvalidUpdateError on concurrent writes to a non-reducer field.
     node_timings: Annotated[dict[str, float], merge_node_timings]  # Performance tracking
     cold_start_skipped_count: int  # Number of entities skipped by cold-start optimization
+    # Path to the performance report written by the terminal reporting node (observability).
+    report_path: str

@@ -56,21 +56,24 @@ def get_git_sha() -> str:
             text=True,
             check=True,
             cwd=str(_BACKEND_ROOT),
+            timeout=5,  # never hang the event loop on a stalled/locked git (esp. GDrive-synced repo)
         )
         return out.stdout.strip() or "unknown"
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
         logger.warning("git_sha lookup failed; using 'unknown'")
         return "unknown"
 
 
 def _ensure_dir(d: Path) -> None:
-    """Create ``d`` mode 700 without a world-readable window."""
-    old = os.umask(0o077)
-    try:
-        d.mkdir(mode=0o700, parents=True, exist_ok=True)
-    finally:
-        os.umask(old)
-    os.chmod(d, 0o700)  # enforce 700 even if the dir pre-existed with looser perms
+    """Create ``d`` mode 700, owner-only at every moment.
+
+    No ``os.umask`` (a process-global side effect that races under concurrency):
+    ``mkdir(mode=0o700)`` has no group/other bits for umask to *add*, so the dir is
+    never world-readable even at creation, and the explicit ``chmod`` enforces 700
+    on a dir that pre-existed with looser perms.
+    """
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(d, 0o700)
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -164,7 +167,16 @@ def write_report(
     json_path = directory / f"{base}.json"
     md_path = directory / f"{base}.md"
     _atomic_write(json_path, json.dumps(report_json, indent=2, default=str))
-    _atomic_write(md_path, markdown)
+    try:
+        _atomic_write(md_path, markdown)
+    except BaseException:
+        # Keep the pair atomic: don't leave an orphaned .json (which holds the raw
+        # query) on disk if the markdown half fails.
+        try:
+            os.unlink(json_path)
+        except FileNotFoundError:
+            pass
+        raise
     try:
         prune(directory, max_pairs=retention)
     except Exception:  # noqa: BLE001 - prune must never block a successful write
