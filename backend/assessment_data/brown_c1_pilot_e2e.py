@@ -179,7 +179,11 @@ def acceptance_checks(merged, cov, synth_dur):
     """
     report = merged.get("synthesis_report", "") or ""
     errors = merged.get("errors", []) or []
-    degraded = [e for e in errors if "synthesis_degraded" in str(e)]
+    # Match the fallback marker that synthesis.run() actually emits: both the empty-output and the
+    # exception cases end with "... fell back to deterministic report" (the exception case also says
+    # "LLM call failed"). The earlier "synthesis_degraded" string never matched any real marker, so
+    # this gate was permanently green. The marker text is owned by synthesis.run(); keep in sync.
+    degraded = [e for e in errors if "fell back to deterministic" in str(e) or "LLM call failed" in str(e)]
     try:
         ctx_chars = len(assemble_synthesis_context(merged))
     except Exception as e:  # noqa: BLE001
