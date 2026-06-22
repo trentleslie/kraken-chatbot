@@ -270,6 +270,153 @@ def format_pathway_memberships(pathways: list[PathwayMembership]) -> str:
     return "\n".join(lines)
 
 
+# Disease evidence strength, strongest first (matches format_disease_associations' evidence_order).
+_EVIDENCE_STRENGTH = {"gwas": 0, "curated": 1, "text_mined": 2, "predicted": 3}
+_EVIDENCE_LABEL = {0: "gwas", 1: "curated", 2: "text_mined", 3: "predicted"}
+
+
+def aggregate_shared_diseases(
+    disease_associations: list[DiseaseAssociation],
+    min_members: int,
+    max_items: int,
+) -> str:
+    """Module-level disease recurrence: diseases shared across ≥ min_members distinct members.
+
+    Dedupes ``(entity_curie, disease_curie)`` before counting *distinct* member entities (the
+    additive reducers can carry duplicates from parallel branches), keeping the **strongest**
+    ``evidence_type`` per (entity, disease) so evidence strength is not silently dropped. Ranks by
+    distinct-member count, then evidence strength; caps to ``max_items``. Returns ``""`` when nothing
+    qualifies (so single-entity / small queries emit nothing — R5).
+    """
+    if not disease_associations:
+        return ""
+
+    # disease_curie -> {entity_curie: strongest_evidence_rank}
+    by_disease: dict[str, dict[str, int]] = {}
+    names: dict[str, str] = {}
+    for d in disease_associations:
+        members = by_disease.setdefault(d.disease_curie, {})
+        rank = _EVIDENCE_STRENGTH.get(d.evidence_type, 99)
+        if d.entity_curie not in members or rank < members[d.entity_curie]:
+            members[d.entity_curie] = rank
+        names.setdefault(d.disease_curie, d.disease_name)
+
+    qualifying = [
+        (curie, members) for curie, members in by_disease.items() if len(members) >= min_members
+    ]
+    if not qualifying:
+        return ""
+
+    # member count desc, then strongest evidence (lowest rank) asc
+    qualifying.sort(key=lambda cm: (-len(cm[1]), min(cm[1].values())))
+    qualifying = qualifying[:max_items]
+
+    lines = ["## Module-Level Disease Recurrence\n"]
+    lines.append(f"*Diseases associated with multiple module members (shared by ≥{min_members}).*\n")
+    for curie, members in qualifying:
+        strongest = _EVIDENCE_LABEL.get(min(members.values()), "—")
+        lines.append(
+            f"- **{names[curie]}** (`{curie}`) — {len(members)} members [strongest: {strongest}]"
+        )
+        lines.append(f"  - Members: {', '.join(sorted(members))}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def aggregate_shared_pathways(
+    pathway_memberships: list[PathwayMembership],
+    min_members: int,
+    max_items: int,
+) -> str:
+    """Module-level pathway recurrence: pathways/processes shared across ≥ min_members members.
+
+    Dedupes ``(entity_curie, pathway_curie)`` (set of distinct members), filters by threshold, ranks
+    by member count, caps to ``max_items``. Returns ``""`` when nothing qualifies (R5).
+    """
+    if not pathway_memberships:
+        return ""
+
+    by_pathway: dict[str, set[str]] = {}
+    names: dict[str, str] = {}
+    for p in pathway_memberships:
+        by_pathway.setdefault(p.pathway_curie, set()).add(p.entity_curie)
+        names.setdefault(p.pathway_curie, p.pathway_name)
+
+    qualifying = [(c, m) for c, m in by_pathway.items() if len(m) >= min_members]
+    if not qualifying:
+        return ""
+
+    qualifying.sort(key=lambda cm: -len(cm[1]))
+    qualifying = qualifying[:max_items]
+
+    lines = ["## Module-Level Pathway Recurrence\n"]
+    lines.append(
+        f"*Pathways/processes shared across multiple module members (shared by ≥{min_members}).*\n"
+    )
+    for curie, members in qualifying:
+        lines.append(f"- **{names[curie]}** (`{curie}`) — {len(members)} members")
+        lines.append(f"  - Members: {', '.join(sorted(members))}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def format_member_table(
+    resolved_entities: list[EntityResolution],
+    novelty_scores: list[NoveltyScore],
+    disease_associations: list[DiseaseAssociation],
+    max_rows: int,
+) -> str:
+    """Compact one-row-per-member prioritization table (the per-member axis of a module report).
+
+    Joins ``novelty_scores`` (edge_count + classification bucket) with ``resolved_entities``
+    (name/category) by curie — over the **union** of curies so a curie present in only one source
+    still renders (graceful join, no KeyError). "Top disease" is the member's strongest-evidence
+    ``DiseaseAssociation`` (or "—"). Sorted by edge_count desc; capped to ``max_rows`` (top-N) with a
+    "… and N more members" elision so a 217-member table cannot itself become a dump.
+    """
+    name_by_curie = {e.curie: (e.resolved_name or e.raw_name) for e in resolved_entities if e.curie}
+    cat_by_curie = {e.curie: e.category for e in resolved_entities if e.curie}
+    novelty_by_curie = {n.curie: n for n in novelty_scores}
+
+    # strongest-evidence disease name per entity
+    top_disease: dict[str, tuple[int, str]] = {}
+    for d in disease_associations:
+        rank = _EVIDENCE_STRENGTH.get(d.evidence_type, 99)
+        cur = top_disease.get(d.entity_curie)
+        if cur is None or rank < cur[0]:
+            top_disease[d.entity_curie] = (rank, d.disease_name)
+
+    curies = list(dict.fromkeys(list(name_by_curie) + list(novelty_by_curie)))
+    if not curies:
+        return ""
+
+    def _edges(curie: str) -> int:
+        n = novelty_by_curie.get(curie)
+        return n.edge_count if n is not None else -1
+
+    curies.sort(key=_edges, reverse=True)
+    shown = curies[:max_rows]
+    hidden = len(curies) - len(shown)
+
+    lines = ["## Member Prioritization Table\n"]
+    lines.append("| Member | Category | Bucket | Edges | Top Disease |")
+    lines.append("|---|---|---|---|---|")
+    for curie in shown:
+        name = name_by_curie.get(curie, curie)
+        category = (cat_by_curie.get(curie) or "—")
+        if category != "—":
+            category = category.replace("biolink:", "")
+        n = novelty_by_curie.get(curie)
+        bucket = n.classification if n is not None else "—"
+        edges = str(n.edge_count) if n is not None else "—"
+        disease = top_disease.get(curie, (0, "—"))[1]
+        lines.append(f"| {name} (`{curie}`) | {category} | {bucket} | {edges} | {disease} |")
+    if hidden > 0:
+        lines.append(f"\n*… and {hidden} more members*")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def format_shared_neighbors(
     shared_neighbors: list[SharedNeighbor],
     themes: list[BiologicalTheme]

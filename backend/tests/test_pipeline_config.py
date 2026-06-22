@@ -2,6 +2,8 @@
 
 import pytest
 
+import pydantic
+
 from kestrel_backend.graph.pipeline_config import (
     BiomapperConfig,
     ColdStartConfig,
@@ -10,6 +12,7 @@ from kestrel_backend.graph.pipeline_config import (
     LiteratureGroundingConfig,
     PathwayEnrichmentConfig,
     PipelineConfig,
+    SynthesisConfig,
     TriageConfig,
     get_pipeline_config,
     get_semaphore,
@@ -73,6 +76,31 @@ class TestPipelineConfig:
         assert config.max_hypotheses == 15
         assert config.parallel_fetch_limit == 6
         assert config.use_llm_classifier is False
+
+    def test_synthesis_defaults(self):
+        """SynthesisConfig exposes the cap surface with token-derived defaults (Diagnostic Evidence)."""
+        config = get_pipeline_config().synthesis
+        assert config.max_findings_per_tier > 0
+        assert config.max_aggregated_diseases > 0
+        assert config.max_aggregated_pathways > 0
+        assert config.max_member_table_rows > 0
+        # max_context_chars is a char proxy for the ~200K-token window: ~350K chars ~= 100K tokens.
+        assert config.max_context_chars == 350_000
+
+    def test_synthesis_thresholds_are_decoupled(self):
+        """Module-mode switch and recurrence threshold are separate fields (not one conflated knob)."""
+        config = get_pipeline_config().synthesis
+        # Module mode engages only above pair size, so 2-entity queries keep the per-entity shape (R5).
+        assert config.module_mode_min_entities > 2
+        # Recurrence is inclusive (a disease shared by 2 members qualifies).
+        assert config.min_members_for_recurrence == 2
+
+    def test_synthesis_field_bounds_reject_invalid(self):
+        """ge= bounds reject nonsensical caps so a misconfig fails loudly, not silently."""
+        with pytest.raises(pydantic.ValidationError):
+            SynthesisConfig(max_findings_per_tier=-1)
+        with pytest.raises(pydantic.ValidationError):
+            SynthesisConfig(max_context_chars=0)
 
     def test_hub_thresholds_intentionally_different(self):
         """Direct KG and pathway enrichment have different hub thresholds by design."""
