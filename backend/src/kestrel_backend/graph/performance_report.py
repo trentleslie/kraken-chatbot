@@ -219,14 +219,16 @@ def render_markdown(report: dict) -> str:
     lines.append("")
     if t.get("wall_clock_source") == "measured":
         lines.append(
-            "> `%` is each node's share of measured wall-clock. Concurrent branches "
-            "(`direct_kg` / `cold_start`) overlap, so per-node percentages can sum to >100%."
+            "> The percentage column reports each node's share of measured wall-clock. "
+            "Concurrent branches (`direct_kg` and `cold_start`) overlap; per-node "
+            "percentages therefore sum to more than 100%."
         )
     else:
         lines.append(
-            "> Wall-clock is estimated as the **sum of per-node durations** (no measured "
-            "elapsed time available); for concurrent branches this overstates true elapsed "
-            "time. `%` is each node's share of that summed time."
+            "> Wall-clock is estimated as the sum of per-node durations, because no "
+            "measured elapsed time was available; for concurrent branches this sum "
+            "overstates true elapsed time. The percentage column reports each node's "
+            "share of that summed total."
         )
     lines.append("")
     lines.append("## Per-node")

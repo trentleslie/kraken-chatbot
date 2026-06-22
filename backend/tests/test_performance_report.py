@@ -176,6 +176,26 @@ def test_summed_estimate_when_wall_clock_absent():
     assert "sum of per-node durations" in md
 
 
+def test_measured_caveat_in_register_voice():
+    # Unit 3 / register: affirmative check that the rewrite happened (not merely that an
+    # em-dash is absent, which the prior text already satisfied -> a permanently-green gate).
+    state = {"node_timings": {"direct_kg": 2.0, "cold_start": 2.0}, "model_usages": [], "errors": []}
+    md = pr.render_markdown(pr.build_report(state, _meta(wall_clock_s=2.0)))
+    assert "reports each node's share of measured wall-clock" in md   # new register wording
+    assert "`%` is each node's share" not in md                       # old wording is gone
+    assert "—" not in md                                              # secondary guard: no em-dash
+
+
+def test_summed_estimate_caveat_in_register_voice():
+    state = {"node_timings": {"intake": 1.0, "synthesis": 3.0}, "model_usages": [], "errors": []}
+    md = pr.render_markdown(pr.build_report(state, _meta()))  # no wall_clock_s -> summed estimate
+    # Register rewrite is present and still communicates the summed-estimate meaning.
+    assert "sum of per-node durations" in md
+    assert "overstates true elapsed time" in md
+    assert "reports each node's share of that summed total" in md
+    assert "—" not in md
+
+
 def test_report_is_json_serializable():
     import json
 
