@@ -1693,7 +1693,7 @@ class TestEndToEndPhase4b:
     @pytest.mark.asyncio
     async def test_graph_has_all_expected_nodes(self):
         """Graph should have all 12 analysis nodes (ground-before-synthesis + bridge_grounding
-        evidence-provenance labeler) plus __start__."""
+        evidence-provenance labeler) plus the terminal reporting node and __start__."""
         graph = build_discovery_graph()
         node_names = list(graph.nodes.keys())
 
@@ -1710,13 +1710,14 @@ class TestEndToEndPhase4b:
             "hypothesis_extraction",
             "literature_grounding",
             "synthesis",
+            "reporting",
         ]
 
         for node in expected_nodes:
             assert node in node_names, f"Missing node: {node}"
 
-        # 12 analysis nodes (incl. bridge_grounding + hypothesis_extraction) + __start__
-        assert len(node_names) == 13, f"Expected 13 nodes (12 + __start__), got {len(node_names)}: {node_names}"
+        # 12 analysis nodes + reporting (terminal perf-report node) + __start__
+        assert len(node_names) == 14, f"Expected 14 nodes (13 + __start__), got {len(node_names)}: {node_names}"
 
     @pytest.mark.asyncio
     async def test_full_pipeline_non_longitudinal(self):
@@ -2461,8 +2462,9 @@ class TestGroundBeforeSynthesisTopology:
         node_names = [n for n in graph.nodes.keys() if n != "__start__"]
         assert "hypothesis_extraction" in node_names
         assert "bridge_grounding" in node_names
-        # 12 analysis nodes + __start__ in the raw dict.
-        assert len(graph.nodes.keys()) == 13, f"got {len(graph.nodes.keys())}: {list(graph.nodes.keys())}"
+        assert "reporting" in node_names
+        # 12 analysis nodes + reporting + __start__ in the raw dict.
+        assert len(graph.nodes.keys()) == 14, f"got {len(graph.nodes.keys())}: {list(graph.nodes.keys())}"
 
     def test_new_edges_present_old_edges_gone(self):
         graph = build_discovery_graph()
@@ -2473,8 +2475,11 @@ class TestGroundBeforeSynthesisTopology:
         assert ("hypothesis_extraction", "bridge_grounding") in edges
         assert ("bridge_grounding", "literature_grounding") in edges
         assert ("literature_grounding", "synthesis") in edges
-        assert ("synthesis", "__end__") in edges
+        # synthesis now flows into the terminal reporting node, then END
+        assert ("synthesis", "reporting") in edges
+        assert ("reporting", "__end__") in edges
         # Old topology removed
+        assert ("synthesis", "__end__") not in edges
         assert ("synthesis", "literature_grounding") not in edges
         assert ("literature_grounding", "__end__") not in edges
         assert ("temporal", "synthesis") not in edges

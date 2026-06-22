@@ -22,7 +22,7 @@ from .timing import timed_node
 from .nodes import (
     intake, entity_resolution, triage, direct_kg, cold_start,
     pathway_enrichment, integration, bridge_grounding, temporal,
-    hypothesis_extraction, synthesis, literature_grounding
+    hypothesis_extraction, synthesis, literature_grounding, reporting
 )
 
 
@@ -148,6 +148,8 @@ def build_discovery_graph() -> StateGraph:
     workflow.add_node("hypothesis_extraction", timed_node("hypothesis_extraction", hypothesis_extraction.run))
     workflow.add_node("synthesis", timed_node("synthesis", synthesis.run))
     workflow.add_node("literature_grounding", timed_node("literature_grounding", literature_grounding.run))
+    # Terminal reporting node — runs last on every path, emits the perf report (fail-safe).
+    workflow.add_node("reporting", timed_node("reporting", reporting.run))
 
     # Linear edges: intake -> entity_resolution -> triage
     workflow.set_entry_point("intake")
@@ -196,7 +198,10 @@ def build_discovery_graph() -> StateGraph:
     workflow.add_edge("hypothesis_extraction", "bridge_grounding")
     workflow.add_edge("bridge_grounding", "literature_grounding")
     workflow.add_edge("literature_grounding", "synthesis")
-    workflow.add_edge("synthesis", END)
+    # synthesis -> reporting -> END: the perf report fires after the report is written,
+    # on every path (incl. Studio, which bypasses the runner).
+    workflow.add_edge("synthesis", "reporting")
+    workflow.add_edge("reporting", END)
 
     # Compile and return
     return workflow.compile()

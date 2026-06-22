@@ -25,6 +25,7 @@ from . import temporal
 from . import hypothesis_extraction
 from . import synthesis
 from . import literature_grounding
+from . import reporting
 
 __all__ = [
     "intake",
@@ -39,4 +40,5 @@ __all__ = [
     "hypothesis_extraction",
     "synthesis",
     "literature_grounding",
+    "reporting",
 ]
