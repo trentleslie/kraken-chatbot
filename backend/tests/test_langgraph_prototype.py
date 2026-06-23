@@ -2414,10 +2414,14 @@ class TestSynthesisReportOnly:
 
     @pytest.mark.asyncio
     async def test_return_is_report_only(self):
-        """Return dict carries no `hypotheses` or `bridges` keys (owned upstream now)."""
+        """Return dict carries no `hypotheses` or `bridges` keys (owned upstream now).
+
+        synthesis_context_stats (plan 004) is a legitimate synthesis-owned output and is present
+        whenever the context was assembled (it always is); hypotheses/bridges remain excluded.
+        """
         with patch.object(synthesis, "HAS_SDK", False):
             result = await synthesis.run(self._grounded_state())
-        assert set(result.keys()) == {"synthesis_report", "model_usages"}
+        assert set(result.keys()) == {"synthesis_report", "model_usages", "synthesis_context_stats"}
         assert "hypotheses" not in result
         assert "bridges" not in result
 
