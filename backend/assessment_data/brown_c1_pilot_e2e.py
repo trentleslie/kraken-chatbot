@@ -151,6 +151,11 @@ def coverage(state):
         "resolved_entities_count": len(re_),
         "distinct_curies": distinct_curies,
         "curie_collisions": len(curies) - distinct_curies,
+        # plan 2026-06-23-001: how many entities had their triage edge-count fail and were rerouted
+        # to direct-KG (moderate) with a marker — should be ~0 once concurrency is bounded.
+        "triage_measurement_failures": sum(
+            1 for e in (state.get("errors", []) or []) if "edge-count failed" in str(e)
+        ),
         "triage_buckets": {
             "well_characterized": len(state.get("well_characterized_curies", []) or []),
             "moderate": len(state.get("moderate_curies", []) or []),
@@ -222,7 +227,31 @@ def acceptance_checks(merged, cov, synth_dur):
             total_findings > 37,
             f"{total_findings} findings (R6: ≫37 expected at module scale post-merge-fix)",
         ),
+        # plan 2026-06-23-001: guard against the triage-at-scale false-cold-start regression.
+        "triage_coldstart_not_mass_failure": (
+            cov["triage_buckets"]["cold_start"] < 45,
+            f"cold_start={cov['triage_buckets']['cold_start']} (want <45; pre-fix was 69 from "
+            f"edge-count query failures); triage_measurement_failures={cov.get('triage_measurement_failures', 0)}",
+        ),
+        "triage_hubs_well_characterized": _hubs_well_characterized(merged),
     }
+
+
+def _hubs_well_characterized(merged):
+    """Definitive post-fix check: well-characterized hub genes that are present in the module must
+    land in well_characterized, not cold_start. IL6=NCBIGene:3569, HMOX1=NCBIGene:3162 each carry
+    thousands of KG edges (verified live), so cold-starting them signals the triage-failure bug."""
+    hubs = {"IL6": "NCBIGene:3569", "HMOX1": "NCBIGene:3162"}
+    resolved = {
+        getattr(e, "curie", None) or (e.get("curie") if isinstance(e, dict) else None)
+        for e in (merged.get("resolved_entities") or [])
+    }
+    well = set(merged.get("well_characterized_curies", []) or [])
+    present = {sym: cur for sym, cur in hubs.items() if cur in resolved}
+    if not present:
+        return (True, "no curated hubs present in this run (check skipped)")
+    misbucketed = {sym: cur for sym, cur in present.items() if cur not in well}
+    return (not misbucketed, f"present={present}; not in well_characterized={misbucketed or 'none'}")
 
 
 async def main():

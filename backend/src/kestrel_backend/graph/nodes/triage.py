@@ -28,6 +28,7 @@ import time
 from typing import Any
 
 from ...kestrel_client import call_kestrel_tool
+from ..pipeline_config import get_pipeline_config
 from ..state import DiscoveryState, NoveltyScore, EntityResolution
 from ..state_contracts import validate_state, TriageInput, TriageOutput
 
@@ -39,20 +40,27 @@ THRESHOLD_WELL_CHARACTERIZED = 200
 THRESHOLD_MODERATE = 20
 THRESHOLD_SPARSE = 1
 
+# Edge-count retry: a couple of attempts with a short backoff cover transient Kestrel hiccups
+# (server isError / timeout) without re-firing instantly into the same load (plan 2026-06-23-001).
+_MAX_ATTEMPTS = 3
+_RETRY_BACKOFF_S = 0.5
 
-async def count_edges_via_api(entity: EntityResolution) -> NoveltyScore | None:
+
+async def count_edges_via_api(entity: EntityResolution, sem: asyncio.Semaphore) -> NoveltyScore | None:
     """
     Tier 1: Count edges via direct Kestrel API call.
 
     Uses one_hop_query with mode="preview" which returns results_count (edge count).
-    Returns None if the count fails (the caller then defaults the entity to
-    cold_start).
+    Runs under the caller's concurrency semaphore (bounds in-flight Kestrel calls). Returns a
+    NoveltyScore for a measured count (including a genuine ``results_count == 0`` → cold_start),
+    or **None when the count could not be MEASURED** (server ``isError`` / empty content /
+    unparseable JSON / exhausted retries). The caller treats None as a measurement failure and
+    routes the entity to the direct-KG path (``moderate``) with a visible ``errors`` marker —
+    NOT silently to cold_start (plan 2026-06-23-001).
 
-    A single in-place retry covers genuinely *time-varying* failures (server
-    ``isError`` / exception) so a transient hiccup does not silently downgrade a
-    well-characterized entity to cold_start (#61). *Deterministic* per-CURIE
-    failures (empty content, unparseable JSON) are NOT retried — an identical-args
-    retry would re-fail — and fall to the cold_start default by returning None.
+    Transient failures (server ``isError`` / exception) are retried with backoff up to
+    ``_MAX_ATTEMPTS``. *Deterministic* per-CURIE failures (empty content, unparseable JSON) are
+    NOT retried — an identical-args retry would re-fail — and return None immediately.
     """
     curie = entity.curie
     raw_name = entity.raw_name
@@ -66,25 +74,30 @@ async def count_edges_via_api(entity: EntityResolution) -> NoveltyScore | None:
             classification="cold_start",
         )
 
-    max_attempts = 2  # one retry, for transient failures only
+    max_attempts = _MAX_ATTEMPTS
     for attempt in range(max_attempts):
         try:
-            # Call one_hop_query with preview mode - returns counts instead of full data
-            result = await call_kestrel_tool("one_hop_query", {
-                "start_node_ids": curie,
-                "mode": "preview",
-                "limit": 10000,  # High limit to get accurate count
-            })
+            # Call one_hop_query with preview mode - returns counts instead of full data.
+            # The semaphore bounds in-flight Kestrel calls; it wraps only the call (not the retry
+            # backoff) so a sleeping retry releases its slot to other entities.
+            async with sem:
+                result = await call_kestrel_tool("one_hop_query", {
+                    "start_node_ids": curie,
+                    "mode": "preview",
+                    "limit": 10000,  # High limit to get accurate count
+                })
 
             is_error = result.get("isError", False)
             content = result.get("content", [])
 
             if is_error:
-                # Transient server-side error — retry once, then give up.
+                # Transient server-side error — back off, retry, then give up.
                 logger.debug(
                     "Tier 1 triage '%s': API isError (attempt %d/%d)",
                     curie, attempt + 1, max_attempts,
                 )
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(_RETRY_BACKOFF_S)
                 continue
 
             if not content:
@@ -119,11 +132,13 @@ async def count_edges_via_api(entity: EntityResolution) -> NoveltyScore | None:
             )
 
         except Exception as e:
-            # Transient (timeout / connection) — retry once, then give up.
+            # Transient (timeout / connection) — back off, retry, then give up.
             logger.warning(
                 "Tier 1 triage '%s': Exception (attempt %d/%d) - %s",
                 curie, attempt + 1, max_attempts, str(e),
             )
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(_RETRY_BACKOFF_S)
             continue
 
     # All attempts exhausted on transient failures → cold_start default (None).
@@ -147,18 +162,19 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     """
     Triage resolved entities by KG connectivity using Tier-1 HTTP only (#61).
 
-    Tier 1 (API): Direct one_hop_query with mode="preview" for all entities,
-      with a single in-place retry for transient isError/exception failures.
-      Deterministic failures (empty content, bad JSON) are not retried.
-      Entities whose count still fails after the retry default to cold_start
-      (the broken stdio-MCP Tier-2 LLM fallback was removed).
+    Tier 1 (API): bounded-concurrency one_hop_query (mode="preview") for all entities, retried
+      with backoff on transient isError/exception. A genuine 0-edge count → cold_start; an entity
+      whose count cannot be MEASURED (None) is routed to ``moderate`` (the direct-KG path) with a
+      visible ``errors`` marker, never silently to cold_start (plan 2026-06-23-001). The broken
+      stdio-MCP Tier-2 LLM fallback was removed (#61).
 
     Returns:
         novelty_scores: List of NoveltyScore objects
         well_characterized_curies: CURIEs with >=200 edges
-        moderate_curies: CURIEs with 20-199 edges
+        moderate_curies: CURIEs with 20-199 edges (incl. measurement-failed entities)
         sparse_curies: CURIEs with 1-19 edges
-        cold_start_curies: CURIEs with 0 edges
+        cold_start_curies: CURIEs with 0 edges (genuine) + failed-resolution names
+        errors: degraded markers for entities whose edge count could not be measured
     """
     logger.info("Starting triage")
     start = time.time()
@@ -187,9 +203,11 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     tier1_start = time.time()
     logger.info("Tier 1 (API): Counting edges for %d entities", len(valid_entities))
 
-    # Run all API calls in parallel
+    # Run API calls concurrently but BOUNDED — an unbounded fan-out over hundreds of entities
+    # thundering-herds Kestrel into timeouts (plan 2026-06-23-001). Per-invocation semaphore.
+    sem = asyncio.Semaphore(get_pipeline_config().triage.kestrel_concurrency)
     tier1_results = await asyncio.gather(
-        *[count_edges_via_api(e) for e in valid_entities],
+        *[count_edges_via_api(e, sem) for e in valid_entities],
         return_exceptions=True,
     )
 
@@ -212,40 +230,40 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         tier1_success, len(valid_entities), tier1_duration
     )
 
-    # ========== Tier 2 removed — failed counts default to cold_start (#61) ==========
-    # The Tier-2 LLM edge-counting fallback configured the broken stdio MCP, so with
-    # no working tools it could only guess a number. count_edges_via_api now retries
-    # once on *transient* failures (server isError / exception); any entity that still
-    # failed (None) is left unset here and backfilled to cold_start by the no-None
-    # block below — never an SDK-guessed count.
-    #
-    # NOTE (honest reroute): classify_by_edge_count has no 'unknown' bucket, so a count
-    # that fails even after the retry → edge_count=0 → cold_start, and route_after_triage
-    # sends it to the cold-start analogue branch instead of direct_kg. A genuinely
-    # well-characterized entity whose count failed is therefore downgraded. This is
-    # PRE-EXISTING behavior (the prior default was already cold_start); the migration
-    # does not worsen it, it just reaches the same default without a fabricated number.
+    # ========== Measurement failures reroute to direct-KG, never silent cold_start ==========
+    # count_edges_via_api retries transient failures (server isError / exception) with backoff;
+    # an entity whose count still cannot be MEASURED (None) is NOT a genuine 0-edge entity. A real
+    # 0 returns a NoveltyScore (edge_count=0 -> cold_start); only a measurement failure is None.
+    # Routing a measurement failure to cold_start would make a Kestrel overload read as "no KG
+    # presence" (the silent-degradation anti-pattern, cf. synthesis overflow, PR #85). Instead we
+    # route it to the direct-KG path via the `moderate` bucket and emit a visible marker.
     model_usages: list = []
     if tier1_failed_indices:
         for idx in tier1_failed_indices:
             entity = valid_entities[idx]
             logger.info(
                 "FALLBACK_EVENT node=triage entity=%s curie=%s "
-                "reason=tier1_edge_count_failed action=default_cold_start tier=2_dropped",
+                "reason=tier1_edge_count_failed action=reroute_direct_kg_moderate",
                 getattr(entity, "raw_name", str(entity)),
                 getattr(entity, "curie", "unknown"),
             )
 
-    # Ensure no None values
+    # Ensure no None values; a None means the count FAILED (not measured 0) -> moderate + marker.
     final_scores = []
     for i, s in enumerate(all_scores):
         if s is None:
+            ent = valid_entities[i]
+            cur = ent.curie or ent.raw_name
             final_scores.append(NoveltyScore(
-                curie=valid_entities[i].curie or valid_entities[i].raw_name,
-                raw_name=valid_entities[i].raw_name,
+                curie=cur,
+                raw_name=ent.raw_name,
                 edge_count=0,
-                classification="cold_start",
+                classification="moderate",
             ))
+            errors.append(
+                f"triage: edge-count failed for {cur} ({ent.raw_name}); "
+                "routed to direct-KG (moderate)"
+            )
         else:
             final_scores.append(s)
 
