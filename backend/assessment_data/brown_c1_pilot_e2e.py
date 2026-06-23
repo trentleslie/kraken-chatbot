@@ -99,31 +99,33 @@ def git_sha():
 
 
 def pick_pilot(n_prot, n_met):
-    """A mix that exercises both the analyzable path (proteins, now well-characterized ON)
-    and the cap-drop path (sparse metabolites). Clean names to survive intake parsing."""
+    """All named Brown analytes (proteins + metabolites/chemistry).
+
+    Phase 1 (intake analyte-name robustness): intake now keeps internal commas (the query is
+    newline-delimited, one analyte per line) and strips alias parentheticals to a resolvable
+    primary name, so the prior defensive "(" / "," exclusion is no longer needed. Rows with no
+    name (14 Chemistry rows with empty ChemName) are inherently un-submittable and stay excluded.
+    """
     prot, met = [], []
     with open(TSV, newline="") as f:
         for r in csv.DictReader(f, delimiter="\t"):
             if r["ModuleID"] != "Brown":
                 continue
             if r["Dataset"] == "Protein" and r["GeneSymbol"] not in ("", "NA"):
-                # gene symbols are clean (no parentheticals intake would strip)
-                if "(" not in r["GeneSymbol"]:
-                    prot.append(r["GeneSymbol"])
+                prot.append(r["GeneSymbol"])
             elif r["Dataset"] in ("Metabolite", "Chemistry") and r["ChemName"] not in ("", "NA"):
-                # avoid parentheticals (intake strips them -> isomer dedup) AND internal commas
-                # (the comma-joined query list would split e.g. "12,13-DiHOME" into two entities)
-                if "(" not in r["ChemName"] and "," not in r["ChemName"]:
-                    met.append(r["ChemName"])
+                met.append(r["ChemName"])
     return prot[:n_prot], met[:n_met]
 
 
 def build_query(proteins, metabolites):
+    # Newline-delimited sections (one analyte per line) so commas inside chemical names are safe;
+    # intake's labeled-section parser treats each line as one analyte (Phase 1).
     return (
         "Analyze the biological relationships among these co-expressed analytes "
         "from the Brown WGCNA module.\n\n"
-        "Proteins:\n" + ", ".join(proteins) + "\n\n"
-        "Metabolites:\n" + ", ".join(metabolites) + "\n"
+        "Proteins:\n" + "\n".join(proteins) + "\n\n"
+        "Metabolites:\n" + "\n".join(metabolites) + "\n"
     )
 
 
@@ -133,6 +135,12 @@ def coverage(state):
     methods = Counter(getattr(e, "method", None) or (e.get("method") if isinstance(e, dict) else None)
                       for e in re_)
     bm = sum(v for k, v in methods.items() if k and str(k).startswith("biomapper"))
+    # Phase 1 (R5): resolution-level collision measurement — how many resolved entities collapse
+    # to a shared CURIE (e.g. isomers the KG has no distinct node for). This is the evidence that
+    # decides whether the Phase-2 isomer-preservation/provenance machinery is worth building.
+    curies = [getattr(e, "curie", None) or (e.get("curie") if isinstance(e, dict) else None) for e in re_]
+    curies = [c for c in curies if c]
+    distinct_curies = len(set(curies))
     hyps = state.get("hypotheses", []) or []
     lit_total = sum(len(getattr(h, "literature_support", None) or
                         (h.get("literature_support") if isinstance(h, dict) else []) or []) for h in hyps)
@@ -140,6 +148,9 @@ def coverage(state):
     return {
         "resolved_by_method": {str(k): v for k, v in methods.items()},
         "biomapper_confirmed": bm,
+        "resolved_entities_count": len(re_),
+        "distinct_curies": distinct_curies,
+        "curie_collisions": len(curies) - distinct_curies,
         "triage_buckets": {
             "well_characterized": len(state.get("well_characterized_curies", []) or []),
             "moderate": len(state.get("moderate_curies", []) or []),
