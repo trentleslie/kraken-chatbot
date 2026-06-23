@@ -78,6 +78,14 @@ class PathwayEnrichmentConfig(BaseModel):
         description="Max concurrent SDK calls for the Phase B data-in-prompt inference "
         "(issue #44 Stage 2). Mirrors the other SDK nodes' per-node semaphore.",
     )
+    sdk_query_timeout: int = Field(
+        default=480,
+        ge=1,
+        description="Per-call asyncio.wait_for timeout (seconds) around the Phase B SDK "
+        "shared-neighbor inference. Tuned for Sonnet; slower models (e.g. Opus 4.8) need more "
+        "headroom on this multi-turn node or the themes are lost to timeout. Overridable at "
+        "runtime via the KRAKEN_PATHWAY_SDK_TIMEOUT env var.",
+    )
 
 
 class BiomapperConfig(BaseModel):
