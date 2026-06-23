@@ -98,18 +98,18 @@ def git_sha():
         return "unknown"
 
 
-def pick_pilot(n_prot, n_met):
-    """All named Brown analytes (proteins + metabolites/chemistry).
+def pick_pilot(n_prot, n_met, module="Brown"):
+    """All named analytes (proteins + metabolites/chemistry) for the given WGCNA module.
 
     Phase 1 (intake analyte-name robustness): intake now keeps internal commas (the query is
     newline-delimited, one analyte per line) and strips alias parentheticals to a resolvable
     primary name, so the prior defensive "(" / "," exclusion is no longer needed. Rows with no
-    name (14 Chemistry rows with empty ChemName) are inherently un-submittable and stay excluded.
+    name (Chemistry rows with empty ChemName) are inherently un-submittable and stay excluded.
     """
     prot, met = [], []
     with open(TSV, newline="") as f:
         for r in csv.DictReader(f, delimiter="\t"):
-            if r["ModuleID"] != "Brown":
+            if r["ModuleID"] != module:
                 continue
             if r["Dataset"] == "Protein" and r["GeneSymbol"] not in ("", "NA"):
                 prot.append(r["GeneSymbol"])
@@ -118,12 +118,12 @@ def pick_pilot(n_prot, n_met):
     return prot[:n_prot], met[:n_met]
 
 
-def build_query(proteins, metabolites):
+def build_query(proteins, metabolites, module="Brown"):
     # Newline-delimited sections (one analyte per line) so commas inside chemical names are safe;
     # intake's labeled-section parser treats each line as one analyte (Phase 1).
     return (
         "Analyze the biological relationships among these co-expressed analytes "
-        "from the Brown WGCNA module.\n\n"
+        f"from the {module} WGCNA module.\n\n"
         "Proteins:\n" + "\n".join(proteins) + "\n\n"
         "Metabolites:\n" + "\n".join(metabolites) + "\n"
     )
@@ -228,10 +228,11 @@ def acceptance_checks(merged, cov, synth_dur):
             f"{total_findings} findings (R6: ≫37 expected at module scale post-merge-fix)",
         ),
         # plan 2026-06-23-001: guard against the triage-at-scale false-cold-start regression.
-        "triage_coldstart_not_mass_failure": (
-            cov["triage_buckets"]["cold_start"] < 45,
-            f"cold_start={cov['triage_buckets']['cold_start']} (want <45; pre-fix was 69 from "
-            f"edge-count query failures); triage_measurement_failures={cov.get('triage_measurement_failures', 0)}",
+        "triage_no_measurement_failures": (
+            cov.get("triage_measurement_failures", 0) == 0,
+            f"triage_measurement_failures={cov.get('triage_measurement_failures', 0)} (want 0 — the "
+            f"module-agnostic regression signal; cold_start={cov['triage_buckets']['cold_start']} is "
+            f"informational and legitimately high for metabolite-heavy modules)",
         ),
         "triage_hubs_well_characterized": _hubs_well_characterized(merged),
     }
@@ -256,6 +257,7 @@ def _hubs_well_characterized(merged):
 
 async def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--module", default="Brown", help="WGCNA ModuleID to run (e.g. Brown, Blue, Black)")
     ap.add_argument("--n-proteins", type=int, default=12)
     ap.add_argument("--n-metabolites", type=int, default=12)
     ap.add_argument("--ceiling-min", type=int, default=20,
@@ -272,15 +274,16 @@ async def main():
     cfg.entity_resolution.biomapper.enabled = True
     assert cfg.entity_resolution.biomapper.enabled is True, "failed to enable biomapper on the config singleton"
 
-    proteins, metabolites = pick_pilot(args.n_proteins, args.n_metabolites)
-    query = build_query(proteins, metabolites)
+    proteins, metabolites = pick_pilot(args.n_proteins, args.n_metabolites, args.module)
+    query = build_query(proteins, metabolites, args.module)
     submitted = proteins + metabolites
 
     # Intake-parse check: how many of the submitted names survive extract_entities (denominator honesty).
     from kestrel_backend.graph.nodes.intake import extract_entities  # noqa: PLC0415
     parsed = extract_entities(query)
-    print(f"PILOT: {len(proteins)} proteins + {len(metabolites)} metabolites = {len(submitted)} submitted; "
-          f"intake parsed {len(parsed)}; biomapper=dev enabled; ceiling={ceiling_seconds//60}min", flush=True)
+    print(f"RUN module={args.module}: {len(proteins)} proteins + {len(metabolites)} metabolites = "
+          f"{len(submitted)} submitted; intake parsed {len(parsed)}; biomapper=dev enabled; "
+          f"ceiling={ceiling_seconds//60}min", flush=True)
 
     merged: dict = {}
     node_order = []
@@ -312,7 +315,7 @@ async def main():
     artifact = {
         "_meta": {
             "generated": datetime.now(timezone.utc).isoformat(),
-            "phase": "C1-pilot", "module": "Brown", "status": status, "wall_seconds": wall,
+            "phase": "module-run", "module": args.module, "status": status, "wall_seconds": wall,
             "ceiling_seconds": ceiling_seconds, "biomapper_env": "dev",
             "biomapper_enabled": True, "git_sha": git_sha(),
             "submitted": submitted, "n_submitted": len(submitted), "n_parsed": len(parsed),
@@ -324,7 +327,7 @@ async def main():
         "node_timeline": node_order,
         "synthesis_report": merged.get("synthesis_report", ""),
     }
-    out = Path(args.output) if args.output else OUT_DIR / f"brown_c1_pilot_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.json"
+    out = Path(args.output) if args.output else OUT_DIR / f"{args.module.lower()}_module_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.json"
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(artifact, indent=2, default=str))
 
