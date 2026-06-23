@@ -110,8 +110,11 @@ def extract_entities(query: str) -> list[str]:
 
     for match in section_matches:
         section_content = match.group(2).strip()
-        # Split on commas and newlines
-        items = re.split(r",\s*|\n+", section_content)
+        # One analyte per line when the section is newline-delimited (so internal commas in
+        # chemical names like "12,13-DiHOME" are not treated as delimiters); fall back to
+        # comma-splitting only for a single-line (legacy comma-joined) section.
+        section_lines = [ln for ln in section_content.split("\n") if ln.strip()]
+        items = section_lines if len(section_lines) > 1 else re.split(r",\s*", section_content)
         for item in items:
             item = item.strip().rstrip("*")
             if item and len(item) > 1:
