@@ -411,7 +411,7 @@ def get_semaphore(node_name: str) -> asyncio.Semaphore:
     semaphore_map = {
         "direct_kg": config.direct_kg.sdk_semaphore,
         "entity_resolution": config.entity_resolution.sdk_semaphore,
-        "triage": config.triage.sdk_semaphore,
+        "triage": config.triage.kestrel_concurrency,
         "cold_start": config.cold_start.sdk_semaphore,
     }
     value = semaphore_map.get(node_name)

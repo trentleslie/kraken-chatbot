@@ -25,7 +25,7 @@ def _entity(curie, name=None, method="biomapper"):
 def _use_cfg(monkeypatch, **triage_kwargs):
     cfg = PipelineConfig(triage=TriageConfig(**triage_kwargs))
     monkeypatch.setattr(triage, "get_pipeline_config", lambda: cfg)
-    monkeypatch.setattr(triage, "_RETRY_BACKOFF_S", 0.0, raising=False)  # no real sleeps in tests
+    monkeypatch.setattr(triage, "_RETRY_BACKOFF_S", 0.0)  # no real sleeps in tests (fail-fast if renamed)
     return cfg
 
 
