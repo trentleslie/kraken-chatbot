@@ -27,6 +27,7 @@ from ...literature_utils import format_pmid_link
 from ..pipeline_config import get_pipeline_config
 from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
 from ..state_contracts import validate_state, SynthesisInput, SynthesisOutput
+from ...writing_style import RESEARCH_REGISTER
 # References-table assembly lives with grounding's module but is OWNED by synthesis now (R6):
 # synthesis appends it from the grounded hypotheses in state. (literature_grounding does not
 # import synthesis, so this one-way import introduces no cycle.)
@@ -122,6 +123,13 @@ For a single entity (per-entity sections present, no module sections), report as
 
 Generate a clear, scientific report in markdown format.
 """
+
+# Emit the report's prose in the canonical research register. Appended (not inlined)
+# so the register stays single-sourced in writing_style.py. The register self-declares
+# it is subordinate to the structure / evidence-tag rules above, so it shapes voice
+# without overriding the report contract. Budget: ~480 chars over the ~100K-token
+# headroom that SynthesisConfig.max_context_chars leaves — negligible.
+SYNTHESIS_PROMPT += f"\n\n## Writing register\n\n{RESEARCH_REGISTER}\n"
 
 
 # =============================================================================
