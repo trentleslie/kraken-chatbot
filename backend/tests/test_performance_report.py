@@ -225,7 +225,7 @@ def test_context_management_module_mode():
     assert "33 of 66 hypotheses carry attached literature" in md
     assert "module-aware aggregation" in md
     assert "26.9% of the char budget" in md
-    assert "13.5% of the 200000-token window" in md
+    assert "13.5% of the 200K-token window" in md
     assert "—" not in md                                  # register: no em-dash in the section prose
     assert "## Context management" in md and "Context-management" not in md  # heading has no dash
 

@@ -218,7 +218,7 @@ def _render_context_management(report: dict) -> list[str]:
     lines.append(
         f"- **Context:** {cs.get('context_chars')} chars (~{cs.get('context_est_tokens')} est. tokens) · "
         f"{cs.get('char_budget_pct')}% of the char budget ({cs.get('max_context_chars')}) · "
-        f"{cs.get('window_pct')}% of the {cs.get('window_tokens')}-token window"
+        f"{cs.get('window_pct')}% of the {cs.get('window_tokens', 0) // 1000}K-token window"
     )
     lines.append(
         f"- **Mode:** {mode} ({cs.get('distinct_entities')} distinct entities; "
@@ -241,7 +241,7 @@ def _render_context_management(report: dict) -> list[str]:
         lines.append("| Section | Shown | Total | Elided |")
         lines.append("|---|---|---|---|")
         for label, s in rows:
-            lines.append(f"| {label} | {s.get('shown')} | {s.get('total')} | {s.get('elided')} |")
+            lines.append(f"| {label} | {s.get('shown', 0)} | {s.get('total', 0)} | {s.get('elided', 0)} |")
         lines.append("")
     if not cs.get("module_mode"):
         lines.append(
