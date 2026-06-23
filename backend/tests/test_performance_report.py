@@ -196,6 +196,61 @@ def test_summed_estimate_caveat_in_register_voice():
     assert "—" not in md
 
 
+def _ctx_stats(module_mode=True):
+    s = {
+        "context_chars": 94225, "context_est_tokens": 26921,
+        "max_context_chars": 350000, "char_budget_pct": 26.9,
+        "window_tokens": 200000, "window_pct": 13.5,
+        "module_mode": module_mode, "module_mode_threshold": 5, "distinct_entities": 24,
+        "sections": {"findings": {"shown": 150, "total": 2433, "elided": 2283}},
+        "literature": {"attached": 33, "total": 66},
+    }
+    if module_mode:
+        s["sections"]["diseases"] = {"shown": 30, "total": 40, "elided": 10}
+        s["sections"]["pathways"] = {"shown": 30, "total": 35, "elided": 5}
+        s["sections"]["member_table"] = {"shown": 50, "total": 217, "elided": 167}
+    return s
+
+
+def test_context_management_module_mode():
+    state = {"node_timings": {"synthesis": 1.0}, "model_usages": [], "errors": [],
+             "synthesis_context_stats": _ctx_stats(module_mode=True)}
+    report = pr.build_report(state, _meta())
+    assert report["context_stats"]["sections"]["member_table"]["elided"] == 167  # JSON retains full structure
+    md = pr.render_markdown(report)
+    assert "## Context management" in md
+    assert "| Findings | 150 | 2433 | 2283 |" in md
+    assert "| Member table | 50 | 217 | 167 |" in md
+    assert "| Diseases (recurrence) | 30 | 40 | 10 |" in md
+    assert "33 of 66 hypotheses carry attached literature" in md
+    assert "module-aware aggregation" in md
+    assert "26.9% of the char budget" in md
+    assert "13.5% of the 200K-token window" in md
+    assert "—" not in md                                  # register: no em-dash in the section prose
+    assert "## Context management" in md and "Context-management" not in md  # heading has no dash
+
+
+def test_context_management_per_entity_mode():
+    state = {"node_timings": {"synthesis": 1.0}, "model_usages": [], "errors": [],
+             "synthesis_context_stats": _ctx_stats(module_mode=False)}
+    md = pr.render_markdown(pr.build_report(state, _meta()))
+    assert "## Context management" in md
+    assert "| Findings | 150 | 2433 | 2283 |" in md
+    assert "Diseases (recurrence)" not in md              # uncapped in per-entity mode → no row
+    assert "Member table" not in md
+    assert "per-entity" in md.lower()
+    assert "uncapped" in md.lower()
+
+
+def test_context_management_absent_degrades_gracefully():
+    state = {"node_timings": {"synthesis": 1.0}, "model_usages": [], "errors": []}  # no stats
+    report = pr.build_report(state, _meta())
+    assert report["context_stats"] is None
+    md = pr.render_markdown(report)                        # must not crash
+    assert "## Context management" not in md
+    assert "## Errors" in md                               # rest of the report intact
+
+
 def test_report_is_json_serializable():
     import json
 

@@ -295,6 +295,20 @@ _EVIDENCE_STRENGTH = {"gwas": 0, "curated": 1, "text_mined": 2, "predicted": 3}
 _EVIDENCE_LABEL = {0: "gwas", 1: "curated", 2: "text_mined", 3: "predicted"}
 
 
+def count_recurrence_qualifying(pairs, min_members: int) -> int:
+    """Count groups whose distinct-member set meets ``min_members``.
+
+    Single source for the disease/pathway "qualifying" total reported in synthesis_context_stats.
+    Mirrors the dedup the aggregators apply (distinct member entity per group), so the reported
+    total cannot drift from the aggregator's actual cut (plan 004 R2). ``pairs`` is an iterable of
+    ``(group_curie, member_curie)``.
+    """
+    groups: dict[str, set[str]] = {}
+    for group_curie, member_curie in pairs:
+        groups.setdefault(group_curie, set()).add(member_curie)
+    return sum(1 for members in groups.values() if len(members) >= min_members)
+
+
 def aggregate_shared_diseases(
     disease_associations: list[DiseaseAssociation],
     min_members: int,
@@ -930,12 +944,86 @@ def _disease_pathway_sections(state: DiscoveryState) -> list[str]:
     return out
 
 
-def assemble_synthesis_context(state: DiscoveryState) -> str:
+_CHARS_PER_TOKEN = 3.5  # matches the assemble_synthesis_context tripwire estimate
+_MODEL_WINDOW_TOKENS = 200_000  # the model input window the char budget is a proxy for
+
+
+def _compute_context_stats(state: DiscoveryState, context: str) -> dict[str, Any]:
+    """Context-compression + budget telemetry for ``synthesis_context_stats`` (plan 004).
+
+    Counts that are pure functions of inputs already in scope (findings, member table, literature)
+    are derived directly; the one filter-dependent count (disease/pathway qualifying, post
+    ``min_members_for_recurrence``) comes from ``count_recurrence_qualifying`` so it matches the
+    aggregator's cut (R2). ``module_mode`` gates which capped sections exist (per-entity mode uses
+    uncapped disease/pathway formatters, so those rows are omitted rather than reported as no-elision).
+    """
+    cfg = get_pipeline_config().synthesis
+
+    resolved = state.get("resolved_entities", [])
+    distinct_entities = len({e.curie for e in resolved if e.curie})
+    module_mode = distinct_entities >= cfg.module_mode_min_entities
+
+    all_findings = state.get("direct_findings", []) + state.get("cold_start_findings", [])
+    f_shown = f_total = 0
+    for tier in (1, 2, 3):
+        n = sum(1 for f in all_findings if f.tier == tier)
+        f_total += n
+        f_shown += min(n, cfg.max_findings_per_tier)
+    sections: dict[str, dict[str, int]] = {
+        "findings": {"shown": f_shown, "total": f_total, "elided": f_total - f_shown},
+    }
+
+    if module_mode:
+        diseases = state.get("disease_associations", [])
+        d_total = count_recurrence_qualifying(
+            ((d.disease_curie, d.entity_curie) for d in diseases), cfg.min_members_for_recurrence
+        )
+        d_shown = min(d_total, cfg.max_aggregated_diseases)
+        sections["diseases"] = {"shown": d_shown, "total": d_total, "elided": d_total - d_shown}
+
+        pathways = state.get("pathway_memberships", [])
+        p_total = count_recurrence_qualifying(
+            ((p.pathway_curie, p.entity_curie) for p in pathways), cfg.min_members_for_recurrence
+        )
+        p_shown = min(p_total, cfg.max_aggregated_pathways)
+        sections["pathways"] = {"shown": p_shown, "total": p_total, "elided": p_total - p_shown}
+
+        # member table joins resolved curies + novelty curies (union), mirroring format_member_table
+        novelty = state.get("novelty_scores", [])
+        member_curies = {e.curie for e in resolved if e.curie} | {n.curie for n in novelty}
+        m_total = len(member_curies)
+        m_shown = min(m_total, cfg.max_member_table_rows)
+        sections["member_table"] = {"shown": m_shown, "total": m_total, "elided": m_total - m_shown}
+
+    hypotheses = state.get("hypotheses", [])
+    attached = sum(1 for h in hypotheses if getattr(h, "literature_support", None))
+
+    chars = len(context)
+    est_tokens = round(chars / _CHARS_PER_TOKEN)
+    return {
+        "context_chars": chars,
+        "context_est_tokens": est_tokens,
+        "max_context_chars": cfg.max_context_chars,
+        "char_budget_pct": round(chars / cfg.max_context_chars * 100, 1) if cfg.max_context_chars else 0.0,
+        "window_tokens": _MODEL_WINDOW_TOKENS,
+        "window_pct": round(est_tokens / _MODEL_WINDOW_TOKENS * 100, 1),
+        "module_mode": module_mode,
+        "module_mode_threshold": cfg.module_mode_min_entities,
+        "distinct_entities": distinct_entities,
+        "sections": sections,
+        "literature": {"attached": attached, "total": len(hypotheses)},
+    }
+
+
+def assemble_synthesis_context(state: DiscoveryState, stats_out: dict | None = None) -> str:
     """
     Assemble all accumulated state into a context block for LLM synthesis.
 
     This function gathers data from all previous nodes and formats it into
     a comprehensive context that the LLM can use to generate a discovery report.
+
+    When ``stats_out`` is provided, it is populated in place with context-compression telemetry
+    (plan 004); computation is best-effort and never affects the returned context string.
     """
     cfg = get_pipeline_config().synthesis
     sections = []
@@ -1033,6 +1121,12 @@ def assemble_synthesis_context(state: DiscoveryState) -> str:
             "(~200K-token window) — a per-section cap is likely mis-set",
             len(context), round(len(context) / 3.5 / 1000), cfg.max_context_chars,
         )
+
+    if stats_out is not None:
+        try:
+            stats_out.update(_compute_context_stats(state, context))
+        except Exception:  # noqa: BLE001 — telemetry is best-effort, never break context assembly
+            logger.warning("synthesis_context_stats computation failed", exc_info=True)
 
     return context
 
@@ -1213,8 +1307,10 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     # from state rather than recomputing — no validation happens here anymore.
     bridges = state.get("bridges", [])
 
-    # Phase B: Assemble context (always done)
-    context = assemble_synthesis_context(state)
+    # Phase B: Assemble context (always done). Capture context-compression telemetry via the
+    # out-param (plan 004); best-effort inside assemble, so this never affects the report.
+    context_stats: dict[str, Any] = {}
+    context = assemble_synthesis_context(state, stats_out=context_stats)
 
     # Phase C: LLM synthesis or fallback
     usage_record = None
@@ -1289,6 +1385,9 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         "synthesis_report": report,
         "model_usages": [usage_record] if usage_record else [],
     }
+    # Context-compression telemetry (plan 004) — single-writer plain field, last-write-wins.
+    if context_stats:
+        result["synthesis_context_stats"] = context_stats
     # errors uses an operator.add reducer; only emit on a degraded fallback (Unit 7).
     if fallback_marker:
         result["errors"] = [fallback_marker]

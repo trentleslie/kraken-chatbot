@@ -480,3 +480,6 @@ class DiscoveryState(TypedDict, total=False):
     cold_start_skipped_count: int  # Number of entities skipped by cold-start optimization
     # Path to the performance report written by the terminal reporting node (observability).
     report_path: str
+    # Context-compression telemetry emitted by synthesis (shown/total/elided per capped section +
+    # budget utilization). Single-writer (synthesis only) → plain field, last-write-wins; no reducer.
+    synthesis_context_stats: dict
