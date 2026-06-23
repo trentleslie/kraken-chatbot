@@ -189,11 +189,67 @@ def build_report(state: dict, meta: dict) -> dict:
         },
         "errors": errors,
         "nodes": nodes,
+        # Context-compression telemetry from synthesis (plan 004); None on runs that never
+        # reached synthesis. The full structure is retained in the JSON artifact.
+        "context_stats": state.get("synthesis_context_stats"),
     }
 
 
 def _fmt_cost(c: float | None) -> str:
     return f"${c:.4f}" if c is not None else "est. n/a"
+
+
+def _render_context_management(report: dict) -> list[str]:
+    """The ## Context management section: how synthesis compressed the accumulated evidence into a
+    bounded context (plan 004). Returns [] when no stats are present (pre-synthesis / fallback runs).
+    Prose caveat follows the research register; the table/labels are literal."""
+    cs = report.get("context_stats")
+    if not cs:
+        return []
+    lines = ["## Context management", ""]
+    lines.append(
+        "> Synthesis compresses the accumulated evidence into a bounded context; elision at module "
+        "scale is expected, and it is the compression that keeps the assembled context within the "
+        "model's token window."
+    )
+    lines.append("")
+    lit = cs.get("literature", {})
+    mode = "module-aware aggregation" if cs.get("module_mode") else "per-entity"
+    lines.append(
+        f"- **Context:** {cs.get('context_chars')} chars (~{cs.get('context_est_tokens')} est. tokens) · "
+        f"{cs.get('char_budget_pct')}% of the char budget ({cs.get('max_context_chars')}) · "
+        f"{cs.get('window_pct')}% of the {cs.get('window_tokens')}-token window"
+    )
+    lines.append(
+        f"- **Mode:** {mode} ({cs.get('distinct_entities')} distinct entities; "
+        f"threshold {cs.get('module_mode_threshold')})"
+    )
+    lines.append(
+        f"- **Literature grounding:** {lit.get('attached', 0)} of {lit.get('total', 0)} "
+        f"hypotheses carry attached literature"
+    )
+    lines.append("")
+    sections = cs.get("sections", {})
+    order = [
+        ("findings", "Findings"),
+        ("diseases", "Diseases (recurrence)"),
+        ("pathways", "Pathways (recurrence)"),
+        ("member_table", "Member table"),
+    ]
+    rows = [(label, sections[key]) for key, label in order if key in sections]
+    if rows:
+        lines.append("| Section | Shown | Total | Elided |")
+        lines.append("|---|---|---|---|")
+        for label, s in rows:
+            lines.append(f"| {label} | {s.get('shown')} | {s.get('total')} | {s.get('elided')} |")
+        lines.append("")
+    if not cs.get("module_mode"):
+        lines.append(
+            "*Per-entity mode: the disease and pathway sections are rendered in full (uncapped), so "
+            "only findings carry a compression cap in this run.*"
+        )
+        lines.append("")
+    return lines
 
 
 def render_markdown(report: dict) -> str:
@@ -256,6 +312,7 @@ def render_markdown(report: dict) -> str:
         )
 
     lines.append("")
+    lines.extend(_render_context_management(report))
     lines.append("## Errors")
     lines.append("")
     errs = report.get("errors", [])
