@@ -45,6 +45,19 @@ def test_harness_newline_style_query_with_comma_name():
     assert "GH1" in ents and "IL6" in ents and "quinolinate" in ents
 
 
+def test_single_analyte_section_with_internal_comma_kept():
+    # Greptile #88 P2: a single-line section whose one entry has an internal comma must NOT be
+    # fragmented. The fallback splits on comma+whitespace, so "12,13-DiHOME" (comma-digit) survives.
+    ents = extract_entities("Metabolites:\n12,13-DiHOME\n")
+    assert ents == ["12,13-DiHOME"]
+
+
+def test_single_line_comma_space_list_still_splits():
+    # The legacy single-line list uses ", " delimiters, which still split.
+    ents = extract_entities("Metabolites:\nglucose, fructose, lactate\n")
+    assert ents == ["glucose", "fructose", "lactate"]
+
+
 def test_internal_comma_with_alias_paren_both():
     # A "both" row: internal comma + trailing suffix. Newline-delimited keeps it whole;
     # paren-strip does not fire (no balanced trailing paren), so it passes through intact.
