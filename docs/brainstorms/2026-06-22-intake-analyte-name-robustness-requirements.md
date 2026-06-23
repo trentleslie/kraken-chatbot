@@ -58,6 +58,10 @@ Unlock submission of the **full named Brown module (~203 rows)** with no *fragme
 - Existing clean-name behavior (24/130-analyte runs — the prior validated harness configs) is unchanged; the chat free-text path is not regressed.
 - A recorded **decision**: based on the measured collision count, is Phase 2 warranted?
 
+### Phase-2 decision (RECORDED 2026-06-22, from the full-203 run)
+
+**Phase 2 is NOT warranted.** The full named-module run (203 submitted → 194 intake-distinct → **181 distinct CURIEs**) measured **13 CURIE-level collisions** (~6.7% of 194). Critically, those 13 isomers/synonyms **resolve to the same canonical CURIE** — i.e. the KG has no isomer-level node to distinguish them. So Phase 2's isomer-preservation machinery would keep them distinct through intake only to have resolution collapse them anyway; it cannot buy distinct KG analysis. Collapsing is therefore correct (matches KG reality), and the collision count is already measured and persisted in the coverage artifact (R5 satisfied). The staged approach paid off: it avoided building provenance machinery the data shows would serve nothing. Run: `wall 1176s (~19.6 min)`, U7 PASS, 0 degradation; member table 50/181, context 37% of budget.
+
 ## Scope Boundaries / Non-Goals
 
 - Not building isomer-preservation, provenance, or collision *reporting* in Phase 1 (deferred, conditional).
