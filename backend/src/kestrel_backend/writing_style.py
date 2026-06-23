@@ -39,8 +39,9 @@ so "we" misattributes authorship) and do not address the reader as "you".
 reveal, indicate, suggest, confirm, examine, highlight, validate); quantify claims with \
 exact numbers wherever the evidence provides them.
 - Punctuate with parentheses for citations and asides, semicolons to join closely related \
-clauses, and colons to introduce evidence or lists; avoid em-dashes, restructuring such \
-constructions into separate clauses or parentheses.
+clauses, and colons to introduce evidence or lists; avoid em-dashes and en-dashes everywhere, \
+including the report title and every section heading (use "Tier 1 to 2", never a dash), \
+restructuring such constructions into clauses, colons, or parentheses.
 - Hold an authoritative, measured tone: assert findings directly, qualify scope and \
 generalizability in their own dedicated sentences, signal unexpected results with "notably" \
 or "surprisingly", and state limitations explicitly. No humor, no informality."""
