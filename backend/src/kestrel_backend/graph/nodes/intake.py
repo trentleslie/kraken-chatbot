@@ -110,8 +110,13 @@ def extract_entities(query: str) -> list[str]:
 
     for match in section_matches:
         section_content = match.group(2).strip()
-        # Split on commas and newlines
-        items = re.split(r",\s*|\n+", section_content)
+        # Newline-delimited section: one analyte per line, so internal commas in chemical names
+        # (incl. comma-space inside parens, e.g. "diacylglycerol (14:0/18:1, 16:0/16:1)") are
+        # preserved. A single-line (legacy comma-joined) section splits on comma-plus-whitespace,
+        # which still separates a delimiter list ("glucose, fructose") but keeps a lone chemical
+        # name whose internal comma has no following space ("12,13-DiHOME").
+        section_lines = [ln for ln in section_content.split("\n") if ln.strip()]
+        items = section_lines if len(section_lines) > 1 else re.split(r",\s+", section_content)
         for item in items:
             item = item.strip().rstrip("*")
             if item and len(item) > 1:
