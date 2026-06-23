@@ -408,18 +408,20 @@ class TestTriageNode:
             raw_name="glucose", curie="CHEBI:17234", resolved_name="D-glucose",
             category="biolink:ChemicalEntity", confidence=0.95, method="exact",
         )
-        with patch.object(triage, "call_kestrel_tool", side_effect=flaky_call):
-            score = await triage.count_edges_via_api(entity)
+        with patch.object(triage, "call_kestrel_tool", side_effect=flaky_call), \
+             patch.object(triage, "_RETRY_BACKOFF_S", 0):
+            score = await triage.count_edges_via_api(entity, asyncio.Semaphore(4))
 
-        assert calls["n"] == 2  # retried once
+        assert calls["n"] == 2  # recovered on the second attempt
         assert score is not None
         assert score.edge_count == 300
         assert score.classification == "well_characterized"
 
     @pytest.mark.asyncio
-    async def test_tier1_persistent_failure_routes_to_cold_start(self):
-        """#61: a count that fails even after the retry → None → the entity
-        defaults to cold_start in run(), never an SDK-guessed number."""
+    async def test_tier1_persistent_failure_routes_to_moderate_with_marker(self):
+        """plan 2026-06-23-001: a count that fails even after retries → None → the entity is a
+        MEASUREMENT failure, not a genuine 0-edge. run() routes it to the direct-KG path (moderate)
+        with a visible marker, never silently to cold_start."""
         async def always_error(tool_name, params):
             return {"isError": True, "content": []}
 
@@ -427,16 +429,18 @@ class TestTriageNode:
             raw_name="glucose", curie="CHEBI:17234", resolved_name="D-glucose",
             category="biolink:ChemicalEntity", confidence=0.95, method="exact",
         )
-        with patch.object(triage, "call_kestrel_tool", side_effect=always_error):
-            score = await triage.count_edges_via_api(entity)
-            assert score is None  # both attempts failed
+        with patch.object(triage, "call_kestrel_tool", side_effect=always_error), \
+             patch.object(triage, "_RETRY_BACKOFF_S", 0):
+            score = await triage.count_edges_via_api(entity, asyncio.Semaphore(4))
+            assert score is None  # all attempts failed to measure
 
             state: DiscoveryState = {"resolved_entities": [entity]}
             result = await triage.run(state)
 
-        # Failed count defaults the entity to cold_start (documented reroute)
-        assert "CHEBI:17234" in result["cold_start_curies"]
-        assert "CHEBI:17234" not in result["well_characterized_curies"]
+        # Measurement failure → direct-KG (moderate) + marker, NOT silent cold_start.
+        assert "CHEBI:17234" in result["moderate_curies"]
+        assert "CHEBI:17234" not in result["cold_start_curies"]
+        assert any("edge-count failed" in str(e) for e in result["errors"])
 
 
 # =============================================================================

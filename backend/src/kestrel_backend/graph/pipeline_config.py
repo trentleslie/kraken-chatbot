@@ -163,14 +163,21 @@ class EntityResolutionConfig(BaseModel):
 class TriageConfig(BaseModel):
     """Configuration for the triage node."""
 
+    kestrel_concurrency: int = Field(
+        default=8,
+        ge=1,
+        description="Max concurrent Kestrel one_hop_query edge-count calls during triage. Bounds "
+        "the fan-out so a module-scale run (~hundreds of entities) does not thundering-herd Kestrel "
+        "into timeouts that would otherwise default well-characterized entities to cold_start.",
+    )
+    # Vestigial (pre-#61 SDK Tier-2 path, removed): not applied to the HTTP edge-count gather.
     sdk_semaphore: int = Field(
         default=1,
-        description="Serialized SDK calls (semaphore=1) to prevent concurrent "
-        "CLI spawn conflicts during triage edge counting.",
+        description="DEPRECATED/unused: legacy serialized-SDK knob from the removed Tier-2 path.",
     )
     batch_size: int = Field(
         default=6,
-        description="Number of entities to process in parallel per batch.",
+        description="DEPRECATED/unused: legacy batch knob from the removed Tier-2 path.",
     )
 
 
