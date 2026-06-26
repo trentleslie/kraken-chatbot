@@ -117,7 +117,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--module", required=True)
     ap.add_argument("--json", required=True)
-    ap.add_argument("--perf", required=True)
+    ap.add_argument("--perf", default=None, help="perf report markdown; required only for --kind perf")
     ap.add_argument("--kind", choices=["discovery", "perf"], required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--perf-url", default=None)
@@ -127,14 +127,18 @@ def main():
     args = ap.parse_args()
 
     j = json.loads(Path(args.json).read_text())
-    perf_md = Path(args.perf).read_text()
-    if args.kind == "discovery":
-        text = discovery_doc(args.module, j, perf_url=args.perf_url,
-                             model_label=args.model_label, compare_url=args.compare_url)
-    else:
+    if args.kind == "perf":
+        if not args.perf:
+            ap.error("--perf is required for --kind perf")
+        perf_md = Path(args.perf).read_text()
         text = perf_doc(args.module, j, perf_md, discovery_url=args.discovery_url,
                         model_label=args.model_label, compare_url=args.compare_url)
-    assert "—" not in text.split("---", 1)[0], "em-dash in authored wrapper prose"
+    else:
+        text = discovery_doc(args.module, j, perf_url=args.perf_url,
+                             model_label=args.model_label, compare_url=args.compare_url)
+    # Split on the newline-bounded horizontal rule so the wrapper check covers the full authored
+    # prose; a bare "---" split would stop at the first markdown table separator ("|---|").
+    assert "—" not in text.split("\n---\n", 1)[0], "em-dash in authored wrapper prose"
     Path(args.out).write_text(text)
     print(f"wrote {args.out} ({len(text)} chars)")
 
