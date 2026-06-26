@@ -32,6 +32,15 @@ class DirectKGConfig(BaseModel):
         default=6,
         description="Number of entities to analyze in parallel per batch.",
     )
+    one_hop_concurrency: int = Field(
+        default=16,
+        ge=1,
+        description="Global cap on concurrent one_hop_query calls in Tier-1 analysis. Tier-1 "
+        "fans out 6 one-hop calls per entity (3 categories x 2 presets) across all entities; "
+        "without a cap this reached ~N_entities x 6 (hundreds) simultaneous reads and exhausted "
+        "Kestrel's LMDB reader pool at module scale (incident 2026-06-24). Overridable via "
+        "KRAKEN_DIRECTKG_ONEHOP_CONCURRENCY.",
+    )
     preset_limit: int = Field(
         default=25,
         description="Maximum edges per preset per category in KG queries.",
@@ -77,6 +86,14 @@ class PathwayEnrichmentConfig(BaseModel):
         default=4,
         description="Max concurrent SDK calls for the Phase B data-in-prompt inference "
         "(issue #44 Stage 2). Mirrors the other SDK nodes' per-node semaphore.",
+    )
+    sdk_query_timeout: int = Field(
+        default=480,
+        ge=1,
+        description="Per-call asyncio.wait_for timeout (seconds) around the Phase B SDK "
+        "shared-neighbor inference. Tuned for Sonnet; slower models (e.g. Opus 4.8) need more "
+        "headroom on this multi-turn node or the themes are lost to timeout. Overridable at "
+        "runtime via the KRAKEN_PATHWAY_SDK_TIMEOUT env var.",
     )
 
 

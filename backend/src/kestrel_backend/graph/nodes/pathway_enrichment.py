@@ -16,6 +16,7 @@ Key capabilities:
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from typing import Any
@@ -38,8 +39,10 @@ _config = get_pipeline_config().pathway_enrichment
 # KG connections to produce meaningful shared neighbor analysis
 MIN_EDGE_COUNT = 20
 
-# Timeout for SDK query (8 minutes for multi-entity analysis)
-SDK_QUERY_TIMEOUT = 480
+# Timeout for the Phase B SDK query. Configurable (PathwayEnrichmentConfig.sdk_query_timeout,
+# default 480s tuned for Sonnet) with a runtime env override (KRAKEN_PATHWAY_SDK_TIMEOUT) so
+# slower models like Opus 4.8 can be given more headroom on this multi-turn node.
+SDK_QUERY_TIMEOUT = int(os.getenv("KRAKEN_PATHWAY_SDK_TIMEOUT") or _config.sdk_query_timeout)
 
 # Limit concurrent SDK inference calls (issue #44 Stage 2; also closes the
 # previously-missing semaphore gap for this node).

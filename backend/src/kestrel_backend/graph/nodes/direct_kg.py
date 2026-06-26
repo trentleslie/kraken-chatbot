@@ -23,6 +23,7 @@ spurious associations.
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from typing import Any
@@ -45,11 +46,23 @@ _config = get_pipeline_config().direct_kg
 # Ranking presets to use (Kestrel API supports these)
 PRESETS = ["established", "hidden_gems"]
 
-# Semaphore bounding the new multi-hop fan-out against the shared Kestrel server
-# (Tier-1 one-hop calls use a bare gather with no cap; the demo-slice multi-hop calls
-# must not saturate the connection pool — see plan RC6). Uses a dedicated config value so
-# it stays independent of batch_size (which controls Tier-2 SDK batching).
+# Semaphore bounding the multi-hop fan-out against the shared Kestrel server. Uses a dedicated
+# config value so it stays independent of batch_size (which controls Tier-2 SDK batching).
 MULTI_HOP_SEMAPHORE = asyncio.Semaphore(_config.multi_hop_semaphore)
+
+# Global cap on concurrent Tier-1 one_hop_query calls. Previously a bare uncapped gather
+# (N_entities x 6 concurrent one-hop calls) that exhausted Kestrel's default 126 LMDB readers
+# at module scale (incident 2026-06-24, docs/kestrel-mdb-readers-full-incident-2026-06-24.md).
+# Configurable via DirectKGConfig.one_hop_concurrency + KRAKEN_DIRECTKG_ONEHOP_CONCURRENCY.
+ONE_HOP_SEMAPHORE = asyncio.Semaphore(
+    int(os.getenv("KRAKEN_DIRECTKG_ONEHOP_CONCURRENCY") or _config.one_hop_concurrency)
+)
+
+
+async def _bounded_one_hop(args: dict) -> Any:
+    """Issue one_hop_query under the shared concurrency bound (reader-pool protection)."""
+    async with ONE_HOP_SEMAPHORE:
+        return await call_kestrel_tool("one_hop_query", args)
 
 # =============================================================================
 # Deduplication and Merging Helpers
@@ -279,7 +292,7 @@ async def analyze_via_api(
 
         for cat_filter, cat_key in categories:
             for preset in PRESETS:
-                tasks.append(call_kestrel_tool("one_hop_query", {
+                tasks.append(_bounded_one_hop({
                     "start_node_ids": curie,
                     "end_node_category": cat_filter,
                     "ranking": preset,
