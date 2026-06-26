@@ -1,6 +1,7 @@
 ---
 title: "Discovery pipeline reasoning architecture: one graph, methods within nodes"
 date: 2026-05-28
+last_updated: 2026-06-22
 category: docs/solutions/best-practices
 module: discovery-pipeline
 problem_type: best_practice
@@ -28,12 +29,20 @@ tags:
 
 ## Context
 
-KRAKEN's discovery pipeline (`kraken-chatbot/backend`) runs as **one overarching LangGraph graph**, not as a set of separate pipelines per reasoning approach. `build_discovery_graph()` in `backend/src/kestrel_backend/graph/builder.py:74` builds a single `StateGraph(DiscoveryState)` with 10 nodes:
+KRAKEN's discovery pipeline (`kraken-chatbot/backend`) runs as **one overarching LangGraph graph**, not as a set of separate pipelines per reasoning approach. `build_discovery_graph()` in `backend/src/kestrel_backend/graph/builder.py` builds a single `StateGraph(DiscoveryState)` with 13 nodes:
 
 ```
 intake → entity_resolution → triage → [direct_kg | cold_start] → pathway_enrichment
-       → integration → [temporal?] → synthesis → literature_grounding → END
+       → integration → [temporal?] → hypothesis_extraction → bridge_grounding
+       → literature_grounding → synthesis → reporting → END
 ```
+
+> _Updated 2026-06-22: grew from the original 10 nodes to 13. The "ground-before-synthesis"
+> reorg (PR #79) inserted `hypothesis_extraction → bridge_grounding → literature_grounding`
+> **before** `synthesis` (so hypotheses are extracted, evidence-labeled, and literature-grounded
+> before the report is written — `synthesis` no longer validates bridges itself), and the
+> per-node performance report (PR #84) added a terminal `reporting` node after `synthesis`. The
+> one-graph / methods-within-nodes teaching below is unchanged; only the node set and order moved._
 
 Two recurring misconceptions prompted this note:
 
@@ -55,7 +64,7 @@ Neither is true. Reasoning approaches are **methods invoked within nodes**, and 
 
 **`multi_hop_query` is a real endpoint, already used in three nodes.** `backend/src/kestrel_backend/kestrel_client.py:340` wraps the server-side Kestrel endpoint (API v1.16.0; the wrapper maps `max_hops`→`max_path_length` and `predicate_filter`→`predicate` at `:393`/`:401`). Two modes:
 - **Singly-pinned** (start only → explore N hops): `pathway_enrichment` (`:201`, `max_hops=2`) for shared-neighbor discovery.
-- **Doubly-pinned** (start + end → connecting paths): `integration`'s `detect_bridges_via_api` (`:172`) for cross-type bridge detection, and `synthesis` for Tier-3 bridge-hypothesis validation. *(session history)*
+- **Doubly-pinned** (start + end → connecting paths): `integration`'s `detect_bridges_via_api` (`:172`) for cross-type bridge detection, and `hypothesis_extraction`'s `validate_bridge_hypotheses` loop for Tier-3 bridge-hypothesis validation (this validation moved out of `synthesis` in the ground-before-synthesis reorg, PR #79). *(session history)*
 
 That it is a real endpoint — and version-sensitive — is confirmed by the prior fix `3afcd99 "fix: correct multi_hop_query parameter names for Kestrel API v1.16.0"`. *(session history)*
 
@@ -83,7 +92,7 @@ That it is a real endpoint — and version-sensitive — is confirmed by the pri
 
 ## Examples
 
-**The 10-node graph (single StateGraph):**
+**The 13-node graph (single StateGraph):**
 
 ```
                     intake
@@ -105,10 +114,17 @@ That it is a real endpoint — and version-sensitive — is confirmed by the pri
                  integration       ← multi_hop_query, doubly-pinned (bridge detection)
                       │  route_after_integration  (is_longitudinal?)
         ┌─────────────┴─────────────┐
-        ▼ (if longitudinal)         ▼ (else)
-    temporal ───────────────► synthesis  ← multi_hop_query, doubly-pinned (Tier-3 validation)
+        ▼ (if longitudinal)         │ (else)
+    temporal ─────────────────────► ▼
+                          hypothesis_extraction  ← multi_hop_query, doubly-pinned (Tier-3 validation)
                                     │
-                          literature_grounding
+                            bridge_grounding      (deterministic evidence-provenance labels)
+                                    │
+                          literature_grounding    (ground hypotheses before the report)
+                                    │
+                                synthesis         (module-aware, token-bounded report)
+                                    │
+                                reporting         (per-node performance report)
                                     │
                                    END
 ```

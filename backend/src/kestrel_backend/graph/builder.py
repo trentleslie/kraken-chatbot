@@ -18,10 +18,11 @@ Full 12-node architecture (ground-before-synthesis + bridge evidence-provenance)
 from typing import Literal
 from langgraph.graph import StateGraph, END
 from .state import DiscoveryState
+from .timing import timed_node
 from .nodes import (
     intake, entity_resolution, triage, direct_kg, cold_start,
     pathway_enrichment, integration, bridge_grounding, temporal,
-    hypothesis_extraction, synthesis, literature_grounding
+    hypothesis_extraction, synthesis, literature_grounding, reporting
 )
 
 
@@ -132,19 +133,23 @@ def build_discovery_graph() -> StateGraph:
     # Create graph with our state schema
     workflow = StateGraph(DiscoveryState)
 
-    # Add all 12 nodes
-    workflow.add_node("intake", intake.run)
-    workflow.add_node("entity_resolution", entity_resolution.run)
-    workflow.add_node("triage", triage.run)
-    workflow.add_node("direct_kg", direct_kg.run)
-    workflow.add_node("cold_start", cold_start.run)
-    workflow.add_node("pathway_enrichment", pathway_enrichment.run)
-    workflow.add_node("integration", integration.run)
-    workflow.add_node("bridge_grounding", bridge_grounding.run)
-    workflow.add_node("temporal", temporal.run)
-    workflow.add_node("hypothesis_extraction", hypothesis_extraction.run)
-    workflow.add_node("synthesis", synthesis.run)
-    workflow.add_node("literature_grounding", literature_grounding.run)
+    # Add all 12 nodes. Each is wrapped with timed_node so its wall-clock duration is
+    # recorded into node_timings (merged via the reducer) on every entry path. The wrapper
+    # is behavior-preserving — it only adds node_timings to the node's returned state.
+    workflow.add_node("intake", timed_node("intake", intake.run))
+    workflow.add_node("entity_resolution", timed_node("entity_resolution", entity_resolution.run))
+    workflow.add_node("triage", timed_node("triage", triage.run))
+    workflow.add_node("direct_kg", timed_node("direct_kg", direct_kg.run))
+    workflow.add_node("cold_start", timed_node("cold_start", cold_start.run))
+    workflow.add_node("pathway_enrichment", timed_node("pathway_enrichment", pathway_enrichment.run))
+    workflow.add_node("integration", timed_node("integration", integration.run))
+    workflow.add_node("bridge_grounding", timed_node("bridge_grounding", bridge_grounding.run))
+    workflow.add_node("temporal", timed_node("temporal", temporal.run))
+    workflow.add_node("hypothesis_extraction", timed_node("hypothesis_extraction", hypothesis_extraction.run))
+    workflow.add_node("synthesis", timed_node("synthesis", synthesis.run))
+    workflow.add_node("literature_grounding", timed_node("literature_grounding", literature_grounding.run))
+    # Terminal reporting node — runs last on every path, emits the perf report (fail-safe).
+    workflow.add_node("reporting", timed_node("reporting", reporting.run))
 
     # Linear edges: intake -> entity_resolution -> triage
     workflow.set_entry_point("intake")
@@ -193,7 +198,10 @@ def build_discovery_graph() -> StateGraph:
     workflow.add_edge("hypothesis_extraction", "bridge_grounding")
     workflow.add_edge("bridge_grounding", "literature_grounding")
     workflow.add_edge("literature_grounding", "synthesis")
-    workflow.add_edge("synthesis", END)
+    # synthesis -> reporting -> END: the perf report fires after the report is written,
+    # on every path (incl. Studio, which bypasses the runner).
+    workflow.add_edge("synthesis", "reporting")
+    workflow.add_edge("reporting", END)
 
     # Compile and return
     return workflow.compile()

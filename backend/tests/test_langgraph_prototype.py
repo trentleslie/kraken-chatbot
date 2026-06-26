@@ -408,18 +408,20 @@ class TestTriageNode:
             raw_name="glucose", curie="CHEBI:17234", resolved_name="D-glucose",
             category="biolink:ChemicalEntity", confidence=0.95, method="exact",
         )
-        with patch.object(triage, "call_kestrel_tool", side_effect=flaky_call):
-            score = await triage.count_edges_via_api(entity)
+        with patch.object(triage, "call_kestrel_tool", side_effect=flaky_call), \
+             patch.object(triage, "_RETRY_BACKOFF_S", 0):
+            score = await triage.count_edges_via_api(entity, asyncio.Semaphore(4))
 
-        assert calls["n"] == 2  # retried once
+        assert calls["n"] == 2  # recovered on the second attempt
         assert score is not None
         assert score.edge_count == 300
         assert score.classification == "well_characterized"
 
     @pytest.mark.asyncio
-    async def test_tier1_persistent_failure_routes_to_cold_start(self):
-        """#61: a count that fails even after the retry → None → the entity
-        defaults to cold_start in run(), never an SDK-guessed number."""
+    async def test_tier1_persistent_failure_routes_to_moderate_with_marker(self):
+        """plan 2026-06-23-001: a count that fails even after retries → None → the entity is a
+        MEASUREMENT failure, not a genuine 0-edge. run() routes it to the direct-KG path (moderate)
+        with a visible marker, never silently to cold_start."""
         async def always_error(tool_name, params):
             return {"isError": True, "content": []}
 
@@ -427,16 +429,18 @@ class TestTriageNode:
             raw_name="glucose", curie="CHEBI:17234", resolved_name="D-glucose",
             category="biolink:ChemicalEntity", confidence=0.95, method="exact",
         )
-        with patch.object(triage, "call_kestrel_tool", side_effect=always_error):
-            score = await triage.count_edges_via_api(entity)
-            assert score is None  # both attempts failed
+        with patch.object(triage, "call_kestrel_tool", side_effect=always_error), \
+             patch.object(triage, "_RETRY_BACKOFF_S", 0):
+            score = await triage.count_edges_via_api(entity, asyncio.Semaphore(4))
+            assert score is None  # all attempts failed to measure
 
             state: DiscoveryState = {"resolved_entities": [entity]}
             result = await triage.run(state)
 
-        # Failed count defaults the entity to cold_start (documented reroute)
-        assert "CHEBI:17234" in result["cold_start_curies"]
-        assert "CHEBI:17234" not in result["well_characterized_curies"]
+        # Measurement failure → direct-KG (moderate) + marker, NOT silent cold_start.
+        assert "CHEBI:17234" in result["moderate_curies"]
+        assert "CHEBI:17234" not in result["cold_start_curies"]
+        assert any("edge-count failed" in str(e) for e in result["errors"])
 
 
 # =============================================================================
@@ -1693,7 +1697,7 @@ class TestEndToEndPhase4b:
     @pytest.mark.asyncio
     async def test_graph_has_all_expected_nodes(self):
         """Graph should have all 12 analysis nodes (ground-before-synthesis + bridge_grounding
-        evidence-provenance labeler) plus __start__."""
+        evidence-provenance labeler) plus the terminal reporting node and __start__."""
         graph = build_discovery_graph()
         node_names = list(graph.nodes.keys())
 
@@ -1710,13 +1714,14 @@ class TestEndToEndPhase4b:
             "hypothesis_extraction",
             "literature_grounding",
             "synthesis",
+            "reporting",
         ]
 
         for node in expected_nodes:
             assert node in node_names, f"Missing node: {node}"
 
-        # 12 analysis nodes (incl. bridge_grounding + hypothesis_extraction) + __start__
-        assert len(node_names) == 13, f"Expected 13 nodes (12 + __start__), got {len(node_names)}: {node_names}"
+        # 12 analysis nodes + reporting (terminal perf-report node) + __start__
+        assert len(node_names) == 14, f"Expected 14 nodes (13 + __start__), got {len(node_names)}: {node_names}"
 
     @pytest.mark.asyncio
     async def test_full_pipeline_non_longitudinal(self):
@@ -2413,10 +2418,14 @@ class TestSynthesisReportOnly:
 
     @pytest.mark.asyncio
     async def test_return_is_report_only(self):
-        """Return dict carries no `hypotheses` or `bridges` keys (owned upstream now)."""
+        """Return dict carries no `hypotheses` or `bridges` keys (owned upstream now).
+
+        synthesis_context_stats (plan 004) is a legitimate synthesis-owned output and is present
+        whenever the context was assembled (it always is); hypotheses/bridges remain excluded.
+        """
         with patch.object(synthesis, "HAS_SDK", False):
             result = await synthesis.run(self._grounded_state())
-        assert set(result.keys()) == {"synthesis_report", "model_usages"}
+        assert set(result.keys()) == {"synthesis_report", "model_usages", "synthesis_context_stats"}
         assert "hypotheses" not in result
         assert "bridges" not in result
 
@@ -2461,8 +2470,9 @@ class TestGroundBeforeSynthesisTopology:
         node_names = [n for n in graph.nodes.keys() if n != "__start__"]
         assert "hypothesis_extraction" in node_names
         assert "bridge_grounding" in node_names
-        # 12 analysis nodes + __start__ in the raw dict.
-        assert len(graph.nodes.keys()) == 13, f"got {len(graph.nodes.keys())}: {list(graph.nodes.keys())}"
+        assert "reporting" in node_names
+        # 12 analysis nodes + reporting + __start__ in the raw dict.
+        assert len(graph.nodes.keys()) == 14, f"got {len(graph.nodes.keys())}: {list(graph.nodes.keys())}"
 
     def test_new_edges_present_old_edges_gone(self):
         graph = build_discovery_graph()
@@ -2473,8 +2483,11 @@ class TestGroundBeforeSynthesisTopology:
         assert ("hypothesis_extraction", "bridge_grounding") in edges
         assert ("bridge_grounding", "literature_grounding") in edges
         assert ("literature_grounding", "synthesis") in edges
-        assert ("synthesis", "__end__") in edges
+        # synthesis now flows into the terminal reporting node, then END
+        assert ("synthesis", "reporting") in edges
+        assert ("reporting", "__end__") in edges
         # Old topology removed
+        assert ("synthesis", "__end__") not in edges
         assert ("synthesis", "literature_grounding") not in edges
         assert ("literature_grounding", "__end__") not in edges
         assert ("temporal", "synthesis") not in edges

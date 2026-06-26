@@ -32,6 +32,15 @@ class DirectKGConfig(BaseModel):
         default=6,
         description="Number of entities to analyze in parallel per batch.",
     )
+    one_hop_concurrency: int = Field(
+        default=16,
+        ge=1,
+        description="Global cap on concurrent one_hop_query calls in Tier-1 analysis. Tier-1 "
+        "fans out 6 one-hop calls per entity (3 categories x 2 presets) across all entities; "
+        "without a cap this reached ~N_entities x 6 (hundreds) simultaneous reads and exhausted "
+        "Kestrel's LMDB reader pool at module scale (incident 2026-06-24). Overridable via "
+        "KRAKEN_DIRECTKG_ONEHOP_CONCURRENCY.",
+    )
     preset_limit: int = Field(
         default=25,
         description="Maximum edges per preset per category in KG queries.",
@@ -77,6 +86,14 @@ class PathwayEnrichmentConfig(BaseModel):
         default=4,
         description="Max concurrent SDK calls for the Phase B data-in-prompt inference "
         "(issue #44 Stage 2). Mirrors the other SDK nodes' per-node semaphore.",
+    )
+    sdk_query_timeout: int = Field(
+        default=480,
+        ge=1,
+        description="Per-call asyncio.wait_for timeout (seconds) around the Phase B SDK "
+        "shared-neighbor inference. Tuned for Sonnet; slower models (e.g. Opus 4.8) need more "
+        "headroom on this multi-turn node or the themes are lost to timeout. Overridable at "
+        "runtime via the KRAKEN_PATHWAY_SDK_TIMEOUT env var.",
     )
 
 
@@ -163,14 +180,21 @@ class EntityResolutionConfig(BaseModel):
 class TriageConfig(BaseModel):
     """Configuration for the triage node."""
 
+    kestrel_concurrency: int = Field(
+        default=8,
+        ge=1,
+        description="Max concurrent Kestrel one_hop_query edge-count calls during triage. Bounds "
+        "the fan-out so a module-scale run (~hundreds of entities) does not thundering-herd Kestrel "
+        "into timeouts that would otherwise default well-characterized entities to cold_start.",
+    )
+    # Vestigial (pre-#61 SDK Tier-2 path, removed): not applied to the HTTP edge-count gather.
     sdk_semaphore: int = Field(
         default=1,
-        description="Serialized SDK calls (semaphore=1) to prevent concurrent "
-        "CLI spawn conflicts during triage edge counting.",
+        description="DEPRECATED/unused: legacy serialized-SDK knob from the removed Tier-2 path.",
     )
     batch_size: int = Field(
         default=6,
-        description="Number of entities to process in parallel per batch.",
+        description="DEPRECATED/unused: legacy batch knob from the removed Tier-2 path.",
     )
 
 
@@ -280,9 +304,87 @@ class BridgeGroundingConfig(BaseModel):
     )
     max_scored_bridges: int = Field(
         default=20,
-        description="Cap on ordered 3-node bridges labeled per run. Each costs 2 one_hop_query "
-        "full calls, so this bounds the added Kestrel load (2 * max_scored_bridges per run). "
-        "(The per-leg edge limit is fixed at L1's leg_tier constant.)",
+        description="Cap on ordered 3-node bridges labeled per run. Each costs up to 2 one_hop_query "
+        "full calls, so this bounds the added Kestrel load. Per-CURIE fetches are cached within a "
+        "run, so the actual call count is the number of DISTINCT leg endpoints, often well below "
+        "2 * max_scored_bridges. (The per-leg edge limit is fixed at L1's leg_tier constant.)",
+    )
+    concurrency: int = Field(
+        default=8,
+        ge=1,
+        description="Max concurrent leg-edge one_hop_query calls. Bridges are labeled in parallel "
+        "and per-CURIE fetches are deduplicated within a run (cached_leg_fetcher), so a module whose "
+        "bridges share hub endpoints fetches each hub once instead of once per bridge. Bounds Kestrel "
+        "load while cutting the node's wall-clock from sequential ~O(2*bridges) fetches.",
+    )
+
+
+class SynthesisConfig(BaseModel):
+    """Configuration for the synthesis node's context-assembly caps.
+
+    At module scale the assembled LLM context overflowed the model's ~200K-token input
+    window (48-analyte Brown run, 2026-06-22: ~882K chars ~= 230K tokens; findings 58%,
+    disease 21%, pathway 17% of the dump). These caps bound the context against a
+    token-derived budget and switch multi-entity ("module") queries to cross-entity
+    aggregation + a per-member table instead of per-entity dumps. See
+    docs/plans/2026-06-22-001-feat-module-aware-synthesis-context-plan.md.
+    """
+
+    max_findings_per_tier: int = Field(
+        default=50,
+        ge=1,
+        description="Max findings rendered per tier (1/2/3), ranked by confidence "
+        "high->moderate->low; the rest are elided as '... and N more (tier T)'. Findings are "
+        "the dominant context section (58% of the 882K dump, 4,099 entries), so this is the "
+        "load-bearing cut. 50/tier (<=150 total) is ample for a narrative and ~27x below 4,099; "
+        "tune against the R7 run.",
+    )
+    max_aggregated_diseases: int = Field(
+        default=30,
+        ge=1,
+        description="Max diseases in the Module-Level Disease Recurrence section (ranked by "
+        "distinct-member count, then evidence strength). Replaces the per-entity disease dump "
+        "(21% of the overflow) for module queries.",
+    )
+    max_aggregated_pathways: int = Field(
+        default=30,
+        ge=1,
+        description="Max pathways in the Module-Level Pathway Recurrence section. Replaces the "
+        "per-entity pathway dump (17% of the overflow) for module queries.",
+    )
+    module_mode_min_entities: int = Field(
+        default=5,
+        ge=2,
+        description="Resolved-entity count at/above which assembly switches to module-aware mode "
+        "(aggregation + member table) instead of per-entity sections. Defaults to 5 (>2) so genuine "
+        "single/pair/triple queries keep the per-entity report shape (R5); operators may lower it to 2 "
+        "to treat pairs as modules. Distinct from min_members_for_recurrence: this gates *whether* "
+        "module mode engages, not *which* diseases/pathways qualify for the recurrence lists.",
+    )
+    min_members_for_recurrence: int = Field(
+        default=2,
+        ge=2,
+        description="Minimum distinct member entities sharing a disease/pathway for it to appear in "
+        "the Module-Level Recurrence sections. Inclusive (2 = shared by any pair). Distinct from "
+        "module_mode_min_entities: a low value keeps recurrence inclusive without forcing small "
+        "queries into module mode.",
+    )
+    max_member_table_rows: int = Field(
+        default=50,
+        ge=1,
+        description="Max rows in the per-member prioritization table (top-N by edge_count, rest "
+        "elided). A no-op at 48 analytes; bounds the table at the 217-analyte target where a full "
+        "table (~217 rows) would itself become a dump.",
+    )
+    max_context_chars: int = Field(
+        default=350_000,
+        ge=1,
+        description="Char budget for the assembled synthesis context — a PROXY for the model's "
+        "~200K-token input window (the real ceiling). ~350K chars ~= 100K tokens at the measured "
+        "3.5-3.8 chars/token for this CURIE-dense content, leaving ~100K-token headroom for the "
+        "system prompt + output. ~2.5x below the 882K/230K that crashed. A backstop logs a WARNING "
+        "(with an estimated token count) if assembly exceeds this; the per-section caps should "
+        "prevent reaching it. Tune downward if R7 shows headroom is tight.",
     )
 
 
@@ -303,6 +405,7 @@ class PipelineConfig(BaseModel):
     hypothesis_extraction: HypothesisExtractionConfig = Field(default_factory=HypothesisExtractionConfig)
     integration: IntegrationConfig = Field(default_factory=IntegrationConfig)
     bridge_grounding: BridgeGroundingConfig = Field(default_factory=BridgeGroundingConfig)
+    synthesis: SynthesisConfig = Field(default_factory=SynthesisConfig)
 
 
 @lru_cache(maxsize=1)
@@ -325,7 +428,7 @@ def get_semaphore(node_name: str) -> asyncio.Semaphore:
     semaphore_map = {
         "direct_kg": config.direct_kg.sdk_semaphore,
         "entity_resolution": config.entity_resolution.sdk_semaphore,
-        "triage": config.triage.sdk_semaphore,
+        "triage": config.triage.kestrel_concurrency,
         "cold_start": config.cold_start.sdk_semaphore,
     }
     value = semaphore_map.get(node_name)

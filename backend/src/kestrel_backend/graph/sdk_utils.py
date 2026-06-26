@@ -9,9 +9,15 @@ Semaphore definitions and fallback orchestration logic remain per-node
 """
 
 import logging
+import os
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
+
+# Optional pipeline-wide model override. When KRAKEN_PIPELINE_MODEL is set (e.g.
+# "claude-opus-4-8"), every SDK-backed node runs on that model AND the usage label /
+# cost estimate attribute to it. Unset -> SDK default model + the Sonnet label below.
+_PIPELINE_MODEL = os.getenv("KRAKEN_PIPELINE_MODEL")
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +182,7 @@ def create_agent_options(
     mcp_servers: list[Any] | None = None,
     permission_mode: str = "bypassPermissions",
     max_buffer_size: int = 10 * 1024 * 1024,
+    model: str | None = None,
 ) -> Any:
     """Create ClaudeAgentOptions with standard defaults.
 
@@ -205,6 +212,11 @@ def create_agent_options(
     }
     if mcp_servers:
         kwargs["mcp_servers"] = mcp_servers
+    # Per-call model wins; otherwise the pipeline-wide override (KRAKEN_PIPELINE_MODEL);
+    # otherwise omit `model` so the SDK uses its default.
+    effective_model = model or _PIPELINE_MODEL
+    if effective_model:
+        kwargs["model"] = effective_model
 
     return ClaudeAgentOptions(**kwargs)
 
@@ -217,8 +229,10 @@ def chunk(items: list, size: int) -> list[list]:
     return [items[i:i + size] for i in range(0, len(items), size)]
 
 
-# Default model name constant — all pipeline nodes currently use the same model
-DEFAULT_MODEL_NAME = "anthropic/claude-sonnet-4-20250514"
+# Default model name constant — all pipeline nodes use the same model. Follows the
+# KRAKEN_PIPELINE_MODEL override so the usage label + cost estimate match the model the
+# SDK is actually told to use (create_agent_options sets the same override).
+DEFAULT_MODEL_NAME = _PIPELINE_MODEL or "anthropic/claude-sonnet-4-20250514"
 
 
 async def query_with_usage(

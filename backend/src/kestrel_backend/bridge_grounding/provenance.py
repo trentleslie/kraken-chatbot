@@ -8,6 +8,7 @@ logic validated by `assessment_data/kg_bridge_leg_probe.py`.
 Tier ordering (best→worst): curated-causal > curated-associative > curated-neutral > text-mined > none.
 """
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -109,7 +110,7 @@ def _best_tier(edges: list[dict[str, Any]], other_curie: str) -> str:
     return best
 
 
-async def leg_tier(curie_x: str, curie_y: str) -> str:
+async def leg_tier(curie_x: str, curie_y: str, *, fetch: Any = None) -> str:
     """Best evidence tier over the X–Y edges, or 'none' if there is no edge.
 
     Fetches one_hop_query from X in full mode (the proven probe call — start-only, NOT end_node_ids),
@@ -119,13 +120,44 @@ async def leg_tier(curie_x: str, curie_y: str) -> str:
     edge can lie beyond it (a false 'none' that mislabels a well-supported bridge). When the X fetch
     is truncated AND no X–Y edge is found, retry from Y (often the lower-degree endpoint) before
     concluding 'none'. Both-hub bridges can still miss, but that is rare and degrades conservatively.
+
+    ``fetch`` overrides the per-leg edge fetch (async ``(curie) -> (edges, truncated)``); defaults to
+    a direct Kestrel call. The bridge_grounding node passes a :func:`cached_leg_fetcher` so a CURIE
+    shared across the run's bridges is fetched once instead of once per leg.
     """
-    edges_x, truncated_x = await _leg_edges_from(curie_x)
+    _fetch = fetch or _leg_edges_from
+    edges_x, truncated_x = await _fetch(curie_x)
     best = _best_tier(edges_x, curie_y)
     if best == "none" and truncated_x:
-        edges_y, _ = await _leg_edges_from(curie_y)
+        edges_y, _ = await _fetch(curie_y)
         best = _best_tier(edges_y, curie_x)
     return best
+
+
+def cached_leg_fetcher(concurrency: int = 8):
+    """Build a single-flight, concurrency-bounded leg-edge fetcher for ONE bridge_grounding run.
+
+    The full-mode ``one_hop_query`` behind each leg is the node's dominant cost, and a co-expression
+    module's bridges heavily share endpoints (the same hub CURIE recurs across bridges). The returned
+    async ``fetch(curie) -> (edges, truncated)`` (a) fetches each CURIE at most once — concurrent
+    callers await the same in-flight task — and (b) caps concurrent Kestrel calls at ``concurrency``.
+    Pass it to :func:`leg_tier` via ``fetch=``. A fresh cache is built per call, so it never serves
+    stale KG reads across runs.
+    """
+    sem = asyncio.Semaphore(concurrency)
+    cache: dict[str, "asyncio.Future[tuple[list[dict[str, Any]], bool]]"] = {}
+
+    async def fetch(curie: str) -> tuple[list[dict[str, Any]], bool]:
+        task = cache.get(curie)
+        if task is None:
+            async def _go() -> tuple[list[dict[str, Any]], bool]:
+                async with sem:
+                    return await _leg_edges_from(curie)
+            task = asyncio.create_task(_go())
+            cache[curie] = task
+        return await task
+
+    return fetch
 
 
 def bridge_label(leg1_tier: str, leg2_tier: str) -> str:
