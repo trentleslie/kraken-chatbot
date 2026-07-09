@@ -108,7 +108,11 @@ def validate_and_normalize(
             f"{row_cap}-row limit. Please reduce the file."
         )
 
-    selection = {g.strip().lower() for g in (selected_groups or []) if g and g.strip()}
+    # Defensive: this shared R19 gate is also called off the runner/intake path (not just the
+    # validated WS handler), so tolerate a malformed selection (non-list, or non-string members)
+    # rather than raising TypeError and killing the caller. A bad selection degrades to "all".
+    _selected = selected_groups if isinstance(selected_groups, list) else []
+    selection = {g.strip().lower() for g in _selected if isinstance(g, str) and g.strip()}
 
     # key (lowercased name) -> canonical first-seen name, so cross-group membership accretes
     # under one stable key without an O(n) scan per row.

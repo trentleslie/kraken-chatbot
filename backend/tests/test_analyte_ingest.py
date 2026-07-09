@@ -65,6 +65,19 @@ def test_selection_is_case_insensitive():
     assert result.run_analytes == ["glucose"]
 
 
+def test_malformed_selection_does_not_raise_and_degrades_to_all():
+    """A non-list (or non-string-member) selection must not raise TypeError off the
+    runner/intake path — it degrades to "all groups" rather than killing the caller."""
+    panel = [
+        {"name": "glucose", "group": "Brown"},
+        {"name": "IL6", "group": "Blue"},
+    ]
+    for bad_selection in (1, "Brown", {"Brown"}, [1, None]):
+        result = validate_and_normalize(panel, bad_selection, _settings())
+        assert result.errors == []
+        assert result.run_analytes == ["glucose", "IL6"]
+
+
 def test_same_name_two_selected_groups_kept_as_single_entity_both_groups():
     panel = [
         {"name": "glucose", "group": "Brown"},

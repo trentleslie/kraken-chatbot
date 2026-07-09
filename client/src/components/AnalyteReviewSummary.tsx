@@ -55,7 +55,11 @@ export function AnalyteReviewSummary({
 
   const toggleGroup = (group: string, checked: boolean) => {
     if (checked) onSelectedGroupsChange([...selectedGroups, group]);
-    else onSelectedGroupsChange(selectedGroups.filter((g) => g !== group));
+    // Keep at least one group selected: an empty selection is treated as "all groups"
+    // (both here and server-side), so clearing the last checkbox would silently run the
+    // full panel instead of nothing. Refuse to deselect the final group.
+    else if (selectedGroups.length > 1)
+      onSelectedGroupsChange(selectedGroups.filter((g) => g !== group));
   };
 
   return (
@@ -83,6 +87,7 @@ export function AnalyteReviewSummary({
               <label key={g} className="flex items-center gap-1.5 text-xs cursor-pointer">
                 <Checkbox
                   checked={selectedGroups.includes(g)}
+                  disabled={selectedGroups.length === 1 && selectedGroups.includes(g)}
                   onCheckedChange={(c) => toggleGroup(g, c === true)}
                   data-testid={`group-filter-${g}`}
                 />

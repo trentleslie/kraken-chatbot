@@ -874,6 +874,11 @@ async def websocket_chat(websocket: WebSocket):
                         ErrorMessage(message="structured_analytes must be a list").model_dump_json()
                     )
                     continue
+                if selected_groups is not None and not isinstance(selected_groups, list):
+                    await websocket.send_text(
+                        ErrorMessage(message="selected_groups must be a list").model_dump_json()
+                    )
+                    continue
                 normalized = validate_and_normalize(
                     structured_analytes_raw, selected_groups, _settings
                 )
