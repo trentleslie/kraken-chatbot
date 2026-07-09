@@ -111,6 +111,23 @@ def test_empty_name_rows_skipped():
     assert result.rows_read == 1  # only the non-empty-name row counts
 
 
+def test_all_blank_names_yield_empty_run_set_without_error():
+    """Precondition for the WS handler's empty-run-set rejection: a panel of all-blank
+    names normalizes cleanly (no error) but produces zero runnable analytes."""
+    panel = [{"name": "  ", "group": "Brown"}, {"group": "Blue"}]
+    result = validate_and_normalize(panel, None, _settings())
+    assert result.errors == []
+    assert result.run_analytes == []
+
+
+def test_selection_matching_no_group_yields_empty_run_set_without_error():
+    """The other empty-run-set path: a selection that names no present group."""
+    panel = [{"name": "glucose", "group": "Brown"}]
+    result = validate_and_normalize(panel, ["Nonexistent"], _settings())
+    assert result.errors == []
+    assert result.run_analytes == []
+
+
 def test_values_are_trimmed():
     panel = [{"name": "  glucose  ", "group": "  Brown  ", "type": "  metabolite  "}]
     result = validate_and_normalize(panel, None, _settings())

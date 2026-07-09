@@ -889,6 +889,18 @@ async def websocket_chat(websocket: WebSocket):
                         ).model_dump_json()
                     )
                     continue
+                # A panel can normalize cleanly (no errors) yet yield NO runnable analytes — every
+                # row had a blank name, or the group selection matched nothing. Reject here with a
+                # clear message instead of entering the graph with raw_entities=[] and failing later
+                # as an opaque pipeline error.
+                if not normalized.run_analytes:
+                    await websocket.send_text(
+                        ErrorMessage(
+                            message="Analyte upload rejected: no usable analytes after parsing "
+                            "(check the analyte-name column mapping and group selection)."
+                        ).model_dump_json()
+                    )
+                    continue
                 # Pass the ORIGINAL panel + selection downstream; intake re-normalizes (gate #2).
                 normalized_analytes = structured_analytes_raw
                 # File-only submit: synthesize a names-bearing query so query_preview, Langfuse
