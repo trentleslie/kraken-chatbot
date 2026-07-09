@@ -74,6 +74,34 @@ class TestProtocolMessages:
         msg = UserMessageRequest(type="user_message", content="test", agent_mode="pipeline")
         assert msg.agent_mode == "pipeline"
 
+    def test_user_message_request_analyte_fields_default_none(self):
+        """New analyte-upload fields default to None (backward compatible)."""
+        from kestrel_backend.protocol import UserMessageRequest
+
+        msg = UserMessageRequest(type="user_message", content="test")
+        assert msg.structured_analytes is None
+        assert msg.selected_groups is None
+
+    def test_user_message_request_parses_structured_analytes(self):
+        """Structured analyte panel + selection parse into typed models."""
+        from kestrel_backend.protocol import UserMessageRequest, StructuredAnalyte
+
+        msg = UserMessageRequest(
+            type="user_message",
+            content="",
+            agent_mode="pipeline",
+            structured_analytes=[
+                {"name": "glucose", "group": "Brown", "type": "metabolite"},
+                {"name": "IL6"},
+            ],
+            selected_groups=["Brown"],
+        )
+        assert len(msg.structured_analytes) == 2
+        assert isinstance(msg.structured_analytes[0], StructuredAnalyte)
+        assert msg.structured_analytes[0].name == "glucose"
+        assert msg.structured_analytes[1].group is None
+        assert msg.selected_groups == ["Brown"]
+
 
 class TestModeRouting:
     """Test mode routing logic."""
@@ -147,6 +175,44 @@ class TestModeRouting:
         data = {"type": "user_message", "content": "test"}
         agent_mode = data.get("agent_mode", "classic")
         assert agent_mode == "classic"
+
+
+class TestStructuredAnalyteThreading:
+    """Verify handle_pipeline_mode threads the panel + selection into stream_discovery."""
+
+    @pytest.mark.asyncio
+    async def test_panel_and_selection_passed_to_stream_discovery(self):
+        from kestrel_backend.main import handle_pipeline_mode
+
+        mock_websocket = AsyncMock()
+        captured = {}
+
+        def fake_stream(**kwargs):
+            captured.update(kwargs)
+
+            async def _gen():
+                yield {
+                    "type": "complete",
+                    "data": {"synthesis_report": "R", "hypotheses": [], "resolved_entities": []},
+                }
+
+            return _gen()
+
+        panel = [{"name": "glucose", "group": "Brown"}]
+        with patch("kestrel_backend.graph.runner.stream_discovery", side_effect=fake_stream):
+            with patch("kestrel_backend.main.conversation_history", {"test": []}):
+                with patch("kestrel_backend.main.conversation_ids", {}):
+                    with patch("kestrel_backend.main.turn_counters", {"test": 0}):
+                        await handle_pipeline_mode(
+                            mock_websocket,
+                            "study context",
+                            "test",
+                            structured_analytes=panel,
+                            selected_groups=["Brown"],
+                        )
+
+        assert captured.get("structured_analytes") == panel
+        assert captured.get("selected_groups") == ["Brown"]
 
 
 class TestPipelineProgressStreaming:
