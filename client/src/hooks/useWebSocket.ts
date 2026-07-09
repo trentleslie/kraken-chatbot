@@ -12,8 +12,16 @@ import type {
   PipelineProgress,
   StructuredAnalyte,
 } from "@/types/messages";
+import { applyGroupFilter, distinctNameCount } from "@/lib/analyteParse";
 
 const WS_URL = import.meta.env.VITE_WS_URL || "";
+
+// Mirror the backend R19 hard caps (config.Settings defaults) so an oversized panel is caught
+// client-side — with the staged upload preserved — instead of being sent, rejected server-side
+// (frame byte cap / run ceiling), and then lost to the one-shot clear. If an operator raises the
+// backend caps via env, this pre-check is merely conservative (a clear message), never data loss.
+const MAX_WS_MESSAGE_BYTES = 5_000_000;
+const ANALYTE_RUN_CEILING = 200;
 
 // Stable no-op token getter used when Clerk auth is disabled (local dev). Defined
 // at module scope so its identity is constant across renders — the connect effect
@@ -579,6 +587,39 @@ export function useWebSocket() {
 
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
+      // Build the outgoing frame once, so we can enforce the backend's hard caps HERE and keep the
+      // panel staged when it's too large — otherwise the send is rejected server-side after the
+      // one-shot clear has already discarded the mapped upload.
+      const serialized = JSON.stringify({
+        type: "user_message",
+        content,
+        agent_mode: agentMode,
+        biomapper_env: biomapperEnv,
+        // Send the FULL parsed panel + the selection; the backend forms the run set.
+        structured_analytes: hasPanel ? structuredAnalytes : undefined,
+        selected_groups: hasPanel ? selectedGroups : undefined,
+      });
+
+      if (hasPanel) {
+        const runCount = distinctNameCount(applyGroupFilter(structuredAnalytes, selectedGroups));
+        const frameBytes = new Blob([serialized]).size;
+        if (runCount > ANALYTE_RUN_CEILING || frameBytes > MAX_WS_MESSAGE_BYTES) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: generateId(),
+              type: "error" as const,
+              message:
+                runCount > ANALYTE_RUN_CEILING
+                  ? `Too many analytes selected (${runCount}; limit ${ANALYTE_RUN_CEILING}). Narrow the group selection or upload a smaller panel.`
+                  : `Upload is too large to send (${(frameBytes / 1_000_000).toFixed(1)} MB; limit ${MAX_WS_MESSAGE_BYTES / 1_000_000} MB). Reduce the file or narrow the group selection.`,
+              timestamp: Date.now(),
+            },
+          ]);
+          return; // Keep the panel staged: nothing sent, nothing cleared.
+        }
+      }
+
       // Optimistic user bubble: for a file-only submit show a panel summary instead of an empty
       // bubble (the backend synthesizes a matching names-bearing query for persistence).
       const bubbleContent =
@@ -594,17 +635,7 @@ export function useWebSocket() {
       setMessages((prev) => [...prev, userMessage]);
       setIsAgentResponding(true);
 
-      wsRef.current.send(
-        JSON.stringify({
-          type: "user_message",
-          content,
-          agent_mode: agentMode,
-          biomapper_env: biomapperEnv,
-          // Send the FULL parsed panel + the selection; the backend forms the run set.
-          structured_analytes: hasPanel ? structuredAnalytes : undefined,
-          selected_groups: hasPanel ? selectedGroups : undefined,
-        }),
-      );
+      wsRef.current.send(serialized);
 
       // One-shot upload: clear the panel + selection so the next turn is clean.
       if (hasPanel) {
