@@ -563,7 +563,11 @@ export function useWebSocket() {
 
   const sendMessage = useCallback(
     (content: string) => {
-      const hasPanel = structuredAnalytes.length > 0;
+      // A staged panel is only "active" in pipeline mode — the backend ignores structured_analytes
+      // in classic mode. Gating on mode (matching ChatInput's `isPipeline && hasPanel`) means a
+      // classic send neither attaches nor clears the upload, so switching to classic and typing a
+      // message no longer silently discards a mapped panel; it's preserved for pipeline mode.
+      const hasPanel = agentMode === "pipeline" && structuredAnalytes.length > 0;
 
       // Allow a file-only submit (panel present, no typed query); block a truly-empty send.
       if (!content.trim() && !hasPanel) return;
