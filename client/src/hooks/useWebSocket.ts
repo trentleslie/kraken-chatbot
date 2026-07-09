@@ -10,6 +10,7 @@ import type {
   AgentMode,
   BiomapperEnv,
   PipelineProgress,
+  StructuredAnalyte,
 } from "@/types/messages";
 
 const WS_URL = import.meta.env.VITE_WS_URL || "";
@@ -228,6 +229,11 @@ export function useWebSocket() {
   // Prod/dev biomapper2 API toggle for the discovery pipeline (default prod).
   const [biomapperEnv, setBiomapperEnv] = useState<BiomapperEnv>("production");
   const [pipelineProgress, setPipelineProgress] = useState<PipelineProgress | null>(null);
+  // Structured analyte panel from a file upload + the user's group selection (pipeline mode).
+  // The FULL panel is sent; the backend forms the run set from the selection. One-shot: cleared
+  // after each successful send so a follow-up text message doesn't silently re-run the panel.
+  const [structuredAnalytes, setStructuredAnalytes] = useState<StructuredAnalyte[]>([]);
+  const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
 
   // Clerk auth: get a fresh session token for WebSocket connections.
   // When Clerk isn't configured (local dev / no publishable key) there's no
@@ -557,6 +563,11 @@ export function useWebSocket() {
 
   const sendMessage = useCallback(
     (content: string) => {
+      const hasPanel = structuredAnalytes.length > 0;
+
+      // Allow a file-only submit (panel present, no typed query); block a truly-empty send.
+      if (!content.trim() && !hasPanel) return;
+
       if (demoModeRef.current) {
         runDemoScenario(content);
         return;
@@ -564,10 +575,15 @@ export function useWebSocket() {
 
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
+      // Optimistic user bubble: for a file-only submit show a panel summary instead of an empty
+      // bubble (the backend synthesizes a matching names-bearing query for persistence).
+      const bubbleContent =
+        content.trim() || `Uploaded ${structuredAnalytes.length} analytes for discovery analysis`;
+
       const userMessage: ChatMessage = {
         id: generateId(),
         type: "user",
-        content,
+        content: bubbleContent,
         timestamp: Date.now(),
       };
 
@@ -580,10 +596,19 @@ export function useWebSocket() {
           content,
           agent_mode: agentMode,
           biomapper_env: biomapperEnv,
+          // Send the FULL parsed panel + the selection; the backend forms the run set.
+          structured_analytes: hasPanel ? structuredAnalytes : undefined,
+          selected_groups: hasPanel ? selectedGroups : undefined,
         }),
       );
+
+      // One-shot upload: clear the panel + selection so the next turn is clean.
+      if (hasPanel) {
+        setStructuredAnalytes([]);
+        setSelectedGroups([]);
+      }
     },
-    [runDemoScenario, agentMode, biomapperEnv],
+    [runDemoScenario, agentMode, biomapperEnv, structuredAnalytes, selectedGroups],
   );
 
   const clearMessages = useCallback(() => {
@@ -623,6 +648,10 @@ export function useWebSocket() {
     biomapperEnv,
     setBiomapperEnv,
     pipelineProgress,
+    structuredAnalytes,
+    setStructuredAnalytes,
+    selectedGroups,
+    setSelectedGroups,
     sendMessage,
     clearMessages,
   };
