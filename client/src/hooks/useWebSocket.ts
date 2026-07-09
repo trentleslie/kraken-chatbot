@@ -10,9 +10,18 @@ import type {
   AgentMode,
   BiomapperEnv,
   PipelineProgress,
+  StructuredAnalyte,
 } from "@/types/messages";
+import { applyGroupFilter, distinctNameCount } from "@/lib/analyteParse";
 
 const WS_URL = import.meta.env.VITE_WS_URL || "";
+
+// Mirror the backend R19 hard caps (config.Settings defaults) so an oversized panel is caught
+// client-side — with the staged upload preserved — instead of being sent, rejected server-side
+// (frame byte cap / run ceiling), and then lost to the one-shot clear. If an operator raises the
+// backend caps via env, this pre-check is merely conservative (a clear message), never data loss.
+const MAX_WS_MESSAGE_BYTES = 5_000_000;
+const ANALYTE_RUN_CEILING = 200;
 
 // Stable no-op token getter used when Clerk auth is disabled (local dev). Defined
 // at module scope so its identity is constant across renders — the connect effect
@@ -228,6 +237,11 @@ export function useWebSocket() {
   // Prod/dev biomapper2 API toggle for the discovery pipeline (default prod).
   const [biomapperEnv, setBiomapperEnv] = useState<BiomapperEnv>("production");
   const [pipelineProgress, setPipelineProgress] = useState<PipelineProgress | null>(null);
+  // Structured analyte panel from a file upload + the user's group selection (pipeline mode).
+  // The FULL panel is sent; the backend forms the run set from the selection. One-shot: cleared
+  // after each successful send so a follow-up text message doesn't silently re-run the panel.
+  const [structuredAnalytes, setStructuredAnalytes] = useState<StructuredAnalyte[]>([]);
+  const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
 
   // Clerk auth: get a fresh session token for WebSocket connections.
   // When Clerk isn't configured (local dev / no publishable key) there's no
@@ -557,6 +571,15 @@ export function useWebSocket() {
 
   const sendMessage = useCallback(
     (content: string) => {
+      // A staged panel is only "active" in pipeline mode — the backend ignores structured_analytes
+      // in classic mode. Gating on mode (matching ChatInput's `isPipeline && hasPanel`) means a
+      // classic send neither attaches nor clears the upload, so switching to classic and typing a
+      // message no longer silently discards a mapped panel; it's preserved for pipeline mode.
+      const hasPanel = agentMode === "pipeline" && structuredAnalytes.length > 0;
+
+      // Allow a file-only submit (panel present, no typed query); block a truly-empty send.
+      if (!content.trim() && !hasPanel) return;
+
       if (demoModeRef.current) {
         runDemoScenario(content);
         return;
@@ -564,26 +587,63 @@ export function useWebSocket() {
 
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
+      // Build the outgoing frame once, so we can enforce the backend's hard caps HERE and keep the
+      // panel staged when it's too large — otherwise the send is rejected server-side after the
+      // one-shot clear has already discarded the mapped upload.
+      const serialized = JSON.stringify({
+        type: "user_message",
+        content,
+        agent_mode: agentMode,
+        biomapper_env: biomapperEnv,
+        // Send the FULL parsed panel + the selection; the backend forms the run set.
+        structured_analytes: hasPanel ? structuredAnalytes : undefined,
+        selected_groups: hasPanel ? selectedGroups : undefined,
+      });
+
+      if (hasPanel) {
+        const runCount = distinctNameCount(applyGroupFilter(structuredAnalytes, selectedGroups));
+        const frameBytes = new Blob([serialized]).size;
+        if (runCount > ANALYTE_RUN_CEILING || frameBytes > MAX_WS_MESSAGE_BYTES) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: generateId(),
+              type: "error" as const,
+              message:
+                runCount > ANALYTE_RUN_CEILING
+                  ? `Too many analytes selected (${runCount}; limit ${ANALYTE_RUN_CEILING}). Narrow the group selection or upload a smaller panel.`
+                  : `Upload is too large to send (${(frameBytes / 1_000_000).toFixed(1)} MB; limit ${MAX_WS_MESSAGE_BYTES / 1_000_000} MB). Reduce the file or narrow the group selection.`,
+              timestamp: Date.now(),
+            },
+          ]);
+          return; // Keep the panel staged: nothing sent, nothing cleared.
+        }
+      }
+
+      // Optimistic user bubble: for a file-only submit show a panel summary instead of an empty
+      // bubble (the backend synthesizes a matching names-bearing query for persistence).
+      const bubbleContent =
+        content.trim() || `Uploaded ${structuredAnalytes.length} analytes for discovery analysis`;
+
       const userMessage: ChatMessage = {
         id: generateId(),
         type: "user",
-        content,
+        content: bubbleContent,
         timestamp: Date.now(),
       };
 
       setMessages((prev) => [...prev, userMessage]);
       setIsAgentResponding(true);
 
-      wsRef.current.send(
-        JSON.stringify({
-          type: "user_message",
-          content,
-          agent_mode: agentMode,
-          biomapper_env: biomapperEnv,
-        }),
-      );
+      wsRef.current.send(serialized);
+
+      // One-shot upload: clear the panel + selection so the next turn is clean.
+      if (hasPanel) {
+        setStructuredAnalytes([]);
+        setSelectedGroups([]);
+      }
     },
-    [runDemoScenario, agentMode, biomapperEnv],
+    [runDemoScenario, agentMode, biomapperEnv, structuredAnalytes, selectedGroups],
   );
 
   const clearMessages = useCallback(() => {
@@ -623,6 +683,10 @@ export function useWebSocket() {
     biomapperEnv,
     setBiomapperEnv,
     pipelineProgress,
+    structuredAnalytes,
+    setStructuredAnalytes,
+    selectedGroups,
+    setSelectedGroups,
     sendMessage,
     clearMessages,
   };

@@ -16,6 +16,8 @@ import time
 from typing import Any
 from ..state import DiscoveryState
 from ..state_contracts import validate_state, IntakeInput, IntakeOutput
+from ...analyte_ingest import validate_and_normalize
+from ...config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -637,6 +639,84 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     start = time.time()
 
     query = state.get("raw_query", "")
+
+    structured_analytes = state.get("structured_analytes") or []
+
+    if structured_analytes:
+        # Structured (file-upload) path: entity identity/group/type come from the panel, not from
+        # heuristic prose parsing. Study context (disease focus, longitudinal, FDR/directives) is
+        # STILL derived from the accompanying query text so uploaded panels keep their framing.
+        # R19 gate #2: re-validate here so non-WS entry points (Studio/assessment harnesses) are
+        # bounded identically to the main.py door. Idempotent when the WS path already normalized.
+        settings = get_settings()
+        normalized = validate_and_normalize(
+            structured_analytes, state.get("selected_groups") or [], settings
+        )
+
+        # A panel is rejected when the R19 guard reports errors OR when normalization yields no
+        # runnable analytes (all-blank names, or a selection matching no group). The WS door already
+        # rejects both before the pipeline; reaching here means a direct (Studio/harness) caller.
+        if normalized.errors or not normalized.run_analytes:
+            reasons = normalized.errors or [
+                "no usable analytes after parsing (blank names, or the group selection matched "
+                "nothing)"
+            ]
+            # Emit the IntakeOutput-required fields so the contract still holds, flag the rejection,
+            # and carry the reason on the errors channel. route_after_intake sees upload_rejected and
+            # short-circuits to END, so the run never reaches IntegrationInput (which requires
+            # findings) and fails there.
+            logger.warning("Intake rejected structured panel: %s", "; ".join(reasons))
+            return {
+                "query_type": "discovery",
+                "raw_entities": [],
+                "is_longitudinal": False,
+                "duration_years": None,
+                "entity_aliases": {},
+                "entity_type_hints": {},
+                "study_context": {},
+                "fdr_entities": [],
+                "marginal_entities": [],
+                "analytical_directives": [],
+                "entity_groups": {},
+                "upload_rejected": True,
+                "errors": [f"Analyte upload rejected: {r}" for r in reasons],
+            }
+
+        entities = normalized.run_analytes
+        entity_type_hints = normalized.entity_type_hints
+        entity_groups = normalized.entity_groups
+
+        # Study context extraction still runs over the free-text query (may be a synthesized
+        # names-bearing query for file-only submits — harmless, just yields little context).
+        is_longitudinal, duration = detect_longitudinal_context(query)
+        entity_aliases = extract_aliases(query)
+        study_context = extract_study_context(query)
+        # FDR grouping uses the STRUCTURED entity set (not re-parsed names).
+        fdr_entities, marginal_entities = extract_fdr_groups(query, entities)
+        analytical_directives = extract_analytical_directives(query)
+
+        duration_sec = time.time() - start
+        logger.info(
+            "Completed intake (structured) in %.1fs — analytes=%d, groups=%d, longitudinal=%s",
+            duration_sec, len(entities), len({g for gs in entity_groups.values() for g in gs}),
+            is_longitudinal,
+        )
+
+        return {
+            # Force discovery routing: uploads are panel-oriented (accepted trade-off — a small
+            # uploaded lookup still runs the full discovery pipeline).
+            "query_type": "discovery",
+            "raw_entities": entities,
+            "is_longitudinal": is_longitudinal,
+            "duration_years": duration,
+            "entity_aliases": entity_aliases,
+            "entity_type_hints": entity_type_hints,
+            "study_context": study_context,
+            "fdr_entities": fdr_entities,
+            "marginal_entities": marginal_entities,
+            "analytical_directives": analytical_directives,
+            "entity_groups": entity_groups,
+        }
 
     # Extract entities from query (aliases NOT included)
     entities = extract_entities(query)

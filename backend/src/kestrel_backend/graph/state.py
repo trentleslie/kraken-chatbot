@@ -393,6 +393,20 @@ class DiscoveryState(TypedDict, total=False):
     conversation_history: list[tuple[str, str]]  # (role, content) pairs
     biomapper_env: str | None  # prod/dev biomapper2 API toggle ("production"|"dev"); None = default
 
+    # === Analyte file upload (structured panel) ===
+    # Plain single-writer fields (set at initial_state / intake, before the direct_kg|cold_start
+    # fork) — NO operator.add reducer (learning: only parallel-superstep fields carry reducers;
+    # a reducer here would duplicate-concat the panel). structured_analytes is the FULL parsed
+    # panel ({name, group?, type?} dicts); selected_groups is the client's group selection;
+    # entity_groups is the name -> [group,...] membership map for the run set (the R14 fan-out seam).
+    structured_analytes: list[dict]  # Full parsed upload panel (pre-selection)
+    selected_groups: list[str]  # Group values chosen for the run (empty = all)
+    entity_groups: dict[str, list[str]]  # run-set analyte name -> [group, ...]
+    # Set by intake (single-writer, no reducer) when the R19 gate rejects a structured panel on a
+    # non-WS entry path (Studio/harness). route_after_intake short-circuits the graph to END so the
+    # rejection surfaces cleanly instead of crashing downstream at IntegrationInput.
+    upload_rejected: bool
+
     # === Study Context (for longitudinal analysis) ===
     is_longitudinal: bool
     duration_years: int | None
