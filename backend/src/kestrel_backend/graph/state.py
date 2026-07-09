@@ -402,6 +402,10 @@ class DiscoveryState(TypedDict, total=False):
     structured_analytes: list[dict]  # Full parsed upload panel (pre-selection)
     selected_groups: list[str]  # Group values chosen for the run (empty = all)
     entity_groups: dict[str, list[str]]  # run-set analyte name -> [group, ...]
+    # Set by intake (single-writer, no reducer) when the R19 gate rejects a structured panel on a
+    # non-WS entry path (Studio/harness). route_after_intake short-circuits the graph to END so the
+    # rejection surfaces cleanly instead of crashing downstream at IntegrationInput.
+    upload_rejected: bool
 
     # === Study Context (for longitudinal analysis) ===
     is_longitudinal: bool

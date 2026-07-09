@@ -94,8 +94,33 @@ async def test_over_ceiling_panel_rejected_with_error_channel():
         "selected_groups": [],
     }
     out = await intake.run(state)
-    # Guard clears the run set and surfaces the reason on the errors channel.
+    # Guard clears the run set, flags the rejection, and surfaces the reason on the errors channel.
     assert out["raw_entities"] == []
     assert out["query_type"] == "discovery"
+    assert out.get("upload_rejected") is True
     assert out.get("errors")
     assert any("rejected" in e.lower() for e in out["errors"])
+
+
+async def test_empty_run_set_panel_flagged_rejected():
+    """A structured panel that normalizes to zero analytes (all-blank names) is rejected on the
+    non-WS path, so route_after_intake can short-circuit to END."""
+    state = {
+        "raw_query": "",
+        "structured_analytes": [{"name": "  ", "group": "Brown"}, {"group": "Blue"}],
+        "selected_groups": [],
+    }
+    out = await intake.run(state)
+    assert out["raw_entities"] == []
+    assert out.get("upload_rejected") is True
+    assert any("rejected" in e.lower() for e in out["errors"])
+
+
+async def test_route_after_intake_short_circuits_rejected_uploads():
+    from langgraph.graph import END
+
+    from kestrel_backend.graph.builder import route_after_intake
+
+    assert route_after_intake({"upload_rejected": True}) == END
+    assert route_after_intake({}) == "entity_resolution"
+    assert route_after_intake({"upload_rejected": False}) == "entity_resolution"

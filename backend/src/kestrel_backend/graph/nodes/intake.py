@@ -653,11 +653,19 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             structured_analytes, state.get("selected_groups") or [], settings
         )
 
-        if normalized.errors:
-            # Surface the guard rejection loudly instead of silently launching a partial run.
-            # Emit the IntakeOutput-required fields so the contract still holds; the empty
-            # raw_entities makes downstream nodes no-op and the errors channel carries the reason.
-            logger.warning("Intake rejected structured panel: %s", "; ".join(normalized.errors))
+        # A panel is rejected when the R19 guard reports errors OR when normalization yields no
+        # runnable analytes (all-blank names, or a selection matching no group). The WS door already
+        # rejects both before the pipeline; reaching here means a direct (Studio/harness) caller.
+        if normalized.errors or not normalized.run_analytes:
+            reasons = normalized.errors or [
+                "no usable analytes after parsing (blank names, or the group selection matched "
+                "nothing)"
+            ]
+            # Emit the IntakeOutput-required fields so the contract still holds, flag the rejection,
+            # and carry the reason on the errors channel. route_after_intake sees upload_rejected and
+            # short-circuits to END, so the run never reaches IntegrationInput (which requires
+            # findings) and fails there.
+            logger.warning("Intake rejected structured panel: %s", "; ".join(reasons))
             return {
                 "query_type": "discovery",
                 "raw_entities": [],
@@ -670,7 +678,8 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 "marginal_entities": [],
                 "analytical_directives": [],
                 "entity_groups": {},
-                "errors": [f"Analyte upload rejected: {e}" for e in normalized.errors],
+                "upload_rejected": True,
+                "errors": [f"Analyte upload rejected: {r}" for r in reasons],
             }
 
         entities = normalized.run_analytes
