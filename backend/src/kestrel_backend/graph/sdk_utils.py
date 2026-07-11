@@ -14,6 +14,8 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
+from ..byok import current_api_key
+
 # Optional pipeline-wide model override. When KRAKEN_PIPELINE_MODEL is set (e.g.
 # "claude-opus-4-8"), every SDK-backed node runs on that model AND the usage label /
 # cost estimate attribute to it. Unset -> SDK default model + the Sonnet label below.
@@ -217,6 +219,10 @@ def create_agent_options(
     effective_model = model or _PIPELINE_MODEL
     if effective_model:
         kwargs["model"] = effective_model
+
+    key = current_api_key.get()
+    if key:
+        kwargs["env"] = {"ANTHROPIC_API_KEY": key}
 
     return ClaudeAgentOptions(**kwargs)
 
