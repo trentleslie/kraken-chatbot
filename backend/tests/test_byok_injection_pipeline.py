@@ -31,6 +31,10 @@ async def test_no_cross_task_key_bleed(monkeypatch):
     async def run(k):
         byok.current_api_key.set(k)          # set inside the task's own context
         await asyncio.sleep(0.01)
+        # After yielding, each task must still see its OWN key.
+        # Under any shared-state (module-global / os.environ) implementation,
+        # both tasks would see the last writer's key and this assertion would fail.
+        assert byok.current_api_key.get() == k
         sdk_utils.create_agent_options(system_prompt="x")
 
     await asyncio.gather(run("sk-A"), run("sk-B"))
