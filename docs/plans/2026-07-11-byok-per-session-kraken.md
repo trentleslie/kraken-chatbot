@@ -412,20 +412,53 @@ git commit -m "feat(byok): inject effective key into pipeline nodes + concurrenc
 ### Task 5: Wire the WebSocket handler — receive key, resolve, gate
 
 **Files:**
-- Modify: `backend/src/kestrel_backend/main.py` (`websocket_chat` ~777, message loop, `handle_classic_mode`/`handle_pipeline_mode` call sites)
+- Modify: `backend/src/kestrel_backend/protocol.py` (add `SetKeyRequest` incoming + `KeySourceMessage` outgoing; add `NEEDS_KEY` code convention)
+- Modify: `backend/src/kestrel_backend/main.py` (`websocket_chat` ~777-870, message loop, `handle_classic_mode`/`handle_pipeline_mode` call sites)
 - Test: `backend/tests/test_ws_byok_wiring.py`
+
+**GROUND TRUTH — the real WS protocol (verified in `protocol.py` / `main.py`, use these EXACTLY):**
+- Incoming chat frames are `{"type": "user_message", "content": "...", "agent_mode": "classic"|"pipeline"}` (`UserMessageRequest`). The field is `agent_mode`, NOT `mode`, and the type is `user_message`, NOT `message`.
+- The loop at `main.py:~848` rejects **any** `data.get("type") != "user_message"` with `ErrorMessage(message="Unknown message type")`. A `set_key` frame therefore needs its own branch placed **before** that guard, ending in `continue`.
+- `ErrorMessage` (protocol.py:29) is `type: Literal["error"]="error"`, `message: str`, `code: str | None = None`. There is **no** `needs_key`/`error=`/`type=` override. Signal "needs key" as `ErrorMessage(message="...", code="NEEDS_KEY")` — this mirrors the existing `AUTH_ERROR` code convention. Existing error paths follow the error frame with `DoneMessage()`; do the same.
+- `connection_id = str(id(websocket))` (main.py:803). Per-connection dicts (`conversation_history`, `conversation_ids`, `turn_counters`) live near main.py:94-103 and are cleaned in the disconnect handler.
 
 **Interfaces:**
 - Consumes: `byok.resolve_effective_key`, `byok.current_api_key`, `byok.NeedsKeyError`, `clerk_identity.get_verified_email`.
-- Message contract: client's **first WS message** after connect is `{"type": "set_key", "key": "sk-..."}` (or `{"type": "set_key", "key": null}` to declare no key). Stored in a new per-connection dict `connection_api_keys: dict[str, str | None]`, cleaned up alongside `conversation_history` on disconnect.
-- Per turn, before invoking a handler: resolve `(key, source)` and set `current_api_key`; on `NeedsKeyError` send an error frame and skip the turn.
+- Message contract: client's **first WS frame** after connect is `{"type": "set_key", "key": "sk-..."}` (or `{"type": "set_key", "key": null}` to declare no key). Stored in a new per-connection dict `connection_api_keys: dict[str, str | None]`, cleaned up alongside `conversation_history` on disconnect.
+- Produces (outgoing): `KeySourceMessage(type="key_source", source: Literal["byok","server"])`, sent as the first frame of each successful turn so the UI can show "whose key".
+- Per turn, before invoking a handler: resolve `(key, source)`, send `KeySourceMessage`, set `current_api_key`; on `NeedsKeyError` send `ErrorMessage(code="NEEDS_KEY")` + `DoneMessage()` and skip the turn.
 
-- [ ] **Step 1: Write failing test** in `backend/tests/test_ws_byok_wiring.py` using `fastapi.testclient.TestClient` websocket. Assert: (a) an untrusted connection that sends `set_key` with `null` then a chat message receives a `needs_key` error frame and no synthesis runs; (b) a connection that sends a real key sets `current_api_key` (spy on `resolve_effective_key`). Mock `validate_ws_clerk_token` to return `{"sub": "u1"}` and `get_verified_email` to return `None` (untrusted) / a phenome email (trusted).
+- [ ] **Step 1: Add protocol models** to `protocol.py`:
+
+```python
+class KeySourceMessage(BaseModel):
+    """Server → Client: which key the current turn ran on."""
+    type: Literal["key_source"] = "key_source"
+    source: Literal["byok", "server"]
+
+
+class SetKeyRequest(BaseModel):
+    """Client → Server: set/clear the per-connection BYOK key."""
+    type: Literal["set_key"] = "set_key"
+    key: str | None = None
+```
+
+- [ ] **Step 2: Write failing test** in `backend/tests/test_ws_byok_wiring.py`:
 
 ```python
 from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from kestrel_backend.main import app
+
+
+def _drain_until(ws, predicate, limit=5):
+    frames = []
+    for _ in range(limit):
+        f = ws.receive_json()
+        frames.append(f)
+        if predicate(f):
+            return frames
+    return frames
 
 
 def test_untrusted_no_key_is_gated():
@@ -436,46 +469,77 @@ def test_untrusted_no_key_is_gated():
         client = TestClient(app)
         with client.websocket_connect("/ws/chat?token=x") as ws:
             ws.send_json({"type": "set_key", "key": None})
-            ws.send_json({"type": "message", "content": "hi", "mode": "classic"})
-            frames = [ws.receive_json() for _ in range(1)]
-            assert any(f.get("type") == "needs_key" for f in frames)
+            ws.send_json({"type": "user_message", "content": "hi", "agent_mode": "classic"})
+            frames = _drain_until(ws, lambda f: f.get("code") == "NEEDS_KEY")
+            assert any(f.get("type") == "error" and f.get("code") == "NEEDS_KEY"
+                       for f in frames)
+
+
+def test_trusted_no_key_runs_on_server_key():
+    with patch("kestrel_backend.main.validate_ws_clerk_token",
+               AsyncMock(return_value={"sub": "u2"})), \
+         patch("kestrel_backend.main.get_verified_email",
+               AsyncMock(return_value="trent@phenomehealth.org")), \
+         patch("kestrel_backend.main.handle_classic_mode", AsyncMock()) as h, \
+         patch("kestrel_backend.main.get_settings") as gs:
+        gs.return_value.byok_trusted_email_domains = ["phenomehealth.org"]
+        gs.return_value.server_anthropic_api_key = "sk-server"
+        gs.return_value.max_ws_message_bytes = 1_000_000
+        client = TestClient(app)
+        with client.websocket_connect("/ws/chat?token=x") as ws:
+            ws.send_json({"type": "set_key", "key": None})
+            ws.send_json({"type": "user_message", "content": "hi", "agent_mode": "classic"})
+            frames = _drain_until(ws, lambda f: f.get("type") == "key_source")
+            assert any(f.get("type") == "key_source" and f.get("source") == "server"
+                       for f in frames)
+            assert h.await_count == 1
 ```
 
-- [ ] **Step 2: Run test, verify it fails.** Run: `.venv/bin/pytest tests/test_ws_byok_wiring.py -v` — Expected: FAIL.
+> Note: `get_settings` is `@lru_cache`'d and imported at module scope in several places; patch it where `main.py` and `byok.py` look it up. If patching proves brittle, set the values via environment/`Settings` construction in a fixture instead — the assertion (server-source frame + handler invoked) is what matters.
 
-- [ ] **Step 3: Implement.** In `main.py`:
+- [ ] **Step 3: Run tests, verify they fail.** Run: `.venv/bin/pytest tests/test_ws_byok_wiring.py -v` — Expected: FAIL.
+
+- [ ] **Step 4: Implement.** In `main.py`:
   - Add `connection_api_keys: dict[str, str | None] = {}` near the other per-connection dicts (~line 94-103).
-  - In `websocket_chat`, capture `user_info` from `validate_ws_clerk_token`, keep it in scope.
-  - In the message loop, handle `set_key` frames: `connection_api_keys[connection_id] = data.get("key")`.
-  - Before dispatching to `handle_classic_mode` / `handle_pipeline_mode`, add:
+  - Import at module scope: `from .byok import resolve_effective_key, current_api_key, NeedsKeyError` and `from .clerk_identity import get_verified_email` (module-scope so tests can `patch("kestrel_backend.main.get_verified_email", ...)`).
+  - `websocket_chat` already binds `user_info` — keep it in scope for the loop.
+  - In the message loop, **before** the `!= "user_message"` guard, add:
 
 ```python
-    from .byok import resolve_effective_key, current_api_key, NeedsKeyError
-    from .clerk_identity import get_verified_email
-    try:
-        verified = await get_verified_email(user_info)
-        key, source = resolve_effective_key(connection_api_keys.get(connection_id), verified)
-    except NeedsKeyError:
-        await websocket.send_text(ErrorMessage(
-            type="needs_key",
-            error="Provide your Anthropic API key to run synthesis.").model_dump_json())
-        continue
-    tok = current_api_key.set(key)
-    try:
-        # existing dispatch to handle_classic_mode / handle_pipeline_mode
-        ...
-    finally:
-        current_api_key.reset(tok)
+            if data.get("type") == "set_key":
+                connection_api_keys[connection_id] = data.get("key")
+                continue
 ```
-  - In the disconnect/cleanup block, `connection_api_keys.pop(connection_id, None)`.
-  - If `ErrorMessage` lacks a `type` field for `needs_key`, add the literal to the model in `models.py` (or reuse the existing error frame and set a dedicated field). Verify against `models.py` before implementing.
+  - After the `user_message` type check and content validation, **before** dispatching to `handle_classic_mode` / `handle_pipeline_mode`:
 
-- [ ] **Step 4: Run test, verify it passes.** Run: `.venv/bin/pytest tests/test_ws_byok_wiring.py -v` — Expected: PASS. Send the `source` ("byok"/"server") to the client in the turn's first frame so the UI can show "whose key" (Task 8).
+```python
+            try:
+                verified = await get_verified_email(user_info)
+                key, source = resolve_effective_key(
+                    connection_api_keys.get(connection_id), verified)
+            except NeedsKeyError:
+                await websocket.send_text(ErrorMessage(
+                    message="Provide your Anthropic API key to run synthesis.",
+                    code="NEEDS_KEY").model_dump_json())
+                await websocket.send_text(DoneMessage().model_dump_json())
+                continue
+            await websocket.send_text(KeySourceMessage(source=source).model_dump_json())
+            tok = current_api_key.set(key)
+            try:
+                # existing dispatch to handle_classic_mode / handle_pipeline_mode
+                ...
+            finally:
+                current_api_key.reset(tok)
+```
+  - Import `KeySourceMessage` from `.protocol` alongside the existing `ErrorMessage`/`DoneMessage` imports.
+  - In the disconnect/cleanup block (where `conversation_history` etc. are popped), add `connection_api_keys.pop(connection_id, None)`.
 
-- [ ] **Step 5: Commit.**
+- [ ] **Step 5: Run tests, verify they pass.** Run: `.venv/bin/pytest tests/test_ws_byok_wiring.py -v` — Expected: PASS.
+
+- [ ] **Step 6: Commit.**
 
 ```bash
-git add backend/src/kestrel_backend/main.py backend/src/kestrel_backend/models.py backend/tests/test_ws_byok_wiring.py
+git add backend/src/kestrel_backend/protocol.py backend/src/kestrel_backend/main.py backend/tests/test_ws_byok_wiring.py
 git commit -m "feat(byok): WS key intake, per-turn resolution, untrusted gating"
 ```
 
@@ -596,17 +660,22 @@ git commit -m "feat(byok): redact API keys from logs"
 **Files:**
 - Create: `client/src/hooks/useApiKey.ts`
 - Create: `client/src/components/ApiKeyGate.tsx`
-- Modify: `client/src/hooks/useWebSocket.ts` (send `set_key` first; surface `needs_key`/`source`)
+- Modify: `client/src/hooks/useWebSocket.ts` (send `set_key` first; surface needs-key + source)
 - Modify: `client/src/pages/chat.tsx` (mount `ApiKeyGate`; show source badge)
+
+**GROUND TRUTH — WS frames (match Task 5 / `protocol.py`):**
+- Send first: `{"type":"set_key","key": <string|null>}`.
+- "Needs key" arrives as an **error frame**: `{"type":"error","code":"NEEDS_KEY","message":"..."}` — react to `code === "NEEDS_KEY"`, NOT a `needs_key` type.
+- Key source arrives as `{"type":"key_source","source":"byok"|"server"}` at the start of each turn.
+- Check `client/src/types/` for the existing WS message TS union and extend it with `key_source` + the `code` field / `set_key` request so the client stays type-safe.
 
 **Interfaces:**
 - `useApiKey()` → `{ key: string | null, setKey, clearKey, validate }`. Holds the key in React state **only** (never `localStorage`/`sessionStorage`). `validate(key)` calls `POST /api/validate-key`.
-- WS contract (matches Task 5): first frame `{"type":"set_key","key": <string|null>}`; the client reacts to a `{"type":"needs_key"}` frame by opening the gate, and reads `source` from the turn's first frame to render a "your key / server" badge.
 
 - [ ] **Step 1:** Implement `useApiKey.ts` — state + `validate` (fetch `/api/validate-key`). Key lives only in memory; a full page reload clears it (acceptable per per-session design).
-- [ ] **Step 2:** Implement `ApiKeyGate.tsx` — a form (paste key → Validate → on success call `setKey`). If `key` is null and the server sent `needs_key`, block the composer and show the form inline. Show a "clear key" control when a key is set.
-- [ ] **Step 3:** In `useWebSocket.ts`, on `onopen` send `{"type":"set_key","key": <current key or null>}` before any message; expose `needs_key` and `source` to consumers.
-- [ ] **Step 4:** In `chat.tsx`, mount `ApiKeyGate`; render a small badge from `source` ("Using your key" / "Using server key"). On a `needs_key` frame, reveal the gate.
+- [ ] **Step 2:** Implement `ApiKeyGate.tsx` — a form (paste key → Validate → on success call `setKey`). If `key` is null and the server sent a `NEEDS_KEY` error, block the composer and show the form inline. Show a "clear key" control when a key is set.
+- [ ] **Step 3:** In `useWebSocket.ts`, on `onopen` send `{"type":"set_key","key": <current key or null>}` before any message; expose a `needsKey` boolean (set on a `code === "NEEDS_KEY"` error frame) and the latest `source` to consumers. Extend the TS message types in `client/src/types/`.
+- [ ] **Step 4:** In `chat.tsx`, mount `ApiKeyGate`; render a small badge from `source` ("Using your key" / "Using server key"). On `needsKey`, reveal the gate.
 - [ ] **Step 5:** Manual verification — run the client, connect without a key as a non-phenome user → composer blocked, gate shown; paste a valid key → chat works, badge reads "Using your key". Commit.
 
 ```bash
@@ -642,6 +711,6 @@ git commit -m "docs(byok): document ddharmon env-var key convention"
 - §7 testing: precedence (T1), concurrency (T4), scrub (T7), validation (T6), e2e (T5+T8 manual). ✓
 - §8 ddharmon → Task 9. ✓
 
-**Placeholder scan:** No TBD/TODO. Two verify-before-implement notes are explicit and bounded: `models.py` error-frame shape (Task 5 Step 3) and SDK `env` merge-vs-replace (Task 3 — mitigated by only overriding the credential). Acceptable.
+**Placeholder scan:** No TBD/TODO. The WS-protocol shape (Task 5) is now pinned to verified ground truth (`user_message`/`set_key`, `ErrorMessage(code="NEEDS_KEY")`, `KeySourceMessage`). One bounded verify-before-implement note remains: SDK `env` merge-vs-replace (Task 3 — mitigated by only overriding the credential). Acceptable.
 
 **Type consistency:** `current_api_key`, `resolve_effective_key(byok_key, verified_email) -> (key, source)`, `is_trusted_email`, `NeedsKeyError`, `get_verified_email(user_info) -> str | None`, `build_agent_options()`, `_probe_anthropic_key(key) -> (bool, str|None)`, `ApiKeyRedactionFilter` — names used consistently across tasks. ✓
