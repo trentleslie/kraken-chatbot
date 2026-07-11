@@ -134,6 +134,15 @@ export type ChatMessage =
   | PipelineNodeDetailMessage
   | PipelineCompleteMessage;
 
+// BYOK: which key is powering the current turn ("byok" = user's key, "server" = operator key).
+export type KeySource = "byok" | "server";
+
+// BYOK: outgoing frame to register or clear the user's API key for this session.
+export type SetKeyRequest = {
+  type: "set_key";
+  key: string | null;
+};
+
 export type IncomingMessage =
   | { type: "text"; content: string }
   | { type: "tool_use"; tool: string; args: Record<string, unknown> }
@@ -154,6 +163,11 @@ export type IncomingMessage =
       duration_ms?: number;
       tool_calls_count?: number;
       model?: string;
+    }
+  | {
+      // BYOK: server sends this at the start of each turn to indicate which key is in use.
+      type: "key_source";
+      source: KeySource;
     }
   | {
       type: "pipeline_progress";
