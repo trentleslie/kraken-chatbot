@@ -852,6 +852,10 @@ async def websocket_chat(websocket: WebSocket):
             # BYOK: client can set/clear per-connection key before any chat turn.
             if data.get("type") == "set_key":
                 connection_api_keys[connection_id] = data.get("key")
+                logger.debug(
+                    "BYOK set_key received",
+                    extra={"connection_id": connection_id, "has_key": data.get("key") is not None}
+                )
                 continue
 
             # Validate message type
@@ -937,10 +941,9 @@ async def websocket_chat(websocket: WebSocket):
                 continue
 
             # Create conversation on first message
-            settings = get_settings()
             if connection_id not in conversation_ids:
                 user_id = user_info.get("user_id") if user_info else None
-                conv_id = await create_conversation(connection_id, settings.model or "default", user_id)
+                conv_id = await create_conversation(connection_id, _settings.model or "default", user_id)
                 if conv_id:
                     conversation_ids[connection_id] = conv_id
                     # Send conversation_id to frontend for copy link functionality
@@ -953,30 +956,21 @@ async def websocket_chat(websocket: WebSocket):
             # Optional prod/dev biomapper2 API toggle (mirrors biomapper-ui env routing).
             biomapper_env = data.get("biomapper_env")
 
-            # BYOK: resolve the effective key for this turn when BYOK is configured.
-            # When neither server_anthropic_api_key nor byok_trusted_email_domains are set,
-            # BYOK is not active — skip key resolution to preserve legacy behavior.
-            _byok_settings = get_settings()
-            _byok_active = bool(
-                _byok_settings.server_anthropic_api_key
-                or _byok_settings.byok_trusted_email_domains
-                or connection_api_keys.get(connection_id)
-            )
-            if _byok_active:
-                try:
-                    verified = await get_verified_email(user_info or {})
-                    key, source = resolve_effective_key(
-                        connection_api_keys.get(connection_id), verified)
-                except NeedsKeyError:
-                    await websocket.send_text(ErrorMessage(
-                        message="Provide your Anthropic API key to run synthesis.",
-                        code="NEEDS_KEY").model_dump_json())
-                    await websocket.send_text(DoneMessage().model_dump_json())
-                    continue
-                await websocket.send_text(KeySourceMessage(source=source).model_dump_json())
-                tok = current_api_key.set(key)
-            else:
-                tok = None
+            # BYOK: unconditional per-turn key resolution (fail closed).
+            # An untrusted user with no key must NEVER reach synthesis — gate applies
+            # regardless of server configuration.
+            verified = await get_verified_email(user_info or {})
+            try:
+                key, source = resolve_effective_key(
+                    connection_api_keys.get(connection_id), verified)
+            except NeedsKeyError:
+                await websocket.send_text(ErrorMessage(
+                    message="Provide your Anthropic API key to run synthesis.",
+                    code="NEEDS_KEY").model_dump_json())
+                await websocket.send_text(DoneMessage().model_dump_json())
+                continue
+            await websocket.send_text(KeySourceMessage(source=source).model_dump_json())
+            tok = current_api_key.set(key)
 
             try:
                 if agent_mode == "pipeline":
@@ -996,8 +990,7 @@ async def websocket_chat(websocket: WebSocket):
                 )
                 await websocket.send_text(DoneMessage().model_dump_json())
             finally:
-                if tok is not None:
-                    current_api_key.reset(tok)
+                current_api_key.reset(tok)
 
     except WebSocketDisconnect:
         # Clean up state for this connection

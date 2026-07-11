@@ -22,6 +22,32 @@ import pytest
 
 
 # ============================================================================
+# BYOK passthrough fixture — applies to every test in this module.
+# After the unconditional BYOK gating fix, every user_message turn resolves a
+# key. Tests here are about WS behaviour (routing, history, error propagation),
+# not BYOK policy; mock the identity + byok layer so they see a trusted user
+# with a server key and never hit NeedsKeyError.
+# ============================================================================
+
+@pytest.fixture(autouse=True)
+def byok_passthrough(monkeypatch):
+    """Patch get_verified_email → trusted address; patch byok.get_settings → server key."""
+    from kestrel_backend import byok as byok_module
+
+    class _ByokSettings:
+        byok_trusted_email_domains = ["test.com"]
+        server_anthropic_api_key = "sk-test"
+
+    monkeypatch.setattr(byok_module, "get_settings", lambda: _ByokSettings())
+
+    with patch(
+        "kestrel_backend.main.get_verified_email",
+        AsyncMock(return_value="user@test.com"),
+    ):
+        yield
+
+
+# ============================================================================
 # Test Helpers
 # ============================================================================
 
@@ -100,10 +126,9 @@ class TestWebSocketConnection:
                                 # Connect, send message, and disconnect
                                 with client.websocket_connect("/ws/chat") as websocket:
                                     websocket.send_text(create_user_message("test"))
-                                    # Wait for done
-                                    data = websocket.receive_text()
-                                    msg = json.loads(data)
-                                    assert msg["type"] == "done"
+                                    # Drain until done (key_source is sent before dispatch)
+                                    messages = collect_messages_until_done(websocket)
+                                    assert any(m["type"] == "done" for m in messages)
 
                                 # After disconnect, state should be cleaned up
                                 # (clean_connection_state fixture handles verification)
@@ -466,12 +491,12 @@ class TestRateLimiting:
                                 client = TestClient(app)
 
                                 with client.websocket_connect("/ws/chat") as websocket:
-                                    # First two messages should succeed
+                                    # First two messages should succeed (drain until done each time;
+                                    # key_source is sent before dispatch)
                                     for _ in range(2):
                                         websocket.send_text(create_user_message("test"))
-                                        data = websocket.receive_text()
-                                        msg = json.loads(data)
-                                        assert msg["type"] == "done"
+                                        messages = collect_messages_until_done(websocket)
+                                        assert any(m["type"] == "done" for m in messages)
 
                                     # Third message should be rate limited
                                     websocket.send_text(create_user_message("test"))
@@ -635,9 +660,9 @@ class TestWebSocketAuthentication:
                                     # Should connect successfully
                                     with client.websocket_connect("/ws/chat?token=valid-token") as websocket:
                                         websocket.send_text(create_user_message("test"))
-                                        data = websocket.receive_text()
-                                        msg = json.loads(data)
-                                        assert msg["type"] == "done"
+                                        # Drain until done (key_source is sent before dispatch)
+                                        messages = collect_messages_until_done(websocket)
+                                        assert any(m["type"] == "done" for m in messages)
 
 
 # ============================================================================
