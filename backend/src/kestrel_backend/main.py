@@ -20,6 +20,8 @@ from .agent import run_agent_turn
 from .logging_config import configure_logging, generate_correlation_id, correlation_id
 from .clerk_auth import get_current_user, validate_ws_clerk_token
 from .clerk_proxy import router as clerk_proxy_router, close_http_client
+from .byok import resolve_effective_key, current_api_key, NeedsKeyError
+from .clerk_identity import get_verified_email
 
 # Configure logging early
 settings = get_settings()
@@ -57,6 +59,7 @@ from .protocol import (
     PipelineProgressMessage,
     PipelineNodeDetailMessage,
     PipelineCompleteMessage,
+    KeySourceMessage,
     NODE_STATUS_MESSAGES,
 )
 from .graph.node_detail_extractors import extract_node_details
@@ -102,6 +105,9 @@ conversation_ids: dict[str, UUID] = {}
 
 # Turn counter per WebSocket connection: {connection_id: int}
 turn_counters: dict[str, int] = defaultdict(int)
+
+# Per-connection BYOK key: {connection_id: key_str | None}
+connection_api_keys: dict[str, str | None] = {}
 
 # Maximum number of user/assistant exchanges to keep in history
 MAX_HISTORY_EXCHANGES = 10
@@ -843,6 +849,11 @@ async def websocket_chat(websocket: WebSocket):
                 )
                 continue
 
+            # BYOK: client can set/clear per-connection key before any chat turn.
+            if data.get("type") == "set_key":
+                connection_api_keys[connection_id] = data.get("key")
+                continue
+
             # Validate message type
             if data.get("type") != "user_message":
                 await websocket.send_text(
@@ -942,6 +953,31 @@ async def websocket_chat(websocket: WebSocket):
             # Optional prod/dev biomapper2 API toggle (mirrors biomapper-ui env routing).
             biomapper_env = data.get("biomapper_env")
 
+            # BYOK: resolve the effective key for this turn when BYOK is configured.
+            # When neither server_anthropic_api_key nor byok_trusted_email_domains are set,
+            # BYOK is not active — skip key resolution to preserve legacy behavior.
+            _byok_settings = get_settings()
+            _byok_active = bool(
+                _byok_settings.server_anthropic_api_key
+                or _byok_settings.byok_trusted_email_domains
+                or connection_api_keys.get(connection_id)
+            )
+            if _byok_active:
+                try:
+                    verified = await get_verified_email(user_info or {})
+                    key, source = resolve_effective_key(
+                        connection_api_keys.get(connection_id), verified)
+                except NeedsKeyError:
+                    await websocket.send_text(ErrorMessage(
+                        message="Provide your Anthropic API key to run synthesis.",
+                        code="NEEDS_KEY").model_dump_json())
+                    await websocket.send_text(DoneMessage().model_dump_json())
+                    continue
+                await websocket.send_text(KeySourceMessage(source=source).model_dump_json())
+                tok = current_api_key.set(key)
+            else:
+                tok = None
+
             try:
                 if agent_mode == "pipeline":
                     await handle_pipeline_mode(
@@ -959,6 +995,9 @@ async def websocket_chat(websocket: WebSocket):
                     ErrorMessage(message=f"Agent error: {str(e)}").model_dump_json()
                 )
                 await websocket.send_text(DoneMessage().model_dump_json())
+            finally:
+                if tok is not None:
+                    current_api_key.reset(tok)
 
     except WebSocketDisconnect:
         # Clean up state for this connection
@@ -966,6 +1005,7 @@ async def websocket_chat(websocket: WebSocket):
         conversation_history.pop(connection_id, None)
         conversation_ids.pop(connection_id, None)
         turn_counters.pop(connection_id, None)
+        connection_api_keys.pop(connection_id, None)
     except Exception as e:
         logger.error(
             "WebSocket error",
@@ -976,6 +1016,7 @@ async def websocket_chat(websocket: WebSocket):
         conversation_history.pop(connection_id, None)
         conversation_ids.pop(connection_id, None)
         turn_counters.pop(connection_id, None)
+        connection_api_keys.pop(connection_id, None)
 
 
 if __name__ == "__main__":
