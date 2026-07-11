@@ -6,14 +6,23 @@ They provide safe data processing capabilities without code execution.
 
 import anthropic
 from claude_agent_sdk import tool, create_sdk_mcp_server
+from .byok import current_api_key
 
 
-# Anthropic client for the analyze tool
+# Anthropic client for the analyze tool (None = ambient-env key, i.e. no BYOK active)
 _anthropic_client = None
 
 
 def _get_anthropic_client():
-    """Get or create the Anthropic client."""
+    """Get or create the Anthropic client.
+
+    If a per-request BYOK key is set on the contextvar, creates a fresh client
+    scoped to that key. Otherwise returns the cached ambient-env client so that
+    trusted / server-key callers don't allocate a new client on every call.
+    """
+    key = current_api_key.get()
+    if key:
+        return anthropic.Anthropic(api_key=key)
     global _anthropic_client
     if _anthropic_client is None:
         _anthropic_client = anthropic.Anthropic()
