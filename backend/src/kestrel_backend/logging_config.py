@@ -1,12 +1,30 @@
 """Structured JSON logging configuration with correlation ID support."""
 
 import logging
+import re
 import sys
 from contextvars import ContextVar
 from typing import Optional
 from uuid import uuid4
 
 from pythonjsonlogger.json import JsonFormatter
+
+
+_KEY_RE = re.compile(r"sk-(?:ant-)?[A-Za-z0-9_-]{16,}")
+
+
+class ApiKeyRedactionFilter(logging.Filter):
+    """Mask Anthropic and generic sk-... API keys in log records."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = _KEY_RE.sub("sk-***REDACTED***", record.msg)
+        if record.args:
+            record.args = tuple(
+                _KEY_RE.sub("sk-***REDACTED***", a) if isinstance(a, str) else a
+                for a in record.args
+            )
+        return True
 
 
 # ContextVar for correlation ID - propagates across async tasks
@@ -82,6 +100,7 @@ def configure_logging(
         )
 
     console_handler.setFormatter(formatter)
+    console_handler.addFilter(ApiKeyRedactionFilter())
     root_logger.addHandler(console_handler)
 
     # Set module-specific log levels
