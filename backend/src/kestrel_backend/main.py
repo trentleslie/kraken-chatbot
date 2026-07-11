@@ -271,6 +271,43 @@ def check_langfuse_health() -> tuple[bool, str | None]:
         return False, f"Langfuse error: {str(e)}"
 
 
+def _probe_anthropic_key(key: str) -> tuple[bool, str | None]:
+    """Probe an Anthropic API key with a minimal 1-token request.
+
+    Returns:
+        (True, None) if the key is valid and accepted by Anthropic.
+        (False, "invalid_api_key") if Anthropic rejects the key (AuthenticationError).
+        (False, "validation_failed") for any other exception (network, timeout, etc.)
+
+    The key is NEVER logged — callers must not log it either.
+    """
+    import anthropic
+    try:
+        anthropic.Anthropic(api_key=key).messages.create(
+            model="claude-3-5-haiku-latest",
+            max_tokens=1,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        return True, None
+    except anthropic.AuthenticationError:
+        return False, "invalid_api_key"
+    except Exception:
+        return False, "validation_failed"
+
+
+@app.post("/api/validate-key")
+async def validate_key(request: Request):
+    """Pre-flight endpoint: validate an Anthropic API key without storing it.
+
+    Body: {"key": "sk-..."}
+    Returns: {"valid": true} or {"valid": false, "reason": "..."}
+    The submitted key is never written to any log.
+    """
+    body = await request.json()
+    ok, reason = _probe_anthropic_key(body.get("key", ""))
+    return {"valid": ok} if ok else {"valid": False, "reason": reason}
+
+
 @app.get("/health")
 async def health_check():
     """Simple liveness check endpoint for monitoring."""
