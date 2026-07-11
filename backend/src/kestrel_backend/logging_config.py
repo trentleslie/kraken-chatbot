@@ -19,7 +19,12 @@ class ApiKeyRedactionFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.msg, str):
             record.msg = _KEY_RE.sub("sk-***REDACTED***", record.msg)
-        if record.args:
+        if isinstance(record.args, dict):
+            record.args = {
+                k: (_KEY_RE.sub("sk-***REDACTED***", v) if isinstance(v, str) else v)
+                for k, v in record.args.items()
+            }
+        elif record.args:
             record.args = tuple(
                 _KEY_RE.sub("sk-***REDACTED***", a) if isinstance(a, str) else a
                 for a in record.args
