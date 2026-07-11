@@ -227,6 +227,16 @@ def create_agent_options(
     return ClaudeAgentOptions(**kwargs)
 
 
+def _apply_byok_env(options):
+    """Inject the per-request BYOK key into options.env at the SDK boundary.
+    No-op when no key is set (classic path / internal callers keep ambient env)."""
+    key = current_api_key.get()
+    if key and options is not None:
+        existing = getattr(options, "env", None) or {}
+        options.env = {**existing, "ANTHROPIC_API_KEY": key}
+    return options
+
+
 def chunk(items: list, size: int) -> list[list]:
     """Split a list into chunks of specified size.
 
@@ -302,6 +312,7 @@ async def query_with_usage(
     )
 
     with generation_cm as generation:
+        options = _apply_byok_env(options)
         async for event in query(prompt=prompt, options=options):
             # Capture the available-tool list from the SDK init event (best-effort;
             # stays None if this SDK version/stream doesn't expose it). Issue #44.
