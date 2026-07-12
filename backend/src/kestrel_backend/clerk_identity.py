@@ -1,10 +1,17 @@
 """Resolve a user's verified primary email via the Clerk Backend API."""
 import logging
+import time
 import httpx
 from .config import get_settings
 
 logger = logging.getLogger(__name__)
-_email_cache: dict[str, str | None] = {}  # sub -> verified email or None
+
+# sub -> (verified email or None, monotonic expiry). Bounded TTL so that when a
+# user's Clerk email/verification/domain changes, their server-key eligibility is
+# re-checked within TTL seconds instead of being frozen for the process lifetime.
+# Without this, revoking a trusted email in Clerk would never take effect here.
+_CACHE_TTL_SECONDS = 600.0
+_email_cache: dict[str, tuple[str | None, float]] = {}
 
 
 async def _clerk_get(url: str, headers: dict) -> httpx.Response:
@@ -12,17 +19,22 @@ async def _clerk_get(url: str, headers: dict) -> httpx.Response:
         return await client.get(url, headers=headers)
 
 
+def _cache_put(sub: str, email: str | None) -> str | None:
+    _email_cache[sub] = (email, time.monotonic() + _CACHE_TTL_SECONDS)
+    return email
+
+
 async def get_verified_email(user_info: dict) -> str | None:
     sub = user_info.get("sub")
     if not sub:
         return None
-    if sub in _email_cache:
-        return _email_cache[sub]
+    cached = _email_cache.get(sub)
+    if cached is not None and cached[1] > time.monotonic():
+        return cached[0]
 
     secret = get_settings().clerk_secret_key
     if not secret:
-        _email_cache[sub] = None
-        return None
+        return _cache_put(sub, None)
 
     try:
         resp = await _clerk_get(
@@ -42,5 +54,4 @@ async def get_verified_email(user_info: dict) -> str | None:
            addr.get("verification", {}).get("status") == "verified":
             email = addr.get("email_address")
             break
-    _email_cache[sub] = email
-    return email
+    return _cache_put(sub, email)

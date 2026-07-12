@@ -304,7 +304,10 @@ async def validate_key(request: Request):
     The submitted key is never written to any log.
     """
     body = await request.json()
-    ok, reason = _probe_anthropic_key(body.get("key", ""))
+    # _probe_anthropic_key makes a blocking (synchronous) Anthropic HTTP call.
+    # Run it in a worker thread so a slow/timing-out probe cannot stall the event
+    # loop and the active WebSocket chat streams sharing it.
+    ok, reason = await asyncio.to_thread(_probe_anthropic_key, body.get("key", ""))
     return {"valid": ok} if ok else {"valid": False, "reason": reason}
 
 
