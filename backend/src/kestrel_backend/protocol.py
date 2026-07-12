@@ -120,6 +120,18 @@ class StructuredAnalyte(BaseModel):
     )
 
 
+class KeySourceMessage(BaseModel):
+    """Server → Client: which key the current turn ran on."""
+    type: Literal["key_source"] = "key_source"
+    source: Literal["byok", "server"]
+
+
+class SetKeyRequest(BaseModel):
+    """Client → Server: set/clear the per-connection BYOK key."""
+    type: Literal["set_key"] = "set_key"
+    key: str | None = None
+
+
 class UserMessageRequest(BaseModel):
     """User sends a chat message.
 

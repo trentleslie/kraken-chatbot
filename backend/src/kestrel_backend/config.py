@@ -49,6 +49,11 @@ class Settings(BaseModel):
     log_format: str = "text"  # "json" or "text"
     log_module_levels: dict[str, str] = {}  # Module-specific log levels
 
+    # BYOK: domains whose verified users ride the SERVER key; everyone else must BYOK.
+    byok_trusted_email_domains: list[str] = []
+    # The Anthropic key used only for the trusted server-key fallback.
+    server_anthropic_api_key: str | None = None
+
     # Analyte file-upload ingest guards (R19). These are stability guardrails independent of the
     # client UI, enforced at every entry point (WS handler + runner/intake boundary) so LangGraph
     # Studio and the assessment harnesses cannot bypass them.

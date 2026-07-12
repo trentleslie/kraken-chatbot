@@ -9,7 +9,10 @@ import { PipelineProgress } from "@/components/PipelineProgress";
 import { AnalyteUpload } from "@/components/AnalyteUpload";
 import { ColumnMappingPanel } from "@/components/ColumnMappingPanel";
 import { AnalyteReviewSummary } from "@/components/AnalyteReviewSummary";
+import { ApiKeyGate } from "@/components/ApiKeyGate";
 import { useWebSocket } from "@/hooks/useWebSocket";
+import { useApiKey } from "@/hooks/useApiKey";
+import { Badge } from "@/components/ui/badge";
 import { distinctGroups, type ParsedFile } from "@/lib/analyteParse";
 import type { ErrorMessage } from "@/types/messages";
 
@@ -19,6 +22,9 @@ type UploadStage =
   | { step: "mapping"; parsed: ParsedFile; fileName: string };
 
 export default function ChatPage() {
+  // BYOK: key lives only in React state (never persisted).
+  const apiKey = useApiKey();
+
   const {
     messages,
     connectionStatus,
@@ -36,7 +42,9 @@ export default function ChatPage() {
     setSelectedGroups,
     sendMessage,
     clearMessages,
-  } = useWebSocket();
+    needsKey,
+    keySource,
+  } = useWebSocket({ apiKey: apiKey.key });
 
   const [uploadStage, setUploadStage] = useState<UploadStage>({ step: "idle" });
   const [queryEmpty, setQueryEmpty] = useState(true);
@@ -49,6 +57,9 @@ export default function ChatPage() {
   const hasAuthError = messages.some(
     (m) => m.type === "error" && (m as ErrorMessage).code === "AUTH_ERROR"
   );
+
+  // BYOK: composer is additionally blocked when the server needs a key and none is set.
+  const keyGateBlocking = needsKey && apiKey.key === null;
 
   const resetUpload = () => {
     setUploadStage({ step: "idle" });
@@ -105,6 +116,12 @@ export default function ChatPage() {
             disabled={isAgentResponding}
           />
         )}
+        {/* BYOK: key-source badge — shown when the server has confirmed which key is in use. */}
+        {keySource !== null && (
+          <Badge variant={keySource === "byok" ? "default" : "secondary"} className="text-xs">
+            {keySource === "byok" ? "Using your key" : "Using server key"}
+          </Badge>
+        )}
       </div>
 
       <ChatArea
@@ -156,9 +173,17 @@ export default function ChatPage() {
         </div>
       )}
 
+      {/* BYOK: key gate — blocks composer when server sends NEEDS_KEY and no key is set,
+          or shows a "clear key" control when a key is already loaded for this session. */}
+      {!hasAuthError && (
+        <div className="px-4 pb-2">
+          <ApiKeyGate apiKey={apiKey} needsKey={needsKey} />
+        </div>
+      )}
+
       <ChatInput
         onSend={handleSend}
-        disabled={isAgentResponding || hasAuthError}
+        disabled={isAgentResponding || hasAuthError || keyGateBlocking}
         isConnected={isConnected}
         hasPanel={isPipeline && hasPanel}
         onQueryEmptyChange={setQueryEmpty}

@@ -4,6 +4,8 @@ import type {
   ChatMessage,
   ConnectionStatus,
   IncomingMessage,
+  KeySource,
+  SetKeyRequest,
   ToolUseMessage,
   TraceMessage,
   SessionStats,
@@ -226,7 +228,16 @@ const DEMO_PIPELINE_SCENARIO: IncomingMessage[] = [
 
 const DEMO_PIPELINE_DELAYS = [300, 400, 300, 600, 300, 400, 300, 800, 300, 600, 300, 700, 300, 500, 300, 800, 200, 100];
 
-export function useWebSocket() {
+interface UseWebSocketOptions {
+  /**
+   * The user's current BYOK API key (or null when not set).
+   * Passed as a prop so the hook can send `set_key` frames whenever it changes
+   * without reconstructing the WebSocket.
+   */
+  apiKey?: string | null;
+}
+
+export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("disconnected");
@@ -242,6 +253,15 @@ export function useWebSocket() {
   // after each successful send so a follow-up text message doesn't silently re-run the panel.
   const [structuredAnalytes, setStructuredAnalytes] = useState<StructuredAnalyte[]>([]);
   const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
+
+  // BYOK state: set true when the server returns a NEEDS_KEY error, reset when a key is accepted.
+  const [needsKey, setNeedsKey] = useState(false);
+  // The key source reported by the server at the start of each turn.
+  const [keySource, setKeySource] = useState<KeySource | null>(null);
+
+  // Keep a ref to the latest apiKey so onopen and the key-change effect can
+  // always read the current value without capturing a stale closure.
+  const apiKeyRef = useRef<string | null>(apiKey);
 
   // Clerk auth: get a fresh session token for WebSocket connections.
   // When Clerk isn't configured (local dev / no publishable key) there's no
@@ -260,12 +280,22 @@ export function useWebSocket() {
     ? useAuth()
     : { getToken: NOOP_GET_TOKEN, isSignedIn: false };
 
+  // Sync the ref every render so closures that capture it always see the latest key.
+  apiKeyRef.current = apiKey;
+
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const demoModeRef = useRef(false);
   const demoTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  /** Send a set_key frame on the currently-open socket (no-op if socket isn't open). */
+  const sendSetKey = useCallback((ws: WebSocket, key: string | null) => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    const frame: SetKeyRequest = { type: "set_key", key };
+    ws.send(JSON.stringify(frame));
+  }, []);
 
   const addTraceToSession = useCallback((trace: TraceMessage) => {
     setSessionStats((prev) => ({
@@ -360,7 +390,34 @@ export function useWebSocket() {
         break;
       }
 
+      case "key_source":
+        // Server confirms which key is powering this turn.
+        setKeySource(data.source);
+        // A key_source frame arriving means the server accepted the key — clear needsKey.
+        if (data.source === "byok") {
+          setNeedsKey(false);
+        }
+        break;
+
       case "error":
+        // NEEDS_KEY: server is telling us it can't proceed without a user-supplied key.
+        if (data.code === "NEEDS_KEY") {
+          setNeedsKey(true);
+          setIsAgentResponding(false);
+          setPipelineProgress(null);
+          // Surface the error message in the chat so the user understands what happened.
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: generateId(),
+              type: "error" as const,
+              message: data.message,
+              code: data.code,
+              timestamp: Date.now(),
+            },
+          ]);
+          break;
+        }
         setMessages((prev) => [
           ...prev,
           {
@@ -493,6 +550,9 @@ export function useWebSocket() {
         setConnectionStatus("connected");
         reconnectAttemptRef.current = 0;
         demoModeRef.current = false;
+        // BYOK: send set_key FIRST, before any user_message, so the server knows
+        // which key to use. Reads the ref to get the current value at open time.
+        sendSetKey(ws, apiKeyRef.current);
       };
 
       ws.onmessage = (event) => {
@@ -537,7 +597,7 @@ export function useWebSocket() {
       setConnectionStatus("disconnected");
       scheduleReconnect();
     }
-  }, [handleIncomingMessage, scheduleReconnect, enterDemoMode, getToken, isSignedIn]);
+  }, [handleIncomingMessage, scheduleReconnect, enterDemoMode, getToken, isSignedIn, sendSetKey]);
 
   const runDemoScenario = useCallback(
     (userContent: string) => {
@@ -672,6 +732,18 @@ export function useWebSocket() {
     };
   }, [connectWs]);
 
+  // BYOK: when the key changes mid-session, send an updated set_key frame so the
+  // server's in-memory slot is always in sync with what the user has set (or cleared).
+  useEffect(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    sendSetKey(wsRef.current, apiKey);
+    // When the user provides a key, clear needsKey optimistically (the server will
+    // confirm by sending key_source:"byok" at the start of the next turn).
+    if (apiKey !== null) {
+      setNeedsKey(false);
+    }
+  }, [apiKey, sendSetKey]);
+
   return {
     messages,
     connectionStatus,
@@ -689,5 +761,8 @@ export function useWebSocket() {
     setSelectedGroups,
     sendMessage,
     clearMessages,
+    // BYOK additions
+    needsKey,
+    keySource,
   };
 }

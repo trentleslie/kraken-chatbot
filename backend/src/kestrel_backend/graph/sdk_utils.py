@@ -14,6 +14,8 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
+from ..byok import current_api_key
+
 # Optional pipeline-wide model override. When KRAKEN_PIPELINE_MODEL is set (e.g.
 # "claude-opus-4-8"), every SDK-backed node runs on that model AND the usage label /
 # cost estimate attribute to it. Unset -> SDK default model + the Sonnet label below.
@@ -218,7 +220,21 @@ def create_agent_options(
     if effective_model:
         kwargs["model"] = effective_model
 
+    key = current_api_key.get()
+    if key:
+        kwargs["env"] = {"ANTHROPIC_API_KEY": key}
+
     return ClaudeAgentOptions(**kwargs)
+
+
+def _apply_byok_env(options):
+    """Inject the per-request BYOK key into options.env at the SDK boundary.
+    No-op when no key is set (classic path / internal callers keep ambient env)."""
+    key = current_api_key.get()
+    if key and options is not None:
+        existing = getattr(options, "env", None) or {}
+        options.env = {**existing, "ANTHROPIC_API_KEY": key}
+    return options
 
 
 def chunk(items: list, size: int) -> list[list]:
@@ -296,6 +312,7 @@ async def query_with_usage(
     )
 
     with generation_cm as generation:
+        options = _apply_byok_env(options)
         async for event in query(prompt=prompt, options=options):
             # Capture the available-tool list from the SDK init event (best-effort;
             # stays None if this SDK version/stream doesn't expose it). Issue #44.
