@@ -78,6 +78,20 @@ Confirmed against LiteLLM docs: with `forward_client_headers_to_llm_api` +
 (stripped) **and** `x-api-key: sk-ant-…` (forwarded); the proxy's Authorization header is never
 forwarded to providers.
 
+**Concrete env→header mapping (from Claude Code auth docs — the spike confirms, doesn't discover):**
+
+| Env var (per-request `ClaudeAgentOptions.env`) | HTTP header emitted | Our use |
+|---|---|---|
+| `ANTHROPIC_AUTH_TOKEN` | `Authorization: Bearer …` | **proxy-auth** = `LITELLM_MASTER_KEY` (stripped by proxy) |
+| `ANTHROPIC_API_KEY` | `x-api-key: …` | **user's key** (forwarded upstream) — *unchanged from #93* |
+
+This is a minimal delta from #93 (which already injects the user key via `ANTHROPIC_API_KEY`): we
+**add** `ANTHROPIC_AUTH_TOKEN` (proxy-auth) + `ANTHROPIC_BASE_URL` to the same per-request env.
+⚠️ **Documented caution:** setting *both* `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` is
+version-dependent — "which credential wins depends on the endpoint and tool version." The spike's
+job is to confirm the installed SDK/CLI version emits **both** headers simultaneously (not one
+clobbering the other). If it doesn't, fallback in §4.
+
 ### 2.2 Components
 
 - **`deploy/litellm.config.yaml`** — model list (Anthropic entries), `general_settings` with the two
@@ -89,7 +103,10 @@ forwarded to providers.
 - **`byok.py`** — extend the single chokepoint (see §3).
 - **3 call boundaries** — `agent.py:build_agent_options`, `graph/sdk_utils.py:query_with_usage`
   (used by `entity_resolution` + `integration` nodes), `semantic_scholar.py`'s direct query. Each
-  adds `ANTHROPIC_BASE_URL` + the header mapping to its per-request `ClaudeAgentOptions(env=…)`.
+  adds `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` to its per-request `ClaudeAgentOptions(env=…)`
+  (user key stays in `ANTHROPIC_API_KEY`), **and sets `cli_path` to the system `claude` binary** —
+  `shutil.which("claude")` — because the *bundled* SDK binary ignores `ANTHROPIC_BASE_URL` from
+  `env=…` (live issues #677/#1089). Design with `cli_path` from the start; don't wait to hit the 403.
 
 ## 3. The `byok.py` chokepoint extension
 
@@ -113,25 +130,41 @@ function, not the call sites.
 
 ## 4. Phase-0 spike (GATE — before any build)
 
-The two load-bearing unknowns are documented, live risks. Prove them on the **dev VM** first.
+The two load-bearing unknowns now have **documented expected behavior** (see §2.1 + refs), so the
+spike is a *confirmation against a starting config*, not open exploration. Run on the **dev VM**.
+
+**Start from this config (the expectation), don't rediscover it:**
+```python
+options = ClaudeAgentOptions(
+    model="claude-sonnet-4-...",
+    cli_path=shutil.which("claude"),          # system binary honors ANTHROPIC_BASE_URL (#677/#1089)
+    env={
+        "ANTHROPIC_BASE_URL":  "http://127.0.0.1:4000",
+        "ANTHROPIC_AUTH_TOKEN": LITELLM_MASTER_KEY,   # → Authorization: Bearer (proxy-auth, stripped)
+        "ANTHROPIC_API_KEY":    USER_ANTHROPIC_KEY,   # → x-api-key (forwarded upstream)
+    },
+)
+```
+litellm `general_settings`: `forward_client_headers_to_llm_api: true`,
+`forward_llm_provider_auth_headers: true`.
 
 **Spike exit criteria (all must pass):**
-1. Claude Agent SDK, pointed at the local litellm proxy via **per-request `ClaudeAgentOptions(env=…)`**
-   (NOT `os.environ`), completes a turn end-to-end against Anthropic **with tool-use + streaming
-   intact**.
-2. The **user-supplied** key (distinct from any operator key) is what reaches Anthropic — verified by
-   using a key that the operator env does *not* have, and seeing the call succeed / the wrong-key case
-   fail.
-3. The request is visible in the proxy logs.
-4. **Header mapping resolved:** determine the exact env→header behavior so the user's key lands in the
-   forwarded `x-api-key` and proxy-auth rides `Authorization`. Candidate: `ANTHROPIC_AUTH_TOKEN`
-   (→ `Authorization`) for proxy-auth vs `ANTHROPIC_API_KEY` (→ `x-api-key`) for the forwarded key —
-   **confirm empirically.**
+1. **Both headers emitted.** Confirm the installed SDK/CLI version sends `Authorization: Bearer`
+   (proxy-auth) **and** `x-api-key` (user key) *simultaneously* — the documented "both set is
+   version-dependent" caution is the #1 risk. Inspect at the proxy (log inbound headers) to prove
+   neither clobbers the other.
+2. **base_url honored via `cli_path`.** The turn reaches the proxy (no 403 / no direct-to-Anthropic
+   bypass). If it bypasses, confirm `cli_path` → system binary fixes it; capture the failing case.
+3. **User key is what bills.** Use a BYOK key the operator env does *not* have; the call succeeds via
+   the forwarded `x-api-key`, and a deliberately-wrong key fails at Anthropic (not at the proxy) —
+   proving the *user's* key reached upstream, not an operator key.
+4. **Agentic behavior intact.** Tool-use + streaming survive through the proxy; check subagents still
+   get the model (claude-code#5680) if the classic path uses them.
+5. Request visible in proxy logs; **per-request `ClaudeAgentOptions(env=…)`** only — never
+   `os.environ` (the naive tutorial's approach would break multi-session isolation).
 
-**Known failure modes to check for (from live GitHub issues):**
-- Bundled CLI binary ignoring `ANTHROPIC_BASE_URL` (claude-agent-sdk-python#677); 403 against a
-  LiteLLM proxy (claude-code-action#1089). Documented workaround: force the system `claude` binary
-  via `cli_path`.
+**Version pin:** record the exact `claude-agent-sdk`, bundled-CLI, and `litellm` versions — the
+header/base_url behavior is version-sensitive (cf. AssetOpsBench#275 "Extra inputs are not permitted").
 
 **If the spike fails:** fall back to pointing `ANTHROPIC_BASE_URL` straight at Anthropic (or add a
 thin pre-call hook) and **defer the proxy** — without sinking build cost into a dead path. Record the
@@ -167,8 +200,9 @@ outcome regardless (SOP: expensive-to-reproduce findings persist).
 
 | Risk | Mitigation |
 |---|---|
-| Bundled CLI ignores `ANTHROPIC_BASE_URL` / 403 (live issues #677, #1089) | Phase-0 spike; `cli_path` → system binary workaround. |
-| Header collision: SDK's `x-api-key` auth vs LiteLLM's proxy-auth/forwarded split | Phase-0 spike outcome #4 — confirm env→header mapping empirically. |
+| Bundled CLI ignores `ANTHROPIC_BASE_URL` / 403 (live issues #677, #1089) | **Design in `cli_path` → system binary from the start** (§2.2); spike criterion #2 confirms. |
+| Header collision: proxy-auth vs forwarded key; "both set is version-dependent" | Expected mapping known (§2.1): `ANTHROPIC_AUTH_TOKEN`=proxy-auth, `ANTHROPIC_API_KEY`=user key; spike criterion #1 confirms both headers emit. |
+| Version-sensitive header/base_url behavior | Pin `claude-agent-sdk` + bundled-CLI + `litellm` versions in the spike artifact (§4). |
 | Proxy adds a failure point on the request path | Loopback-only bind; health check; fail-closed on proxy-down. |
 | Per-session isolation broken by process-global env (naive tutorial uses `os.environ`) | Per-request `ClaudeAgentOptions(env=…)` only — the #93 discipline; never `os.environ`. |
 | Proxy earns keep mostly as future-proofing in Anthropic-only pilot | Accepted deliberately; fallback defers proxy if spike is shaky. |
@@ -180,3 +214,6 @@ outcome regardless (SOP: expensive-to-reproduce findings persist).
 - LiteLLM production / DB-less — https://docs.litellm.ai/docs/proxy/prod
 - claude-agent-sdk-python#677 — https://github.com/anthropics/claude-agent-sdk-python/issues/677
 - claude-code-action#1089 — https://github.com/anthropics/claude-code-action/issues/1089
+- Claude Code Authentication (env→header) — https://code.claude.com/docs/en/authentication
+- ANTHROPIC_API_KEY vs ANTHROPIC_AUTH_TOKEN / custom base URL — https://www.coderouter.io/blog/claude-code-401-custom-base-url-fix
+- Subagents not getting custom model — https://github.com/anthropics/claude-code/issues/5680
