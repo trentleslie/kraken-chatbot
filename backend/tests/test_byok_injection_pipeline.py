@@ -53,6 +53,52 @@ def test_pipeline_options_inject_contextvar_key(monkeypatch):
     assert captured["env"]["ANTHROPIC_API_KEY"] == "sk-node"
 
 
+def test_pipeline_options_route_through_proxy(monkeypatch):
+    """create_agent_options must carry the full proxy env + cli_path when configured,
+    and _apply_byok_env must produce the same env shape for the query_with_usage funnel."""
+    captured = {}
+
+    class FakeOptions:
+        def __init__(self, **kw):
+            captured.update(kw)
+            self.env = kw.get("env")
+            self.cli_path = kw.get("cli_path")
+
+    monkeypatch.setattr(sdk_utils, "ClaudeAgentOptions", FakeOptions)
+    monkeypatch.setattr(sdk_utils, "HAS_SDK", True)
+
+    s = byok.get_settings()
+    monkeypatch.setattr(s, "kraken_llm_base_url", "http://127.0.0.1:4000", raising=False)
+    monkeypatch.setattr(s, "litellm_master_key", "sk-proxy", raising=False)
+
+    token = byok.current_api_key.set("sk-user")
+    try:
+        opts = sdk_utils.create_agent_options(system_prompt="x")
+    finally:
+        byok.current_api_key.reset(token)
+
+    assert captured["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:4000"
+    assert captured["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-proxy"
+    assert captured["env"]["ANTHROPIC_API_KEY"] == "sk-user"
+    assert captured["cli_path"] == byok.system_cli_path()
+
+    # _apply_byok_env must produce the same env shape (the real funnel for query_with_usage)
+    class BareOptions:
+        def __init__(self):
+            self.env = None
+
+    token = byok.current_api_key.set("sk-user")
+    try:
+        bare = sdk_utils._apply_byok_env(BareOptions())
+    finally:
+        byok.current_api_key.reset(token)
+
+    assert bare.env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:4000"
+    assert bare.env["ANTHROPIC_AUTH_TOKEN"] == "sk-proxy"
+    assert bare.env["ANTHROPIC_API_KEY"] == "sk-user"
+    assert bare.cli_path == byok.system_cli_path()
+
+
 # ---------------------------------------------------------------------------
 # 2. query_with_usage() injects at the real SDK boundary (funnel for 6 nodes)
 # ---------------------------------------------------------------------------

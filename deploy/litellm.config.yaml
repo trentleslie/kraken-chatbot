@@ -1,0 +1,19 @@
+# deploy/litellm.config.yaml — DB-less Anthropic-only BYOK gateway
+model_list:
+  - model_name: claude-sonnet-4
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5-20250929
+      # No api_key here: the forwarded client x-api-key supplies it (BYOK).
+  - model_name: "*"
+    litellm_params:
+      model: "anthropic/*"
+      # Wildcard passthrough: the SDK usually omits `model` and sends its own
+      # unpinned default (e.g. claude-sonnet-4-5-...), which won't match the
+      # alias above. This routes ANY Anthropic model id through, still using
+      # the forwarded client x-api-key (BYOK).
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY      # proxy-auth (Authorization), stripped upstream
+  forward_client_headers_to_llm_api: true
+  forward_llm_provider_auth_headers: true         # 👈 forward client x-api-key to Anthropic (BYOK)
+litellm_settings:
+  drop_params: true
