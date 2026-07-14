@@ -20,7 +20,12 @@ from .agent import run_agent_turn
 from .logging_config import configure_logging, generate_correlation_id, correlation_id
 from .clerk_auth import get_current_user, validate_ws_clerk_token
 from .clerk_proxy import router as clerk_proxy_router, close_http_client
-from .byok import resolve_effective_key, current_api_key, NeedsKeyError
+from .byok import (
+    resolve_effective_key_and_provider,
+    current_api_key,
+    current_provider,
+    NeedsKeyError,
+)
 from .clerk_identity import get_verified_email
 
 # Configure logging early
@@ -1001,7 +1006,7 @@ async def websocket_chat(websocket: WebSocket):
             # regardless of server configuration.
             verified = await get_verified_email(user_info or {})
             try:
-                key, source = resolve_effective_key(
+                key, provider, source = resolve_effective_key_and_provider(
                     connection_api_keys.get(connection_id), verified)
             except NeedsKeyError:
                 await websocket.send_text(ErrorMessage(
@@ -1011,6 +1016,7 @@ async def websocket_chat(websocket: WebSocket):
                 continue
             await websocket.send_text(KeySourceMessage(source=source).model_dump_json())
             tok = current_api_key.set(key)
+            prov_tok = current_provider.set(provider)
 
             try:
                 if agent_mode == "pipeline":
@@ -1031,6 +1037,7 @@ async def websocket_chat(websocket: WebSocket):
                 await websocket.send_text(DoneMessage().model_dump_json())
             finally:
                 current_api_key.reset(tok)
+                current_provider.reset(prov_tok)
 
     except WebSocketDisconnect:
         # Clean up state for this connection
