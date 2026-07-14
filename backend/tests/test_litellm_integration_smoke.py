@@ -26,6 +26,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.mark.integration
 async def test_pipeline_turn_through_proxy(monkeypatch):
     """One real turn through byok env injection -> SDK -> local LiteLLM proxy -> Anthropic."""
     from kestrel_backend import byok

@@ -59,6 +59,17 @@ def test_build_agent_env_maps_keys(monkeypatch):
     assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:4000"
 
 
+def test_build_agent_env_raises_when_proxy_configured_without_master_key(monkeypatch):
+    """Proxy mode with a missing master key must fail fast, not silently omit
+    ANTHROPIC_AUTH_TOKEN (which would make every request 401 against the proxy)."""
+    s = byok.get_settings()
+    monkeypatch.setattr(s, "kraken_llm_base_url", "http://127.0.0.1:4000", raising=False)
+    monkeypatch.setattr(s, "litellm_master_key", "", raising=False)
+    byok.current_api_key.set("sk-user")
+    with pytest.raises(RuntimeError):
+        byok.build_agent_env()
+
+
 def test_build_agent_env_direct_mode_when_no_base_url(monkeypatch):
     s = byok.get_settings()
     monkeypatch.setattr(s, "kraken_llm_base_url", "", raising=False)

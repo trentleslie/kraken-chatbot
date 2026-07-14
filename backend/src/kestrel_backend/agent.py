@@ -27,7 +27,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import McpStdioServerConfig
 from .config import get_settings
 from .bash_sandbox import bash_security_hook
-from .byok import build_agent_env, system_cli_path
+from .byok import agent_cli_path, build_agent_env
 
 
 # Langfuse client (lazy initialized)
@@ -380,7 +380,7 @@ def build_agent_options() -> ClaudeAgentOptions:
     env = build_agent_env()
     if env:
         options_kwargs["env"] = env
-    cli = system_cli_path()
+    cli = agent_cli_path()
     if cli:
         options_kwargs["cli_path"] = cli
     return ClaudeAgentOptions(**options_kwargs)

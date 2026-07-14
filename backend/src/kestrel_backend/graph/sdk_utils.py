@@ -14,7 +14,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
-from ..byok import build_agent_env, system_cli_path
+from ..byok import agent_cli_path, build_agent_env
 
 # Optional pipeline-wide model override. When KRAKEN_PIPELINE_MODEL is set (e.g.
 # "claude-opus-4-8"), every SDK-backed node runs on that model AND the usage label /
@@ -223,7 +223,7 @@ def create_agent_options(
     env = build_agent_env()
     if env:
         kwargs["env"] = env
-    cli = system_cli_path()
+    cli = agent_cli_path()
     if cli:
         kwargs["cli_path"] = cli
 
@@ -236,7 +236,7 @@ def _apply_byok_env(options):
     env = build_agent_env()
     if env and options is not None:
         options.env = {**(getattr(options, "env", None) or {}), **env}
-        cli = system_cli_path()
+        cli = agent_cli_path()
         if cli and not getattr(options, "cli_path", None):
             options.cli_path = cli
     return options

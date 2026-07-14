@@ -49,8 +49,27 @@ def resolve_effective_key_and_provider(
 
 
 def system_cli_path() -> str | None:
-    """System `claude` binary — the bundled SDK binary ignores ANTHROPIC_BASE_URL (#677/#1089)."""
+    """System `claude` binary — the bundled SDK binary ignores ANTHROPIC_BASE_URL (#677/#1089).
+
+    Used directly by the spike driver. SDK call sites should use `agent_cli_path()` instead,
+    which only applies this override in proxy mode (keeping the legacy no-proxy path
+    equivalent to the merged #93 behavior).
+    """
     return shutil.which("claude")
+
+
+def agent_cli_path() -> str | None:
+    """cli_path override for SDK call sites — proxy mode only.
+
+    The system `claude` binary override exists solely to make ANTHROPIC_BASE_URL work
+    (#677/#1089). In the legacy no-proxy path there's no base URL to honor, so the bundled
+    SDK binary is fine and we return None to keep that path equivalent to the merged #93
+    behavior.
+    """
+    s = get_settings()
+    if not (s.kraken_llm_base_url or ""):
+        return None
+    return system_cli_path()
 
 
 def build_agent_env() -> dict[str, str]:
@@ -61,16 +80,22 @@ def build_agent_env() -> dict[str, str]:
     via ANTHROPIC_API_KEY, while the proxy-auth key rides ANTHROPIC_AUTH_TOKEN (Authorization:
     Bearer) and is stripped by the proxy before forwarding. Otherwise falls back to the legacy
     direct-to-Anthropic shape (backward-compatible with the merged #93 behavior).
+
+    Raises RuntimeError if proxy mode is configured (base_url set) but the master key is
+    missing — silently omitting ANTHROPIC_AUTH_TOKEN would make every request 401 against
+    the proxy, which is worse than failing fast at startup/request time.
     """
     key = current_api_key.get()
     if not key:
         return {}
     s = get_settings()
-    base_url = getattr(s, "kraken_llm_base_url", "") or ""
+    base_url = s.kraken_llm_base_url or ""
     if not base_url:
         return {"ANTHROPIC_API_KEY": key}
-    env = {"ANTHROPIC_API_KEY": key, "ANTHROPIC_BASE_URL": base_url}
-    master = getattr(s, "litellm_master_key", "") or ""
-    if master:
-        env["ANTHROPIC_AUTH_TOKEN"] = master
-    return env
+    master = s.litellm_master_key or ""
+    if not master:
+        raise RuntimeError(
+            "KRAKEN_LLM_BASE_URL is set but LITELLM_MASTER_KEY is missing — proxy mode "
+            "requires the proxy-auth master key."
+        )
+    return {"ANTHROPIC_API_KEY": key, "ANTHROPIC_BASE_URL": base_url, "ANTHROPIC_AUTH_TOKEN": master}
