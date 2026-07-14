@@ -80,3 +80,27 @@ def test_build_agent_env_direct_mode_when_no_base_url(monkeypatch):
 
 def test_system_cli_path_is_string_or_none():
     assert byok.system_cli_path() in (None, shutil.which("claude"))
+
+
+def test_agent_cli_path_raises_when_proxy_configured_and_cli_missing(monkeypatch):
+    """Proxy mode with no system `claude` binary must fail fast — the bundled SDK binary
+    ignores ANTHROPIC_BASE_URL and would silently bypass the proxy straight to Anthropic."""
+    s = byok.get_settings()
+    monkeypatch.setattr(s, "kraken_llm_base_url", "http://127.0.0.1:4000", raising=False)
+    monkeypatch.setattr(byok, "system_cli_path", lambda: None)
+    with pytest.raises(RuntimeError):
+        byok.agent_cli_path()
+
+
+def test_agent_cli_path_returns_path_when_proxy_configured_and_cli_present(monkeypatch):
+    s = byok.get_settings()
+    monkeypatch.setattr(s, "kraken_llm_base_url", "http://127.0.0.1:4000", raising=False)
+    monkeypatch.setattr(byok, "system_cli_path", lambda: "/usr/local/bin/claude")
+    assert byok.agent_cli_path() == "/usr/local/bin/claude"
+
+
+def test_agent_cli_path_returns_none_when_no_proxy_even_if_cli_missing(monkeypatch):
+    s = byok.get_settings()
+    monkeypatch.setattr(s, "kraken_llm_base_url", "", raising=False)
+    monkeypatch.setattr(byok, "system_cli_path", lambda: None)
+    assert byok.agent_cli_path() is None

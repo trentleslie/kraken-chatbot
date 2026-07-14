@@ -64,12 +64,19 @@ def agent_cli_path() -> str | None:
     The system `claude` binary override exists solely to make ANTHROPIC_BASE_URL work
     (#677/#1089). In the legacy no-proxy path there's no base URL to honor, so the bundled
     SDK binary is fine and we return None to keep that path equivalent to the merged #93
-    behavior.
+    behavior. In proxy mode, raises if the system `claude` binary is unavailable, since the
+    bundled SDK binary ignores ANTHROPIC_BASE_URL and would silently bypass the proxy.
     """
     s = get_settings()
     if not (s.kraken_llm_base_url or ""):
         return None
-    return system_cli_path()
+    cli = system_cli_path()
+    if not cli:
+        raise RuntimeError(
+            "KRAKEN_LLM_BASE_URL is set but the system `claude` binary is unavailable on PATH; "
+            "the bundled SDK binary ignores ANTHROPIC_BASE_URL and would bypass the proxy."
+        )
+    return cli
 
 
 def build_agent_env() -> dict[str, str]:

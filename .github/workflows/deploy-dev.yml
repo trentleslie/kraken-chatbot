@@ -76,9 +76,11 @@ jobs:
           echo "Deployed commit: \$(git rev-parse HEAD)"
 
           # Install/start the LiteLLM proxy (DB-less BYOK gateway) before the backend
+          [ -x /home/ubuntu/.local/bin/litellm ] || /home/ubuntu/.local/bin/uv tool install 'litellm[proxy]==1.92.0'
           sudo cp deploy/dev/litellm-proxy-dev.service /etc/systemd/system/
           sudo systemctl daemon-reload
-          sudo systemctl enable --now litellm-proxy-dev
+          sudo systemctl enable litellm-proxy-dev
+          sudo systemctl restart litellm-proxy-dev
           proxy_attempt=1
           proxy_max_attempts=10
           until curl -sf http://127.0.0.1:4001/health/liveliness > /dev/null 2>&1; do
@@ -97,6 +99,10 @@ jobs:
 
           # Ensure backend/.env points at the local LiteLLM dev proxy (idempotent)
           grep -q '^KRAKEN_LLM_BASE_URL=' "\$DEPLOY_DIR/backend/.env" || echo 'KRAKEN_LLM_BASE_URL=http://127.0.0.1:4001' >> "\$DEPLOY_DIR/backend/.env"
+
+          # Propagate the proxy's master key into backend/.env (idempotent) — the backend
+          # fails fast in proxy mode if LITELLM_MASTER_KEY is missing
+          grep -q '^LITELLM_MASTER_KEY=' "\$DEPLOY_DIR/backend/.env" || grep '^LITELLM_MASTER_KEY=' "\$DEPLOY_DIR/deploy/litellm.env" >> "\$DEPLOY_DIR/backend/.env"
 
           # Rebuild frontend — export VITE_* vars from backend .env for the build
           # (Clerk publishable key, allowed domains, etc. are set in the server's .env)
