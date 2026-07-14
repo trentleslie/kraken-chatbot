@@ -53,6 +53,11 @@ class Settings(BaseModel):
     byok_trusted_email_domains: list[str] = []
     # The Anthropic key used only for the trusted server-key fallback.
     server_anthropic_api_key: str | None = None
+    # LiteLLM proxy for per-session BYOK (see byok.py:build_agent_env). Empty = no proxy,
+    # direct-to-Anthropic (legacy) behavior.
+    kraken_llm_base_url: str = ""
+    # Proxy-auth key (Authorization: Bearer), stripped by the proxy before forwarding upstream.
+    litellm_master_key: str = ""
 
     # Analyte file-upload ingest guards (R19). These are stability guardrails independent of the
     # client UI, enforced at every entry point (WS handler + runner/intake boundary) so LangGraph
@@ -162,6 +167,8 @@ def get_settings() -> Settings:
         analyte_panel_row_cap=int(os.getenv("ANALYTE_PANEL_ROW_CAP", "10000")),
         max_ws_message_bytes=int(os.getenv("MAX_WS_MESSAGE_BYTES", "5000000")),
         analyte_field_max_len=int(os.getenv("ANALYTE_FIELD_MAX_LEN", "512")),
+        kraken_llm_base_url=os.getenv("KRAKEN_LLM_BASE_URL", ""),
+        litellm_master_key=os.getenv("LITELLM_MASTER_KEY", ""),
     )
 
 
