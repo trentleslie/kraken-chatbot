@@ -79,8 +79,24 @@ jobs:
           sudo cp deploy/dev/litellm-proxy-dev.service /etc/systemd/system/
           sudo systemctl daemon-reload
           sudo systemctl enable --now litellm-proxy-dev
-          until curl -sf http://127.0.0.1:4001/health/liveliness > /dev/null 2>&1; do sleep 1; done
+          proxy_attempt=1
+          proxy_max_attempts=10
+          until curl -sf http://127.0.0.1:4001/health/liveliness > /dev/null 2>&1; do
+            if [ \$proxy_attempt -ge \$proxy_max_attempts ]; then
+              echo "LiteLLM dev proxy health check failed after \$proxy_max_attempts attempts"
+              echo "Checking endpoint status..."
+              curl -v http://127.0.0.1:4001/health/liveliness || true
+              echo "ROLLBACK INFO: previous commit was \$PREV_SHA (branch: \$PREV_BRANCH)"
+              exit 1
+            fi
+            echo "LiteLLM dev proxy health check attempt \$proxy_attempt failed, retrying in 3s..."
+            proxy_attempt=\$((proxy_attempt + 1))
+            sleep 3
+          done
           echo "LiteLLM dev proxy is up"
+
+          # Ensure backend/.env points at the local LiteLLM dev proxy (idempotent)
+          grep -q '^KRAKEN_LLM_BASE_URL=' "\$DEPLOY_DIR/backend/.env" || echo 'KRAKEN_LLM_BASE_URL=http://127.0.0.1:4001' >> "\$DEPLOY_DIR/backend/.env"
 
           # Rebuild frontend — export VITE_* vars from backend .env for the build
           # (Clerk publishable key, allowed domains, etc. are set in the server's .env)
