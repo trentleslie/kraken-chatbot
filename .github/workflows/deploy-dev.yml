@@ -75,6 +75,13 @@ jobs:
           git reset --hard "origin/\$BRANCH"
           echo "Deployed commit: \$(git rev-parse HEAD)"
 
+          # Install/start the LiteLLM proxy (DB-less BYOK gateway) before the backend
+          sudo cp deploy/dev/litellm-proxy-dev.service /etc/systemd/system/
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now litellm-proxy-dev
+          until curl -sf http://127.0.0.1:4001/health/liveliness > /dev/null 2>&1; do sleep 1; done
+          echo "LiteLLM dev proxy is up"
+
           # Rebuild frontend — export VITE_* vars from backend .env for the build
           # (Clerk publishable key, allowed domains, etc. are set in the server's .env)
           npm ci
