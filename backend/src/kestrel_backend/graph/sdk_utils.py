@@ -14,7 +14,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
-from ..byok import current_api_key
+from ..byok import build_agent_env, system_cli_path
 
 # Optional pipeline-wide model override. When KRAKEN_PIPELINE_MODEL is set (e.g.
 # "claude-opus-4-8"), every SDK-backed node runs on that model AND the usage label /
@@ -220,20 +220,25 @@ def create_agent_options(
     if effective_model:
         kwargs["model"] = effective_model
 
-    key = current_api_key.get()
-    if key:
-        kwargs["env"] = {"ANTHROPIC_API_KEY": key}
+    env = build_agent_env()
+    if env:
+        kwargs["env"] = env
+    cli = system_cli_path()
+    if cli:
+        kwargs["cli_path"] = cli
 
     return ClaudeAgentOptions(**kwargs)
 
 
 def _apply_byok_env(options):
-    """Inject the per-request BYOK key into options.env at the SDK boundary.
+    """Inject the per-request BYOK env (and cli_path) into options at the SDK boundary.
     No-op when no key is set (classic path / internal callers keep ambient env)."""
-    key = current_api_key.get()
-    if key and options is not None:
-        existing = getattr(options, "env", None) or {}
-        options.env = {**existing, "ANTHROPIC_API_KEY": key}
+    env = build_agent_env()
+    if env and options is not None:
+        options.env = {**(getattr(options, "env", None) or {}), **env}
+        cli = system_cli_path()
+        if cli and not getattr(options, "cli_path", None):
+            options.cli_path = cli
     return options
 
 

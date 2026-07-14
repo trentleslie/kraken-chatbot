@@ -27,7 +27,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import McpStdioServerConfig
 from .config import get_settings
 from .bash_sandbox import bash_security_hook
-from .byok import current_api_key
+from .byok import build_agent_env, system_cli_path
 
 
 # Langfuse client (lazy initialized)
@@ -375,11 +375,14 @@ def build_agent_options() -> ClaudeAgentOptions:
     settings = get_settings()
     if settings.model:
         options_kwargs["model"] = settings.model
-    key = current_api_key.get()
-    if key:
-        # env is MERGED over the inherited process environment by the SDK, so we
-        # only override the credential and leave PATH/etc. intact.
-        options_kwargs["env"] = {"ANTHROPIC_API_KEY": key}
+    # env is MERGED over the inherited process environment by the SDK, so we
+    # only override the credential(s) and leave PATH/etc. intact.
+    env = build_agent_env()
+    if env:
+        options_kwargs["env"] = env
+    cli = system_cli_path()
+    if cli:
+        options_kwargs["cli_path"] = cli
     return ClaudeAgentOptions(**options_kwargs)
 
 
