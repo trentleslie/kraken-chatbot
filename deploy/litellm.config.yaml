@@ -2,7 +2,7 @@
 model_list:
   - model_name: claude-sonnet-4
     litellm_params:
-      model: anthropic/claude-sonnet-4-20250514
+      model: anthropic/claude-sonnet-4-5-20250929
       # No api_key here: the forwarded client x-api-key supplies it (BYOK).
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY      # proxy-auth (Authorization), stripped upstream
