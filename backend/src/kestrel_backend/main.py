@@ -558,6 +558,7 @@ async def handle_pipeline_mode(
     biomapper_env: str | None = None,
     structured_analytes: list[dict] | None = None,
     selected_groups: list[str] | None = None,
+    module_directions: list[dict] | None = None,
 ) -> None:
     """
     Handle discovery pipeline mode - LangGraph multi-node workflow.
@@ -640,6 +641,7 @@ async def handle_pipeline_mode(
             biomapper_env=biomapper_env,
             structured_analytes=structured_analytes,
             selected_groups=selected_groups,
+            module_directions=module_directions,
         ):
             if event["type"] != "node_update":
                 continue
@@ -916,6 +918,9 @@ async def websocket_chat(websocket: WebSocket):
             # client's group selection arrive alongside the free-text query.
             structured_analytes_raw = data.get("structured_analytes")
             selected_groups = data.get("selected_groups")
+            # Optional per-module eigengene→outcome direction rows (Axis A). kME/kIM ride each
+            # structured_analytes row; only the separately-exported direction table needs a field.
+            module_directions = data.get("module_directions")
 
             # Relaxed empty-content guard (R17): accept a file-only submit (panel present, no typed
             # query); reject only when BOTH are empty.
@@ -939,8 +944,13 @@ async def websocket_chat(websocket: WebSocket):
                         ErrorMessage(message="selected_groups must be a list").model_dump_json()
                     )
                     continue
+                if module_directions is not None and not isinstance(module_directions, list):
+                    await websocket.send_text(
+                        ErrorMessage(message="module_directions must be a list").model_dump_json()
+                    )
+                    continue
                 normalized = validate_and_normalize(
-                    structured_analytes_raw, selected_groups, _settings
+                    structured_analytes_raw, selected_groups, _settings, module_directions
                 )
                 if normalized.errors:
                     await websocket.send_text(
@@ -1027,6 +1037,7 @@ async def websocket_chat(websocket: WebSocket):
                         biomapper_env,
                         structured_analytes=normalized_analytes,
                         selected_groups=selected_groups,
+                        module_directions=module_directions,
                     )
                 else:
                     await handle_classic_mode(websocket, content, connection_id)
