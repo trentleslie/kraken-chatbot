@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseDelimitedText,
   suggestMapping,
+  suggestDirectionMapping,
   buildAnalytes,
   buildModuleDirections,
   distinctGroups,
@@ -257,6 +258,34 @@ describe("buildAnalytes — kME/kIM (Axis A)", () => {
       group: "module",
     });
     expect(res.analytes[0]).toEqual({ name: "glucose", group: "Brown" });
+  });
+});
+
+describe("suggestDirectionMapping (Axis A)", () => {
+  it("auto-maps the pinned brown_module_directions.csv headers", () => {
+    expect(
+      suggestDirectionMapping(["module", "eigengene_trait_correlation", "trait_label"]),
+    ).toEqual({
+      group: "module",
+      correlation: "eigengene_trait_correlation",
+      trait: "trait_label",
+    });
+  });
+
+  it("maps common shorthand headers (cor / trait / cluster)", () => {
+    expect(suggestDirectionMapping(["cluster", "cor", "trait"])).toEqual({
+      group: "cluster",
+      correlation: "cor",
+      trait: "trait",
+    });
+  });
+
+  it("leaves targets unset when a column is missing", () => {
+    // No correlation column present → correlation stays undefined (panel keeps Confirm disabled).
+    expect(suggestDirectionMapping(["module", "trait"])).toEqual({
+      group: "module",
+      trait: "trait",
+    });
   });
 });
 

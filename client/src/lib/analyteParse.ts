@@ -214,6 +214,38 @@ export function suggestMapping(headers: string[]): ColumnMapping {
   return mapping;
 }
 
+// Unambiguous header patterns for the (separately-exported) ME-trait direction table. Unlike the
+// analyte panel — where a bare `correlation` is ambiguous against kME — in the direction table a
+// `correlation`/`cor` column IS the eigengene→trait correlation, so it is safe to auto-map here.
+const DIRECTION_GROUP_PATTERNS = [/^module$/i, /^group$/i, /^category$/i, /^cluster$/i];
+const DIRECTION_CORR_PATTERNS = [
+  /^eigengene[_ ]?trait[_ ]?correlation$/i,
+  /^me[_ ]?trait[_ ]?cor(relation)?$/i,
+  /^me[_ ]?cor(relation)?$/i,
+  /^correlation$/i,
+  /^cor$/i,
+];
+const DIRECTION_TRAIT_PATTERNS = [/^trait[_ ]?label$/i, /^trait$/i, /^outcome$/i, /^phenotype$/i];
+
+/**
+ * Auto-suggest a direction-table mapping (group / correlation / trait) from header names,
+ * restricted to unambiguous matches (mirrors {@link suggestMapping}). First matching header wins
+ * per target; ambiguous headers are left unset for the user to assign.
+ */
+export function suggestDirectionMapping(headers: string[]): DirectionMapping {
+  const mapping: DirectionMapping = {};
+  for (const header of headers) {
+    if (!mapping.group && DIRECTION_GROUP_PATTERNS.some((p) => p.test(header))) {
+      mapping.group = header;
+    } else if (!mapping.correlation && DIRECTION_CORR_PATTERNS.some((p) => p.test(header))) {
+      mapping.correlation = header;
+    } else if (!mapping.trait && DIRECTION_TRAIT_PATTERNS.some((p) => p.test(header))) {
+      mapping.trait = header;
+    }
+  }
+  return mapping;
+}
+
 function normalizeType(raw: string | undefined): AnalyteType | undefined {
   if (!raw) return undefined;
   const lower = raw.trim().toLowerCase();

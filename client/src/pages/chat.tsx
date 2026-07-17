@@ -8,6 +8,7 @@ import { BiomapperEnvToggle } from "@/components/BiomapperEnvToggle";
 import { PipelineProgress } from "@/components/PipelineProgress";
 import { AnalyteUpload } from "@/components/AnalyteUpload";
 import { ColumnMappingPanel } from "@/components/ColumnMappingPanel";
+import { DirectionMappingPanel } from "@/components/DirectionMappingPanel";
 import { AnalyteReviewSummary } from "@/components/AnalyteReviewSummary";
 import { ApiKeyGate } from "@/components/ApiKeyGate";
 import { useWebSocket } from "@/hooks/useWebSocket";
@@ -17,9 +18,12 @@ import { distinctGroups, type ParsedFile } from "@/lib/analyteParse";
 import type { ErrorMessage } from "@/types/messages";
 
 // Upload flow stages within the collapsible composer slot (pipeline mode only).
+// `directions` maps the (separately-exported) ME-trait direction table after the analyte panel is
+// staged, so per-module directions reach the backend and the sign-inversion metric is computable.
 type UploadStage =
   | { step: "idle" }
-  | { step: "mapping"; parsed: ParsedFile; fileName: string };
+  | { step: "mapping"; parsed: ParsedFile; fileName: string }
+  | { step: "directions"; parsed: ParsedFile; fileName: string };
 
 export default function ChatPage() {
   // BYOK: key lives only in React state (never persisted).
@@ -40,6 +44,8 @@ export default function ChatPage() {
     setStructuredAnalytes,
     selectedGroups,
     setSelectedGroups,
+    moduleDirections,
+    setModuleDirections,
     sendMessage,
     clearMessages,
     needsKey,
@@ -65,6 +71,7 @@ export default function ChatPage() {
     setUploadStage({ step: "idle" });
     setStructuredAnalytes([]);
     setSelectedGroups([]);
+    setModuleDirections([]);
   };
 
   const handleSelectStarter = (query: string) => {
@@ -161,14 +168,45 @@ export default function ChatPage() {
               }}
             />
           )}
-          {showReview && (
-            <AnalyteReviewSummary
-              analytes={structuredAnalytes}
-              selectedGroups={selectedGroups}
-              onSelectedGroupsChange={setSelectedGroups}
-              onRemove={resetUpload}
-              queryEmpty={queryEmpty}
+          {uploadStage.step === "directions" && (
+            <DirectionMappingPanel
+              parsed={uploadStage.parsed}
+              fileName={uploadStage.fileName}
+              onCancel={() => setUploadStage({ step: "idle" })}
+              onConfirm={(directions) => {
+                // Wire the parsed ME-trait table into the hook so `module_directions` actually
+                // travels on the WS payload — without this the backend receives no directions and
+                // the module-spine sign-inversion metric is uncomputable from the client path.
+                setModuleDirections(directions);
+                setUploadStage({ step: "idle" });
+              }}
             />
+          )}
+          {showReview && (
+            <div className="space-y-2">
+              <AnalyteReviewSummary
+                analytes={structuredAnalytes}
+                selectedGroups={selectedGroups}
+                onSelectedGroupsChange={setSelectedGroups}
+                onRemove={resetUpload}
+                queryEmpty={queryEmpty}
+                directionCount={moduleDirections.length}
+                onRemoveDirections={() => setModuleDirections([])}
+              />
+              {/* Optional second upload: the (separately-exported) per-module ME-trait direction
+                  table. Attaching it lets the backend compute the sign-inversion metric. */}
+              {moduleDirections.length === 0 && (
+                <AnalyteUpload
+                  testId="direction"
+                  ariaLabel="Upload module-direction table: drop a CSV or TSV file, or press Enter to browse"
+                  idlePrimary="Optional: drop the ME-trait direction table (CSV/TSV), or browse"
+                  idleSecondary="One row per module — map the module, correlation, and trait columns after upload"
+                  onParsed={(parsed, fileName) =>
+                    setUploadStage({ step: "directions", parsed, fileName })
+                  }
+                />
+              )}
+            </div>
           )}
         </div>
       )}

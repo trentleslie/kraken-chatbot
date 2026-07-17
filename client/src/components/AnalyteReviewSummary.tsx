@@ -20,6 +20,10 @@ interface AnalyteReviewSummaryProps {
   onRemove: () => void;
   /** True when the composer textarea is empty (drives the file-only degradation warning). */
   queryEmpty: boolean;
+  /** Count of per-module directions attached (Axis A); 0 when none supplied. */
+  directionCount?: number;
+  /** Clears the attached module directions (shown only when some are attached). */
+  onRemoveDirections?: () => void;
 }
 
 /**
@@ -34,6 +38,8 @@ export function AnalyteReviewSummary({
   onSelectedGroupsChange,
   onRemove,
   queryEmpty,
+  directionCount = 0,
+  onRemoveDirections,
 }: AnalyteReviewSummaryProps) {
   const groups = useMemo(() => distinctGroups(analytes), [analytes]);
   const hasGroups = groups.length > 0;
@@ -106,6 +112,29 @@ export function AnalyteReviewSummary({
           Large panel ({selectedCount} analytes) — Triage classification may degrade and the run may
           take longer. You can still proceed.
         </p>
+      )}
+
+      {directionCount > 0 && (
+        <div
+          className="flex items-center justify-between rounded bg-muted/40 px-2 py-1"
+          data-testid="direction-attached"
+        >
+          <span className="text-xs text-muted-foreground">
+            {directionCount} module {directionCount === 1 ? "direction" : "directions"} attached —
+            enables the sign-inversion metric.
+          </span>
+          {onRemoveDirections && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={onRemoveDirections}
+              data-testid="direction-remove"
+            >
+              Remove
+            </Button>
+          )}
+        </div>
       )}
 
       {queryEmpty && (

@@ -5,6 +5,14 @@ import { parseFile, type ParsedFile } from "@/lib/analyteParse";
 interface AnalyteUploadProps {
   /** Called with the parsed file on a successful parse. */
   onParsed: (parsed: ParsedFile, fileName: string) => void;
+  /** Idle-state primary prompt (defaults to the analyte-panel copy). */
+  idlePrimary?: string;
+  /** Idle-state secondary hint (defaults to the analyte-panel copy). */
+  idleSecondary?: string;
+  /** Accessible label for the dropzone (defaults to the analyte-panel copy). */
+  ariaLabel?: string;
+  /** data-testid for the dropzone / input (defaults to the analyte-panel ids). */
+  testId?: string;
 }
 
 type UploadState =
@@ -18,7 +26,13 @@ type UploadState =
  * Parsing is client-side (analyteParse); the raw file never reaches the backend. Pinned states:
  * idle / drag-over / parsing / error. Accessible: role="button", tabIndex, Enter/Space opens picker.
  */
-export function AnalyteUpload({ onParsed }: AnalyteUploadProps) {
+export function AnalyteUpload({
+  onParsed,
+  idlePrimary = "Drop a CSV or TSV analyte file, or browse",
+  idleSecondary = "Map the analyte, group, and type columns after upload",
+  ariaLabel = "Upload analyte file: drop a CSV or TSV file, or press Enter to browse",
+  testId = "analyte",
+}: AnalyteUploadProps) {
   const [state, setState] = useState<UploadState>({ status: "idle" });
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -81,7 +95,7 @@ export function AnalyteUpload({ onParsed }: AnalyteUploadProps) {
         type="file"
         accept=".csv,.tsv,.tab"
         className="hidden"
-        data-testid="analyte-file-input"
+        data-testid={`${testId}-file-input`}
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (file) void handleFile(file);
@@ -92,14 +106,14 @@ export function AnalyteUpload({ onParsed }: AnalyteUploadProps) {
       <div
         role="button"
         tabIndex={0}
-        aria-label="Upload analyte file: drop a CSV or TSV file, or press Enter to browse"
+        aria-label={ariaLabel}
         aria-disabled={isParsing}
         onClick={openPicker}
         onKeyDown={onKeyDown}
         onDrop={onDrop}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
-        data-testid="analyte-dropzone"
+        data-testid={`${testId}-dropzone`}
         className={[
           "flex flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed",
           "px-4 py-6 text-sm cursor-pointer transition-colors focus:outline-none focus:ring-2 focus:ring-ring",
@@ -127,10 +141,8 @@ export function AnalyteUpload({ onParsed }: AnalyteUploadProps) {
         ) : (
           <>
             <Upload className="h-5 w-5 text-muted-foreground" />
-            <span className="text-muted-foreground">Drop a CSV or TSV analyte file, or browse</span>
-            <span className="text-xs text-muted-foreground">
-              Map the analyte, group, and type columns after upload
-            </span>
+            <span className="text-muted-foreground">{idlePrimary}</span>
+            <span className="text-xs text-muted-foreground">{idleSecondary}</span>
           </>
         )}
       </div>
