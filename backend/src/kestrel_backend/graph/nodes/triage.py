@@ -427,20 +427,45 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     # traffic accrues, so the well-characterized latency cost of ground-before-synthesis becomes an
     # evidenced choice. `produces_speculative` is the routing-relevant predicate (sparse OR cold_start
     # entities are what generate cold-start hypotheses). One structured line per run; no new table.
-    logger.info(
-        "triage_outcome %s",
-        json.dumps({
-            "event": "triage_outcome",
-            "well_characterized": len(well_characterized),
-            "moderate": len(moderate),
-            "sparse": len(sparse),
-            "cold_start": len(cold_start),
-            "tier1_ok": tier1_success,
-            "tier1_failed": len(valid_entities) - tier1_success,
-            "produces_speculative": bool(sparse or cold_start),
-            "duration_seconds": round(duration, 2),
-        }),
-    )
+    outcome: dict[str, Any] = {
+        "event": "triage_outcome",
+        "well_characterized": len(well_characterized),
+        "moderate": len(moderate),
+        "sparse": len(sparse),
+        "cold_start": len(cold_start),
+        "tier1_ok": tier1_success,
+        "tier1_failed": len(valid_entities) - tier1_success,
+        "produces_speculative": bool(sparse or cold_start),
+        "duration_seconds": round(duration, 2),
+    }
+    # Axis B measurement hooks (R10-R11) — added ONLY when the centrality pass ran, so the flag-off
+    # line is unchanged. They quantify how the |kME| hub notion diverges from the edge-degree hub
+    # notion (finding #2: KG degree = study bias) and the routing blast radius. `expected_hub_n` vs
+    # `kme_hub_n` is the join-integrity check: a silent name-join failure collapses `kme_hub_n` toward
+    # 0 while `expected_hub_n` stays positive, so the shift-toward-0 is not mistaken for "few hubs".
+    if centrality_active:
+        edge_degree_hub_set = {s.curie for s in final_scores
+                               if s.edge_count >= THRESHOLD_WELL_CHARACTERIZED}
+        kme_hub_set = {s.curie for s in final_scores if s.is_intramodular_hub}
+        union = edge_degree_hub_set | kme_hub_set
+        intersection = edge_degree_hub_set & kme_hub_set
+        outcome.update({
+            "hub_set_jaccard": round(len(intersection) / len(union), 4) if union else 0.0,
+            "edge_degree_hub_n": len(edge_degree_hub_set),                # edge_count >= 200
+            "edge_degree_hub_n_1000": sum(1 for s in final_scores if s.edge_count > 1000),
+            "kme_hub_n": len(kme_hub_set),
+            "hub_set_only_edge_degree_n": len(edge_degree_hub_set - kme_hub_set),
+            "hub_set_only_kme_n": len(kme_hub_set - edge_degree_hub_set),
+            # entities edge-count would have sent to direct_kg (well_characterized/moderate) but are
+            # now hub → cold_start
+            "routing_shift_direct_to_cold": sum(
+                1 for s in final_scores if s.is_intramodular_hub
+                and s.classification in ("well_characterized", "moderate")),
+            # 0 under pure inversion; emitted for auditing (no mechanism moves cold→direct)
+            "routing_shift_cold_to_direct": 0,
+            "expected_hub_n": expected_hub_count(module_spine, cfg),
+        })
+    logger.info("triage_outcome %s", json.dumps(outcome))
 
     result = {
         "novelty_scores": final_scores,
