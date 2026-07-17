@@ -210,3 +210,62 @@ class TestRunPrepass:
         state = {"raw_entities": ["TNFRSF1A"], "entity_type_hints": {"TNFRSF1A": "gene"}, "entity_aliases": {}}
         with pytest.raises(BioMapperAuthError):
             await run(state)
+
+    async def test_flag_on_rank_collapse_abstains_not_accept_genus(self, monkeypatch):
+        """Greptile P1-1: a biomapper hit whose resolved_name collapses a species→genus must pass
+        through the SAME Tier-1 rank guard and ABSTAIN (curie=None, method="failed",
+        rank_collapsed=True) — not feed the coarse genus CURIE straight into triage via the
+        pre-resolver, defeating the Tier-1/2 rank guards (finding #6)."""
+        _enable_biomapper(monkeypatch)
+        monkeypatch.setattr(entity_resolution, "HAS_SDK", False)
+
+        async def fake_bm(name, hint, base_url=None):
+            # Biomapper resolves the raw SPECIES to the GENUS name (the rank collapse).
+            return {"curie": "NCBITaxon:1263", "tier": "high", "confidence": 2.5,
+                    "resolved_name": "Ruminococcus", "category": "biolink:OrganismTaxon", "xrefs": {}}
+        monkeypatch.setattr(entity_resolution, "biomapper_resolve", fake_bm)
+
+        async def fake_reconcile(r, hint):
+            # Reconciliation confirms the coarse genus CURIE in Kestrel (the pre-fix accept path).
+            return ("NCBITaxon:1263", "biolink:OrganismTaxon")
+        monkeypatch.setattr(entity_resolution, "reconcile_to_kestrel", fake_reconcile)
+
+        # A biomapper abstention is terminal for its index: Tier-1 (hybrid_search) must NOT run.
+        async def boom_kestrel(tool, args):
+            raise AssertionError("Tier-1 must not run for a biomapper-abstained entity")
+        monkeypatch.setattr(entity_resolution, "call_kestrel_tool", boom_kestrel)
+
+        state = {"raw_entities": ["Ruminococcus gnavus"],
+                 "entity_type_hints": {"Ruminococcus gnavus": "gene"}, "entity_aliases": {}}
+        out = await run(state)
+        r = out["resolved_entities"][0]
+        assert r.curie is None                       # coarse genus CURIE dropped, never accepted
+        assert r.method == "failed"                  # routes to cold_start like Tier-1/2 abstain
+        assert r.rank_collapsed is True              # diagnostic marker carried into triage
+        assert r.raw_name == "Ruminococcus gnavus"
+        assert out["rank_collapse_sign_flips"] == 1  # measurement hook counts it
+
+    async def test_flag_on_clean_species_hit_still_accepted(self, monkeypatch):
+        """Control: a biomapper hit that does NOT collapse rank (resolved_name is the species) is
+        still accepted verbatim — the guard is a pass-through on non-collapse."""
+        _enable_biomapper(monkeypatch)
+        monkeypatch.setattr(entity_resolution, "HAS_SDK", False)
+
+        async def fake_bm(name, hint, base_url=None):
+            return {"curie": "NCBITaxon:33038", "tier": "high", "confidence": 2.5,
+                    "resolved_name": "Ruminococcus gnavus", "category": "biolink:OrganismTaxon",
+                    "xrefs": {}}
+        monkeypatch.setattr(entity_resolution, "biomapper_resolve", fake_bm)
+
+        async def fake_reconcile(r, hint):
+            return ("NCBITaxon:33038", "biolink:OrganismTaxon")
+        monkeypatch.setattr(entity_resolution, "reconcile_to_kestrel", fake_reconcile)
+
+        state = {"raw_entities": ["Ruminococcus gnavus"],
+                 "entity_type_hints": {"Ruminococcus gnavus": "gene"}, "entity_aliases": {}}
+        out = await run(state)
+        r = out["resolved_entities"][0]
+        assert r.curie == "NCBITaxon:33038"
+        assert r.method == "biomapper"
+        assert r.rank_collapsed is False
+        assert out["rank_collapse_sign_flips"] == 0

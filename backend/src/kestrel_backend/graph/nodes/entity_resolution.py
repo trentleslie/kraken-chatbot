@@ -785,7 +785,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                     )
                     return idx, None
                 curie, category = reconciled
-                return idx, EntityResolution(
+                resolution = EntityResolution(
                     raw_name=name,
                     curie=curie,
                     resolved_name=r.get("resolved_name") or name,
@@ -793,12 +793,25 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                     confidence=_tier_to_confidence(r.get("tier")),
                     method="biomapper",
                 )
+                # Axis-D rank guard (finding #6): a biomapper hit that collapses a species→genus
+                # (or any finer→coarser taxon) must abstain exactly like the Tier-1/2 paths rather
+                # than feeding the coarse CURIE straight into triage via the pre-resolver. Mirror the
+                # Tier-1 guard (abstain-only; no alternative candidates in scope here). On no collapse
+                # (the common non-taxa case) this is a pass-through → byte-identical resolution.
+                return idx, _apply_rank_guard(name, resolution)
 
             prepass = await asyncio.gather(*[_biomapper_one(i, e) for (i, e) in targets])
             for idx, res in prepass:
-                if res is not None:
-                    all_results[idx] = res
-                    biomapper_confirmed.add(idx)
+                # None → biomapper miss/timeout/unconfirmed: fall through to Tier-1 (Kestrel).
+                if res is None:
+                    continue
+                # A biomapper result (confirmed CURIE OR a rank-collapse abstention) is terminal for
+                # this index — record it and skip Tier-1, exactly like Tier-1's own terminal paths.
+                # Only a real CURIE counts toward biomapper_resolved; an abstention (curie=None,
+                # method="failed", rank_collapsed=True) is carried into triage → cold_start.
+                all_results[idx] = res
+                biomapper_confirmed.add(idx)
+                if res.curie is not None:
                     biomapper_resolved += 1
             logger.info(
                 "Biomapper pre-resolver confirmed %d/%d hinted entities",

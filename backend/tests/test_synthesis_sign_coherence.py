@@ -15,12 +15,27 @@ from kestrel_backend.graph.nodes.synthesis import (
     fallback_report,
     format_sign_coherence,
 )
-from kestrel_backend.graph.state import Finding
+from kestrel_backend.graph.state import Finding, MemberWeight, ModuleSpine
 
 
-def _spine(members: dict) -> dict:
-    """A minimal ModuleSpine-shaped stub: {"members": {name -> kME}}."""
-    return {"members": members}
+def _spine(group_members: dict[str, dict[str, float]]) -> dict[str, ModuleSpine]:
+    """Build the REAL ``state.module_spine`` shape: ``dict[group -> ModuleSpine]``, where each
+    ``ModuleSpine`` carries ``.members`` of ``MemberWeight`` with a signed ``kme``.
+
+    This mirrors what the analyte-upload path actually produces. The previous stub was a single
+    ``{"members": {name -> number}}`` dict, which the adapter silently read as group→ModuleSpine
+    with the module objects themselves as kME values (all None) — so the guard NEVER fired on real
+    data (the T-Rex repro). Constructing real Pydantic models here is the permanent regression guard.
+    """
+    return {
+        group: ModuleSpine(
+            group=group,
+            members={
+                name: MemberWeight(name=name, kme=kme) for name, kme in members.items()
+            },
+        )
+        for group, members in group_members.items()
+    }
 
 
 GG_SPLIT_STATE = {
@@ -33,10 +48,12 @@ GG_SPLIT_STATE = {
     },
     "module_spine": _spine(
         {
-            "gamma-glutamylvaline": 0.8,
-            "gamma-glutamylleucine": 0.7,
-            "gamma-glutamylglutamate": -0.6,
-            "gamma-glutamylglycine": -0.75,
+            "GGT dipeptides": {
+                "gamma-glutamylvaline": 0.8,
+                "gamma-glutamylleucine": 0.7,
+                "gamma-glutamylglutamate": -0.6,
+                "gamma-glutamylglycine": -0.75,
+            }
         }
     ),
 }
@@ -50,10 +67,51 @@ class TestComputeSignSplits:
         # two sign-coherent sub-programs produced from the one split group
         assert counts["groups_split"] == 2
 
+    def test_real_moduleSpine_mixed_sign_detected(self):
+        """T-Rex regression: a REAL ModuleSpine of MemberWeight with mixed-sign kME must split.
+
+        Constructed straight from the Pydantic models (not a dict stub) so the adapter is exercised
+        against the exact shape the analyte-upload path produces. Before the adapter fix this
+        returned groups_sign_split == 0 (the guard silently never fired)."""
+        state = {
+            "entity_groups": {"m1": ["ModA"], "m2": ["ModA"], "m3": ["ModA"]},
+            "module_spine": {
+                "ModA": ModuleSpine(
+                    group="ModA",
+                    members={
+                        "m1": MemberWeight(name="m1", kme=0.9),
+                        "m2": MemberWeight(name="m2", kme=-0.85),
+                        "m3": MemberWeight(name="m3", kme=0.7),
+                    },
+                )
+            },
+        }
+        splits, counts = compute_sign_splits(state)
+        assert "ModA" in splits
+        assert counts["groups_sign_split"] == 1
+        assert counts["groups_split"] == 2
+
+    def test_per_module_kme_is_group_scoped(self):
+        """A member in two modules with OPPOSITE kME must be read per-module, not flattened: the
+        split module splits, the coherent module does not (flattening would corrupt one of them)."""
+        state = {
+            "entity_groups": {"shared": ["ModA", "ModB"], "b": ["ModA"], "c": ["ModB"]},
+            "module_spine": _spine(
+                {
+                    "ModA": {"shared": 0.8, "b": -0.7},   # splits
+                    "ModB": {"shared": 0.6, "c": 0.75},   # coherent (shared is + here)
+                }
+            ),
+        }
+        splits, counts = compute_sign_splits(state)
+        assert "ModA" in splits
+        assert "ModB" not in splits
+        assert counts["groups_sign_split"] == 1
+
     def test_coherent_group_not_split(self):
         state = {
             "entity_groups": {"a": ["mod"], "b": ["mod"]},
-            "module_spine": _spine({"a": 0.8, "b": 0.6}),
+            "module_spine": _spine({"mod": {"a": 0.8, "b": 0.6}}),
         }
         splits, counts = compute_sign_splits(state)
         assert splits == {}
@@ -68,7 +126,7 @@ class TestComputeSignSplits:
     def test_group_with_no_spine_entries_skipped(self):
         state = {
             "entity_groups": {"x": ["mod"], "y": ["mod"]},
-            "module_spine": _spine({"unrelated": 0.5}),
+            "module_spine": _spine({"mod": {"unrelated": 0.5}}),
         }
         splits, counts = compute_sign_splits(state)
         assert splits == {}

@@ -1468,25 +1468,44 @@ def format_literature_evidence(hypotheses: list[Hypothesis]) -> str:
 # assembled context byte-identical.
 
 
-def _spine_member_kme(module_spine: Any) -> dict[str, float | None]:
-    """Adapter: read axis A's ModuleSpine into a flat ``member-name -> signed kME`` map.
+def _member_kme_value(mw: Any) -> float | None:
+    """Read one member's signed kME from a ``MemberWeight`` (``.kme``), its dict serialization
+    (``{"kme": ...}``), or a bare numeric (test/forward-compat). Non-numeric/missing → ``None``."""
+    kme: Any
+    if hasattr(mw, "kme"):
+        kme = mw.kme
+    elif isinstance(mw, dict):
+        kme = mw.get("kme")
+    else:
+        kme = mw  # bare number
+    return float(kme) if isinstance(kme, (int, float)) and not isinstance(kme, bool) else None
 
-    This is the single point of coupling to axis A's ``ModuleSpine`` schema (the plan's "adapter
-    isolates the field-name coupling to one function"), so Guard 2 can be developed and tested
-    against a stub before axis A lands. Accepts the ModuleSpine object (with a ``.members`` mapping),
-    its dict serialization (``{"members": {...}}``), or a bare ``{name: kME}`` map. Non-numeric
-    (or missing) kME becomes ``None`` (sign undefined for that member).
+
+def _spine_group_member_kme(module_spine: Any) -> dict[str, dict[str, float | None]]:
+    """Adapter: read axis A's ``module_spine`` into a module-centric ``{group -> {member-name ->
+    signed kME}}`` map.
+
+    This is the single point of coupling to axis A's schema. The REAL state shape is
+    ``dict[str, ModuleSpine]`` (group -> ModuleSpine), where each ``ModuleSpine`` carries
+    ``members: dict[str, MemberWeight]`` and each ``MemberWeight`` carries a signed ``kme``. kME is
+    kept keyed BY GROUP (never flattened) because a member can belong to multiple modules with a
+    DIFFERENT kME per module — a flat ``name -> kME`` map would collapse that (see ``ModuleSpine``).
+
+    Accepts ``ModuleSpine`` objects (``.members``) or their dict serialization
+    (``{"members": {...}}``); each member value may be a ``MemberWeight`` (``.kme``), a
+    ``{"kme": ...}`` dict, or a bare number. Missing/non-numeric kME → ``None`` (sign undefined).
+    Returns ``{}`` when no ModuleSpine is present (the pre-axis-A / classic path) → inert.
     """
-    if not module_spine:
+    if not module_spine or not isinstance(module_spine, dict):
         return {}
-    members = getattr(module_spine, "members", None)
-    if members is None and isinstance(module_spine, dict):
-        members = module_spine.get("members", module_spine)
-    if not isinstance(members, dict):
-        return {}
-    out: dict[str, float | None] = {}
-    for name, kme in members.items():
-        out[name] = float(kme) if isinstance(kme, (int, float)) and not isinstance(kme, bool) else None
+    out: dict[str, dict[str, float | None]] = {}
+    for group, spine in module_spine.items():
+        members = getattr(spine, "members", None)
+        if members is None and isinstance(spine, dict):
+            members = spine.get("members")
+        if not isinstance(members, dict):
+            continue
+        out[group] = {name: _member_kme_value(mw) for name, mw in members.items()}
     return out
 
 
@@ -1499,9 +1518,9 @@ def compute_sign_splits(state: DiscoveryState) -> tuple[dict[str, SplitResult], 
     Inert (empty) when no ModuleSpine or no entity_groups are present → byte-identical rendering.
     """
     zero = {"groups_sign_split": 0, "groups_split": 0}
-    kme = _spine_member_kme(state.get("module_spine"))
+    group_kme = _spine_group_member_kme(state.get("module_spine"))
     entity_groups = state.get("entity_groups", {}) or {}
-    if not kme or not entity_groups:
+    if not group_kme or not entity_groups:
         return {}, dict(zero)
 
     cfg = get_pipeline_config().synthesis
@@ -1519,7 +1538,10 @@ def compute_sign_splits(state: DiscoveryState) -> tuple[dict[str, SplitResult], 
     splits: dict[str, SplitResult] = {}
     subprograms = 0
     for group, names in groups.items():
-        members_kme = {n: kme[n] for n in names if n in kme}
+        # Module-centric lookup: use THIS group's own per-member kME (a member may carry a
+        # different sign in another module), not a flattened map.
+        member_kme = group_kme.get(group, {})
+        members_kme = {n: member_kme[n] for n in names if n in member_kme}
         if not members_kme:
             continue
         result = detect_sign_split(members_kme, floor=floor, minority_tol=minority_tol)
