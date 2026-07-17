@@ -4,15 +4,27 @@ import type {
   ChatMessage,
   ConnectionStatus,
   IncomingMessage,
+  KeySource,
+  SetKeyRequest,
   ToolUseMessage,
   TraceMessage,
   SessionStats,
   AgentMode,
   BiomapperEnv,
   PipelineProgress,
+  StructuredAnalyte,
+  ModuleDirectionInput,
 } from "@/types/messages";
+import { applyGroupFilter, distinctNameCount } from "@/lib/analyteParse";
 
 const WS_URL = import.meta.env.VITE_WS_URL || "";
+
+// Mirror the backend R19 hard caps (config.Settings defaults) so an oversized panel is caught
+// client-side — with the staged upload preserved — instead of being sent, rejected server-side
+// (frame byte cap / run ceiling), and then lost to the one-shot clear. If an operator raises the
+// backend caps via env, this pre-check is merely conservative (a clear message), never data loss.
+const MAX_WS_MESSAGE_BYTES = 5_000_000;
+const ANALYTE_RUN_CEILING = 200;
 
 // Stable no-op token getter used when Clerk auth is disabled (local dev). Defined
 // at module scope so its identity is constant across renders — the connect effect
@@ -217,7 +229,16 @@ const DEMO_PIPELINE_SCENARIO: IncomingMessage[] = [
 
 const DEMO_PIPELINE_DELAYS = [300, 400, 300, 600, 300, 400, 300, 800, 300, 600, 300, 700, 300, 500, 300, 800, 200, 100];
 
-export function useWebSocket() {
+interface UseWebSocketOptions {
+  /**
+   * The user's current BYOK API key (or null when not set).
+   * Passed as a prop so the hook can send `set_key` frames whenever it changes
+   * without reconstructing the WebSocket.
+   */
+  apiKey?: string | null;
+}
+
+export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("disconnected");
@@ -228,6 +249,23 @@ export function useWebSocket() {
   // Prod/dev biomapper2 API toggle for the discovery pipeline (default prod).
   const [biomapperEnv, setBiomapperEnv] = useState<BiomapperEnv>("production");
   const [pipelineProgress, setPipelineProgress] = useState<PipelineProgress | null>(null);
+  // Structured analyte panel from a file upload + the user's group selection (pipeline mode).
+  // The FULL panel is sent; the backend forms the run set from the selection. One-shot: cleared
+  // after each successful send so a follow-up text message doesn't silently re-run the panel.
+  const [structuredAnalytes, setStructuredAnalytes] = useState<StructuredAnalyte[]>([]);
+  const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
+  // Optional per-module eigengene→outcome directions (Axis A signed-weight spine). Sent with the
+  // panel; one-shot cleared like the panel. Empty = "no direction supplied".
+  const [moduleDirections, setModuleDirections] = useState<ModuleDirectionInput[]>([]);
+
+  // BYOK state: set true when the server returns a NEEDS_KEY error, reset when a key is accepted.
+  const [needsKey, setNeedsKey] = useState(false);
+  // The key source reported by the server at the start of each turn.
+  const [keySource, setKeySource] = useState<KeySource | null>(null);
+
+  // Keep a ref to the latest apiKey so onopen and the key-change effect can
+  // always read the current value without capturing a stale closure.
+  const apiKeyRef = useRef<string | null>(apiKey);
 
   // Clerk auth: get a fresh session token for WebSocket connections.
   // When Clerk isn't configured (local dev / no publishable key) there's no
@@ -246,12 +284,22 @@ export function useWebSocket() {
     ? useAuth()
     : { getToken: NOOP_GET_TOKEN, isSignedIn: false };
 
+  // Sync the ref every render so closures that capture it always see the latest key.
+  apiKeyRef.current = apiKey;
+
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const demoModeRef = useRef(false);
   const demoTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  /** Send a set_key frame on the currently-open socket (no-op if socket isn't open). */
+  const sendSetKey = useCallback((ws: WebSocket, key: string | null) => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    const frame: SetKeyRequest = { type: "set_key", key };
+    ws.send(JSON.stringify(frame));
+  }, []);
 
   const addTraceToSession = useCallback((trace: TraceMessage) => {
     setSessionStats((prev) => ({
@@ -346,7 +394,34 @@ export function useWebSocket() {
         break;
       }
 
+      case "key_source":
+        // Server confirms which key is powering this turn.
+        setKeySource(data.source);
+        // A key_source frame arriving means the server accepted the key — clear needsKey.
+        if (data.source === "byok") {
+          setNeedsKey(false);
+        }
+        break;
+
       case "error":
+        // NEEDS_KEY: server is telling us it can't proceed without a user-supplied key.
+        if (data.code === "NEEDS_KEY") {
+          setNeedsKey(true);
+          setIsAgentResponding(false);
+          setPipelineProgress(null);
+          // Surface the error message in the chat so the user understands what happened.
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: generateId(),
+              type: "error" as const,
+              message: data.message,
+              code: data.code,
+              timestamp: Date.now(),
+            },
+          ]);
+          break;
+        }
         setMessages((prev) => [
           ...prev,
           {
@@ -479,6 +554,9 @@ export function useWebSocket() {
         setConnectionStatus("connected");
         reconnectAttemptRef.current = 0;
         demoModeRef.current = false;
+        // BYOK: send set_key FIRST, before any user_message, so the server knows
+        // which key to use. Reads the ref to get the current value at open time.
+        sendSetKey(ws, apiKeyRef.current);
       };
 
       ws.onmessage = (event) => {
@@ -523,7 +601,7 @@ export function useWebSocket() {
       setConnectionStatus("disconnected");
       scheduleReconnect();
     }
-  }, [handleIncomingMessage, scheduleReconnect, enterDemoMode, getToken, isSignedIn]);
+  }, [handleIncomingMessage, scheduleReconnect, enterDemoMode, getToken, isSignedIn, sendSetKey]);
 
   const runDemoScenario = useCallback(
     (userContent: string) => {
@@ -557,6 +635,15 @@ export function useWebSocket() {
 
   const sendMessage = useCallback(
     (content: string) => {
+      // A staged panel is only "active" in pipeline mode — the backend ignores structured_analytes
+      // in classic mode. Gating on mode (matching ChatInput's `isPipeline && hasPanel`) means a
+      // classic send neither attaches nor clears the upload, so switching to classic and typing a
+      // message no longer silently discards a mapped panel; it's preserved for pipeline mode.
+      const hasPanel = agentMode === "pipeline" && structuredAnalytes.length > 0;
+
+      // Allow a file-only submit (panel present, no typed query); block a truly-empty send.
+      if (!content.trim() && !hasPanel) return;
+
       if (demoModeRef.current) {
         runDemoScenario(content);
         return;
@@ -564,26 +651,67 @@ export function useWebSocket() {
 
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
+      // Build the outgoing frame once, so we can enforce the backend's hard caps HERE and keep the
+      // panel staged when it's too large — otherwise the send is rejected server-side after the
+      // one-shot clear has already discarded the mapped upload.
+      const serialized = JSON.stringify({
+        type: "user_message",
+        content,
+        agent_mode: agentMode,
+        biomapper_env: biomapperEnv,
+        // Send the FULL parsed panel + the selection; the backend forms the run set.
+        structured_analytes: hasPanel ? structuredAnalytes : undefined,
+        selected_groups: hasPanel ? selectedGroups : undefined,
+        // Only meaningful with a panel; omit when empty ("no direction supplied").
+        module_directions:
+          hasPanel && moduleDirections.length > 0 ? moduleDirections : undefined,
+      });
+
+      if (hasPanel) {
+        const runCount = distinctNameCount(applyGroupFilter(structuredAnalytes, selectedGroups));
+        const frameBytes = new Blob([serialized]).size;
+        if (runCount > ANALYTE_RUN_CEILING || frameBytes > MAX_WS_MESSAGE_BYTES) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: generateId(),
+              type: "error" as const,
+              message:
+                runCount > ANALYTE_RUN_CEILING
+                  ? `Too many analytes selected (${runCount}; limit ${ANALYTE_RUN_CEILING}). Narrow the group selection or upload a smaller panel.`
+                  : `Upload is too large to send (${(frameBytes / 1_000_000).toFixed(1)} MB; limit ${MAX_WS_MESSAGE_BYTES / 1_000_000} MB). Reduce the file or narrow the group selection.`,
+              timestamp: Date.now(),
+            },
+          ]);
+          return; // Keep the panel staged: nothing sent, nothing cleared.
+        }
+      }
+
+      // Optimistic user bubble: for a file-only submit show a panel summary instead of an empty
+      // bubble (the backend synthesizes a matching names-bearing query for persistence).
+      const bubbleContent =
+        content.trim() || `Uploaded ${structuredAnalytes.length} analytes for discovery analysis`;
+
       const userMessage: ChatMessage = {
         id: generateId(),
         type: "user",
-        content,
+        content: bubbleContent,
         timestamp: Date.now(),
       };
 
       setMessages((prev) => [...prev, userMessage]);
       setIsAgentResponding(true);
 
-      wsRef.current.send(
-        JSON.stringify({
-          type: "user_message",
-          content,
-          agent_mode: agentMode,
-          biomapper_env: biomapperEnv,
-        }),
-      );
+      wsRef.current.send(serialized);
+
+      // One-shot upload: clear the panel + selection + directions so the next turn is clean.
+      if (hasPanel) {
+        setStructuredAnalytes([]);
+        setSelectedGroups([]);
+        setModuleDirections([]);
+      }
     },
-    [runDemoScenario, agentMode, biomapperEnv],
+    [runDemoScenario, agentMode, biomapperEnv, structuredAnalytes, selectedGroups, moduleDirections],
   );
 
   const clearMessages = useCallback(() => {
@@ -612,6 +740,18 @@ export function useWebSocket() {
     };
   }, [connectWs]);
 
+  // BYOK: when the key changes mid-session, send an updated set_key frame so the
+  // server's in-memory slot is always in sync with what the user has set (or cleared).
+  useEffect(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    sendSetKey(wsRef.current, apiKey);
+    // When the user provides a key, clear needsKey optimistically (the server will
+    // confirm by sending key_source:"byok" at the start of the next turn).
+    if (apiKey !== null) {
+      setNeedsKey(false);
+    }
+  }, [apiKey, sendSetKey]);
+
   return {
     messages,
     connectionStatus,
@@ -623,7 +763,16 @@ export function useWebSocket() {
     biomapperEnv,
     setBiomapperEnv,
     pipelineProgress,
+    structuredAnalytes,
+    setStructuredAnalytes,
+    selectedGroups,
+    setSelectedGroups,
+    moduleDirections,
+    setModuleDirections,
     sendMessage,
     clearMessages,
+    // BYOK additions
+    needsKey,
+    keySource,
   };
 }

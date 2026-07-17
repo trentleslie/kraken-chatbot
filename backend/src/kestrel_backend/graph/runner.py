@@ -20,6 +20,9 @@ async def run_discovery(
     conversation_history: list[tuple[str, str]] | None = None,
     config: dict[str, Any] | None = None,
     biomapper_env: str | None = None,
+    structured_analytes: list[dict] | None = None,
+    selected_groups: list[str] | None = None,
+    module_directions: list[dict] | None = None,
 ) -> DiscoveryState:
     """
     Run the discovery workflow and return final state.
@@ -31,6 +34,13 @@ async def run_discovery(
             through to the graph. The caller owns it; this module stays observability-agnostic.
         biomapper_env: Optional prod/dev biomapper2 API toggle ("production"|"dev"); threaded into
             initial state so this non-streaming path matches stream_discovery.
+        structured_analytes: Optional full parsed analyte panel ({name, group?, type?, kme?, kim?}
+            dicts). Threaded into initial state; the intake node re-validates it (R19 gate #2) so
+            this non-WS entry point (Studio/harness) is guarded identically to main.py.
+        selected_groups: Optional group selection for the run-set filter (empty/None = all).
+        module_directions: Optional per-module eigengene→outcome direction rows ({group,
+            eigengene_trait_correlation, trait_label}); threaded into state and validated by the
+            intake gate #2 so the signed-weight spine's direction half reaches this path too.
 
     Returns:
         Final DiscoveryState with synthesis_report populated
@@ -41,6 +51,9 @@ async def run_discovery(
         "raw_query": query,
         "conversation_history": conversation_history or [],
         "biomapper_env": biomapper_env,
+        "structured_analytes": structured_analytes or [],
+        "selected_groups": selected_groups or [],
+        "module_directions": module_directions or [],
     }
 
     result = await graph.ainvoke(initial_state, config=config)
@@ -52,6 +65,9 @@ async def stream_discovery(
     conversation_history: list[tuple[str, str]] | None = None,
     config: dict[str, Any] | None = None,
     biomapper_env: str | None = None,
+    structured_analytes: list[dict] | None = None,
+    selected_groups: list[str] | None = None,
+    module_directions: list[dict] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """
     Stream discovery workflow events for real-time updates.
@@ -78,6 +94,9 @@ async def stream_discovery(
         "raw_query": query,
         "conversation_history": conversation_history or [],
         "biomapper_env": biomapper_env,
+        "structured_analytes": structured_analytes or [],
+        "selected_groups": selected_groups or [],
+        "module_directions": module_directions or [],
     }
 
     async for event in graph.astream(initial_state, stream_mode="updates", config=config):
@@ -97,10 +116,22 @@ def run_discovery_sync(
     query: str,
     conversation_history: list[tuple[str, str]] | None = None,
     biomapper_env: str | None = None,
+    structured_analytes: list[dict] | None = None,
+    selected_groups: list[str] | None = None,
+    module_directions: list[dict] | None = None,
 ) -> DiscoveryState:
     """
     Synchronous wrapper for run_discovery.
 
     Useful for testing or non-async contexts.
     """
-    return asyncio.run(run_discovery(query, conversation_history, biomapper_env=biomapper_env))
+    return asyncio.run(
+        run_discovery(
+            query,
+            conversation_history,
+            biomapper_env=biomapper_env,
+            structured_analytes=structured_analytes,
+            selected_groups=selected_groups,
+            module_directions=module_directions,
+        )
+    )

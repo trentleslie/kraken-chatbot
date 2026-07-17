@@ -218,6 +218,9 @@ Return ONLY one word: supporting, contradicting, tangential, or methodological""
             permission_mode="bypassPermissions",
         )
 
+        from .graph.sdk_utils import _apply_byok_env
+        options = _apply_byok_env(options)
+
         result_text = ""
         async for event in query(prompt=prompt, options=options):
             if hasattr(event, "text"):

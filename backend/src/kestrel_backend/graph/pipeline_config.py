@@ -196,6 +196,34 @@ class TriageConfig(BaseModel):
         default=6,
         description="DEPRECATED/unused: legacy batch knob from the removed Tier-2 path.",
     )
+    # === Axis B: intramodular-centrality hubs + inverted routing (consumes axis A ModuleSpine) ===
+    intramodular_centrality_enabled: bool = Field(
+        default=False,
+        description="Default-off flag (A/B gate). When True AND a ModuleSpine with kME is present, "
+        "triage marks the top-k% |kME| members of each module as intramodular hubs and INVERTS "
+        "routing (hub → cold_start instead of direct_kg), on the validated findings that KG degree "
+        "is study bias (PNAS 2025 10.1073/pnas.2416646122) and cold_start beat direct_kg in "
+        "validation. When False, or no ModuleSpine, or no kME → today's edge-count behavior exactly. "
+        "Ships off because the evidence base is thin (n=1 duel); flip is gated on a sign-safety "
+        "retrodiction check.",
+    )
+    intramodular_hub_top_k_pct: float = Field(
+        default=10.0,
+        gt=0.0,
+        le=100.0,
+        description="Percent of each module's members (by |kME|, descending) crowned as hub "
+        "candidates — RELATIVE (per-module percentile), never an absolute |kME| threshold, so the hub "
+        "notion is cohort-portable across differing module |kME| distributions. Default 10% mirrors "
+        "common WGCNA hub analyses; tunable.",
+    )
+    intramodular_kim_floor: float | None = Field(
+        default=None,
+        description="Optional absolute kIM (raw intramodular connectivity) floor for the low-n kME "
+        "caveat: a top-k% |kME| candidate whose kIM is below this is vetoed back to its edge-count "
+        "classification (high |kME| + low connectivity = a false hub at low sample size). None "
+        "disables the veto (|kME| alone decides); a candidate whose kIM is itself missing also skips "
+        "the veto. Scale depends on axis A's kIM units; final value pinned once A's kIM scale is known.",
+    )
 
 
 class ColdStartConfig(BaseModel):
@@ -319,6 +347,37 @@ class BridgeGroundingConfig(BaseModel):
     )
 
 
+class BridgeSpecificityConfig(BaseModel):
+    """Configuration for bridge specificity scoring (axis C — DWPC structural genericity).
+
+    Only OPERATIONAL knobs live here. The DWPC damping exponent and the label cut points /
+    per-node generic cutoff are cited/tuned module constants in
+    ``graph.nodes.bridge_specificity`` (calibrated once from a real intermediate-degree
+    distribution — Unit 4 — not a per-run config surface with no consumer).
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Ships False: this is a PRODUCER whose only consumer (axis E synthesis) is a "
+        "separate deferred PR, so it should not incur live Kestrel degree fetches to populate a "
+        "side-map nothing reads yet. Flip to True when axis E lands (mirrors bridge_grounding's "
+        "gated flip). The Unit 4 measurement runs via an explicit probe, not prod default-on.",
+    )
+    max_scored_bridges: int = Field(
+        default=20,
+        ge=1,
+        description="Cap on bridges scored per run. Each un-cached intermediate costs one "
+        "one_hop_query preview call; per-CURIE fetches are deduped within a run, so a module whose "
+        "bridges share hub intermediates fetches each hub once. Bounds the added Kestrel load.",
+    )
+    concurrency: int = Field(
+        default=8,
+        ge=1,
+        description="Max concurrent degree one_hop_query calls. Bounded + per-run deduped to avoid "
+        "the unbounded one_hop fan-out that once exhausted Kestrel's LMDB readers (MDB_READERS_FULL).",
+    )
+
+
 class SynthesisConfig(BaseModel):
     """Configuration for the synthesis node's context-assembly caps.
 
@@ -387,6 +446,43 @@ class SynthesisConfig(BaseModel):
         "prevent reaching it. Tune downward if R7 shows headroom is tight.",
     )
 
+    # --- Tier-3 direction / falsifier contract (Axis E) ---------------------------------
+    # Deterministic direction (sign) label for Tier-3 predictions, computed from axis A's signed
+    # module weights (`module_spine`) and stamped into the report post-LLM. Coarse banding now;
+    # refine once axis A's real kME distribution is observable (plan Deferred-to-Implementation).
+    direction_high_abs_kme: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Minimum |kME| for a Tier-3 direction to render the 'high' confidence tier. "
+        "kME is a WGCNA module-membership correlation in [-1, 1]; a high magnitude means the member "
+        "sits near the module eigengene. Coarse default; tune against axis A's real distribution.",
+    )
+    direction_moderate_abs_kme: float = Field(
+        default=0.4,
+        ge=0.0,
+        le=1.0,
+        description="Minimum |kME| for the 'moderate' direction confidence tier; below this the tier "
+        "is 'low'. Must be <= direction_high_abs_kme.",
+    )
+    direction_kim_floor: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Intramodular-connectivity (kIM) floor. When > 0 and a contributing member's kIM "
+        "is present and below this floor, the confidence tier is capped one step below 'high' (a "
+        "weakly-connected member cannot anchor top confidence — the low-n kME caveat). Default 0 "
+        "disables the cap until axis A's kIM values are observable.",
+    )
+    direction_small_n_cap: int = Field(
+        default=15,
+        ge=1,
+        description="Derivation-cohort size below which a Tier-3 direction cannot reach the 'high' "
+        "confidence tier (small-sample |kME| inflation crowns weakly-supported members — validation "
+        "memo low-n kME caveat). Applied only when a per-module derivation n is supplied to the "
+        "direction helper; axis A does not yet emit cohort n, so the cap is exercised via unit tests "
+        "and ready when that field lands.",
+    )
+
 
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration with per-node sub-models.
@@ -405,6 +501,7 @@ class PipelineConfig(BaseModel):
     hypothesis_extraction: HypothesisExtractionConfig = Field(default_factory=HypothesisExtractionConfig)
     integration: IntegrationConfig = Field(default_factory=IntegrationConfig)
     bridge_grounding: BridgeGroundingConfig = Field(default_factory=BridgeGroundingConfig)
+    bridge_specificity: BridgeSpecificityConfig = Field(default_factory=BridgeSpecificityConfig)
     synthesis: SynthesisConfig = Field(default_factory=SynthesisConfig)
 
 

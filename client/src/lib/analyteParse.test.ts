@@ -1,0 +1,427 @@
+import { describe, it, expect } from "vitest";
+import {
+  parseDelimitedText,
+  suggestMapping,
+  buildAnalytes,
+  distinctGroups,
+  applyGroupFilter,
+  distinctNameCount,
+  isFormulaInjection,
+  parseKmeCell,
+  parseKimCell,
+  countInvalidWeightCells,
+  countInvalidDirections,
+  buildModuleDirections,
+  MAX_ROWS,
+} from "./analyteParse";
+
+describe("parseDelimitedText", () => {
+  it("parses CSV with headers and rows", () => {
+    const res = parseDelimitedText("analyte,module\nglucose,Brown\nIL6,Blue\n", "x.csv");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data.headers).toEqual(["analyte", "module"]);
+    expect(res.data.rows).toEqual([
+      { analyte: "glucose", module: "Brown" },
+      { analyte: "IL6", module: "Blue" },
+    ]);
+  });
+
+  it("detects TSV delimiter from filename", () => {
+    const res = parseDelimitedText("analyte\tmodule\nglucose\tBrown\n", "x.tsv");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data.headers).toEqual(["analyte", "module"]);
+    expect(res.data.rows[0]).toEqual({ analyte: "glucose", module: "Brown" });
+  });
+
+  it("limits preview to 5 rows but keeps all rows", () => {
+    const lines = ["analyte"];
+    for (let i = 0; i < 8; i++) lines.push(`m${i}`);
+    const res = parseDelimitedText(lines.join("\n"), "x.csv");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data.previewRows).toHaveLength(5);
+    expect(res.data.rows).toHaveLength(8);
+  });
+
+  it("errors on empty file", () => {
+    expect(parseDelimitedText("", "x.csv")).toMatchObject({ ok: false });
+    expect(parseDelimitedText("   \n  ", "x.csv")).toMatchObject({ ok: false });
+  });
+
+  it("errors on header-only (zero data rows)", () => {
+    const res = parseDelimitedText("analyte,module\n", "x.csv");
+    expect(res.ok).toBe(false);
+  });
+
+  it("errors on duplicate headers", () => {
+    const res = parseDelimitedText("name,name\na,b\n", "x.csv");
+    expect(res.ok).toBe(false);
+  });
+
+  it("errors on blank header cell", () => {
+    const res = parseDelimitedText("analyte,,module\na,b,c\n", "x.csv");
+    expect(res.ok).toBe(false);
+  });
+
+  it("errors when row count exceeds MAX_ROWS", () => {
+    const lines = ["analyte"];
+    for (let i = 0; i < MAX_ROWS + 1; i++) lines.push(`m${i}`);
+    const res = parseDelimitedText(lines.join("\n"), "x.csv");
+    expect(res.ok).toBe(false);
+  });
+});
+
+describe("suggestMapping", () => {
+  it("auto-maps unambiguous headers", () => {
+    expect(suggestMapping(["metabolite", "module", "omic"])).toEqual({
+      analyte: "metabolite",
+      group: "module",
+      type: "omic",
+    });
+  });
+
+  it("leaves ambiguous headers unset", () => {
+    // name/type/class are ambiguous — must NOT be auto-mapped (R6).
+    expect(suggestMapping(["name", "type", "class"])).toEqual({});
+  });
+
+  it("maps analyte/group but leaves type unset when absent", () => {
+    expect(suggestMapping(["gene", "cluster"])).toEqual({
+      analyte: "gene",
+      group: "cluster",
+    });
+  });
+});
+
+describe("buildAnalytes", () => {
+  const rows = [
+    { analyte: "glucose", module: "Brown", omic: "metabolite" },
+    { analyte: "IL6", module: "Blue", omic: "protein" },
+  ];
+
+  it("builds the structured list from a mapping", () => {
+    const res = buildAnalytes(rows, { analyte: "analyte", group: "module", type: "omic" });
+    expect(res.analytes).toEqual([
+      { name: "glucose", group: "Brown", type: "metabolite" },
+      { name: "IL6", group: "Blue", type: "protein" },
+    ]);
+    expect(res.rowsRead).toBe(2);
+    expect(res.rowsKept).toBe(2);
+  });
+
+  it("skips empty-name rows and trims", () => {
+    const res = buildAnalytes(
+      [
+        { analyte: "  ", module: "Brown" },
+        { analyte: "  glucose  ", module: "  Brown  " },
+      ],
+      { analyte: "analyte", group: "module" },
+    );
+    expect(res.analytes).toEqual([{ name: "glucose", group: "Brown" }]);
+    expect(res.rowsRead).toBe(1);
+  });
+
+  it("keeps same name in two groups as two entries", () => {
+    const res = buildAnalytes(
+      [
+        { analyte: "glucose", module: "Brown" },
+        { analyte: "glucose", module: "Blue" },
+      ],
+      { analyte: "analyte", group: "module" },
+    );
+    expect(res.analytes).toEqual([
+      { name: "glucose", group: "Brown" },
+      { name: "glucose", group: "Blue" },
+    ]);
+  });
+
+  it("collapses same name+group (case-insensitive), counts read vs kept", () => {
+    const res = buildAnalytes(
+      [
+        { analyte: "glucose", module: "Brown" },
+        { analyte: "GLUCOSE", module: "Brown" },
+      ],
+      { analyte: "analyte", group: "module" },
+    );
+    expect(res.analytes).toEqual([{ name: "glucose", group: "Brown" }]);
+    expect(res.rowsRead).toBe(2);
+    expect(res.rowsKept).toBe(1);
+  });
+
+  it("maps unknown type to undefined but keeps the row", () => {
+    const res = buildAnalytes([{ analyte: "glucose", omic: "lipid" }], {
+      analyte: "analyte",
+      type: "omic",
+    });
+    expect(res.analytes).toEqual([{ name: "glucose" }]);
+  });
+
+  it("returns empty when analyte column unmapped", () => {
+    const res = buildAnalytes(rows, { group: "module" });
+    expect(res.analytes).toEqual([]);
+  });
+});
+
+describe("group filtering + counts", () => {
+  const analytes = [
+    { name: "glucose", group: "Brown" },
+    { name: "IL6", group: "Blue" },
+    { name: "KIF6", group: "Blue" },
+  ];
+
+  it("distinctGroups returns first-seen order", () => {
+    expect(distinctGroups(analytes)).toEqual(["Brown", "Blue"]);
+  });
+
+  it("applyGroupFilter keeps only chosen groups", () => {
+    expect(applyGroupFilter(analytes, ["Blue"]).map((a) => a.name)).toEqual(["IL6", "KIF6"]);
+  });
+
+  it("applyGroupFilter with empty selection keeps all", () => {
+    expect(applyGroupFilter(analytes, [])).toHaveLength(3);
+  });
+
+  it("distinctNameCount is case-insensitive", () => {
+    expect(
+      distinctNameCount([
+        { name: "glucose", group: "Brown" },
+        { name: "GLUCOSE", group: "Blue" },
+      ]),
+    ).toBe(1);
+  });
+});
+
+describe("isFormulaInjection", () => {
+  it("flags cells starting with formula prefixes", () => {
+    expect(isFormulaInjection("=SUM(A1)")).toBe(true);
+    expect(isFormulaInjection("+cmd")).toBe(true);
+    expect(isFormulaInjection("-2")).toBe(true);
+    expect(isFormulaInjection("@x")).toBe(true);
+  });
+
+  it("does not flag normal names", () => {
+    expect(isFormulaInjection("glucose")).toBe(false);
+    expect(isFormulaInjection("")).toBe(false);
+    expect(isFormulaInjection(undefined)).toBe(false);
+  });
+});
+
+describe("signed-weight parsing (Axis A)", () => {
+  it("suggestMapping auto-maps unambiguous kME / kIM headers", () => {
+    const m = suggestMapping(["analyte", "module", "kME", "kIM"]);
+    expect(m.analyte).toBe("analyte");
+    expect(m.group).toBe("module");
+    expect(m.kme).toBe("kME");
+    expect(m.kim).toBe("kIM");
+  });
+
+  it("suggestMapping leaves an ambiguous header (value) unmapped for kME", () => {
+    const m = suggestMapping(["analyte", "value"]);
+    expect(m.kme).toBeUndefined();
+  });
+
+  it("buildAnalytes parses kME/kIM cells to numbers, blank → undefined", () => {
+    const rows = [
+      { analyte: "glucose", module: "Brown", kME: "0.8", kIM: "12" },
+      { analyte: "IL6", module: "Brown", kME: "-0.6", kIM: "" },
+    ];
+    const { analytes } = buildAnalytes(rows, {
+      analyte: "analyte",
+      group: "module",
+      kme: "kME",
+      kim: "kIM",
+    });
+    expect(analytes[0].kme).toBe(0.8);
+    expect(analytes[0].kim).toBe(12);
+    expect(analytes[1].kme).toBe(-0.6);
+    expect(analytes[1].kim).toBeUndefined();
+  });
+
+  it("buildAnalytes omits kME when the column is unmapped (no regression)", () => {
+    const rows = [{ analyte: "glucose", module: "Brown" }];
+    const { analytes } = buildAnalytes(rows, { analyte: "analyte", group: "module" });
+    expect(analytes[0].kme).toBeUndefined();
+    expect(analytes[0].kim).toBeUndefined();
+  });
+
+  it("buildAnalytes leaves an out-of-range / non-numeric kME cell unset (server rejects)", () => {
+    const rows = [
+      { analyte: "a", kME: "1.5" },
+      { analyte: "b", kME: "abc" },
+    ];
+    const { analytes } = buildAnalytes(rows, { analyte: "analyte", kme: "kME" });
+    expect(analytes[0].kme).toBeUndefined();
+    expect(analytes[1].kme).toBeUndefined();
+  });
+
+  it("parseKmeCell classifies absent / value / invalid (range mirrors backend)", () => {
+    expect(parseKmeCell("")).toEqual({ status: "absent" });
+    expect(parseKmeCell("0.5")).toEqual({ status: "value", value: 0.5 });
+    expect(parseKmeCell("-1")).toEqual({ status: "value", value: -1 });
+    expect(parseKmeCell("1.5")).toEqual({ status: "invalid" });
+    expect(parseKmeCell("abc")).toEqual({ status: "invalid" });
+  });
+
+  it("parseKmeCell accepts a within-epsilon rounded export and clamps it (mirrors backend)", () => {
+    // WGCNA exports can round to just past the bound; the backend tolerates ±1e-6 and clamps.
+    expect(parseKmeCell("1.0000002")).toEqual({ status: "value", value: 1 });
+    expect(parseKmeCell("-1.0000002")).toEqual({ status: "value", value: -1 });
+    // Beyond the epsilon is still rejected.
+    expect(parseKmeCell("1.01")).toEqual({ status: "invalid" });
+    expect(parseKmeCell("-1.01")).toEqual({ status: "invalid" });
+  });
+
+  it("buildAnalytes clamps a within-epsilon kME into the outgoing payload", () => {
+    const rows = [
+      { analyte: "a", kME: "1.0000002" },
+      { analyte: "b", kME: "-1.0000002" },
+    ];
+    const { analytes } = buildAnalytes(rows, { analyte: "analyte", kme: "kME" });
+    expect(analytes[0].kme).toBe(1);
+    expect(analytes[1].kme).toBe(-1);
+  });
+
+  it("parseKimCell accepts unbounded non-negative, rejects negative / non-numeric", () => {
+    expect(parseKimCell("40")).toEqual({ status: "value", value: 40 });
+    expect(parseKimCell("0")).toEqual({ status: "value", value: 0 });
+    expect(parseKimCell("-1")).toEqual({ status: "invalid" });
+    expect(parseKimCell("x")).toEqual({ status: "invalid" });
+    expect(parseKimCell("")).toEqual({ status: "absent" });
+  });
+
+  it("countInvalidWeightCells reports mapped-but-bad cells for the Continue gate", () => {
+    const rows = [
+      { analyte: "a", kME: "0.5", kIM: "3" },
+      { analyte: "b", kME: "1.5", kIM: "-2" },
+      { analyte: "c", kME: "nope", kIM: "" },
+    ];
+    const counts = countInvalidWeightCells(rows, {
+      analyte: "analyte",
+      kme: "kME",
+      kim: "kIM",
+    });
+    expect(counts.kme).toBe(2); // 1.5 and nope
+    expect(counts.kim).toBe(1); // -2 ("" is absent, not invalid)
+  });
+
+  it("countInvalidWeightCells is zero when kME/kIM columns are unmapped", () => {
+    const rows = [{ analyte: "a", value: "-3" }];
+    const counts = countInvalidWeightCells(rows, { analyte: "analyte" });
+    expect(counts.kme).toBe(0);
+    expect(counts.kim).toBe(0);
+  });
+
+  it("buildModuleDirections yields one row per group with the shared trait label", () => {
+    const dirs = buildModuleDirections(
+      { Brown: "-0.5", Blue: "0.3" },
+      "frailty",
+    );
+    expect(dirs).toEqual([
+      { group: "Brown", eigengene_trait_correlation: -0.5, trait_label: "frailty" },
+      { group: "Blue", eigengene_trait_correlation: 0.3, trait_label: "frailty" },
+    ]);
+  });
+
+  it("buildModuleDirections skips blank correlations and returns [] when all blank", () => {
+    expect(buildModuleDirections({ Brown: "", Blue: "  " }, "frailty")).toEqual([]);
+    const dirs = buildModuleDirections({ Brown: "-0.5", Blue: "" }, "frailty");
+    expect(dirs).toEqual([
+      { group: "Brown", eigengene_trait_correlation: -0.5, trait_label: "frailty" },
+    ]);
+  });
+
+  it("buildModuleDirections returns [] when no trait label is given", () => {
+    expect(buildModuleDirections({ Brown: "-0.5" }, "")).toEqual([]);
+  });
+});
+
+describe("conflicting-duplicate weight detection (Greptile P1 #1)", () => {
+  // Two Brown/glucose rows with DIFFERENT kME must NOT be silently coerced to the first value; the
+  // display collapse means the backend never sees the conflict it is built to reject, so buildAnalytes
+  // must surface it so the Continue gate can block.
+  it("flags a (name, group) duplicate whose kME conflicts", () => {
+    const rows = [
+      { analyte: "glucose", module: "Brown", kME: "0.8" },
+      { analyte: "glucose", module: "Brown", kME: "0.2" },
+    ];
+    const res = buildAnalytes(rows, { analyte: "analyte", group: "module", kme: "kME" });
+    expect(res.weightConflicts).toBe(1);
+    // Display list still collapses to one entry (first value kept for display only).
+    expect(res.analytes).toHaveLength(1);
+    expect(res.analytes[0].kme).toBe(0.8);
+  });
+
+  it("flags a duplicate whose kIM conflicts even when kME agrees", () => {
+    const rows = [
+      { analyte: "glucose", module: "Brown", kME: "0.8", kIM: "10" },
+      { analyte: "glucose", module: "Brown", kME: "0.8", kIM: "42" },
+    ];
+    const res = buildAnalytes(rows, {
+      analyte: "analyte",
+      group: "module",
+      kme: "kME",
+      kim: "kIM",
+    });
+    expect(res.weightConflicts).toBe(1);
+  });
+
+  it("does NOT flag idempotent (identical) duplicate weights", () => {
+    const rows = [
+      { analyte: "glucose", module: "Brown", kME: "0.8", kIM: "10" },
+      { analyte: "glucose", module: "Brown", kME: "0.8", kIM: "10" },
+    ];
+    const res = buildAnalytes(rows, {
+      analyte: "analyte",
+      group: "module",
+      kme: "kME",
+      kim: "kIM",
+    });
+    expect(res.weightConflicts).toBe(0);
+  });
+
+  it("does NOT flag the same name in DIFFERENT groups (kept as two entries)", () => {
+    const rows = [
+      { analyte: "glucose", module: "Brown", kME: "0.8" },
+      { analyte: "glucose", module: "Blue", kME: "0.2" },
+    ];
+    const res = buildAnalytes(rows, { analyte: "analyte", group: "module", kme: "kME" });
+    expect(res.weightConflicts).toBe(0);
+    expect(res.analytes).toHaveLength(2);
+  });
+});
+
+describe("countInvalidDirections (Greptile P1 #2)", () => {
+  it("counts finite correlations outside [-1, 1]", () => {
+    expect(countInvalidDirections({ Brown: "1.5", Blue: "-0.3", Turquoise: "-2" })).toBe(2);
+  });
+
+  it("does not count blank or non-numeric entries (those are dropped, not rejected)", () => {
+    expect(countInvalidDirections({ Brown: "", Blue: "abc", Turquoise: "0.4" })).toBe(0);
+  });
+
+  it("respects the boundary values -1 and 1 as valid", () => {
+    expect(countInvalidDirections({ A: "-1", B: "1" })).toBe(0);
+  });
+
+  it("accepts a within-epsilon rounded correlation, rejects beyond it (mirrors backend)", () => {
+    // A rounded export just past the bound is VALID (not counted); beyond the epsilon is invalid.
+    expect(countInvalidDirections({ A: "1.0000002", B: "-1.0000002" })).toBe(0);
+    expect(countInvalidDirections({ A: "1.01", B: "-1.01" })).toBe(2);
+  });
+
+  it("buildModuleDirections clamps a within-epsilon correlation into the payload", () => {
+    const dirs = buildModuleDirections({ Brown: "1.0000002", Blue: "-1.0000002" }, "frailty");
+    expect(dirs).toEqual([
+      { group: "Brown", eigengene_trait_correlation: 1, trait_label: "frailty" },
+      { group: "Blue", eigengene_trait_correlation: -1, trait_label: "frailty" },
+    ]);
+  });
+
+  it("only considers the provided groups when given (ignores stale entries)", () => {
+    const byGroup = { Brown: "0.4", Removed: "5" };
+    expect(countInvalidDirections(byGroup)).toBe(1);
+    expect(countInvalidDirections(byGroup, ["Brown"])).toBe(0);
+  });
+});

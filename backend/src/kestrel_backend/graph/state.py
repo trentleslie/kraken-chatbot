@@ -66,6 +66,27 @@ class NoveltyScore(BaseModel):
     classification: Literal["cold_start", "sparse", "moderate", "well_characterized"] = Field(
         ..., description="Classification based on edge count thresholds"
     )
+    # === Axis B: intramodular-centrality hub verdict ===
+    # A boolean, NOT a 5th `classification` Literal value: synthesis.py builds a `by_class` dict on
+    # exactly the four Literal keys and would KeyError on a fifth. Hub-ness rides this flag; the
+    # entity keeps its edge-count `classification` for synthesis/display compatibility. When True,
+    # triage reroutes the entity to cold_start (inverted routing) regardless of edge count.
+    is_intramodular_hub: bool = Field(
+        False,
+        description="True if this entity is a top-k% |kME| member of its WGCNA module (axis A "
+        "ModuleSpine), confirmed by the kIM veto. Drives inverted routing (hub → cold_start). "
+        "Default False; only ever True when triage's intramodular-centrality pass is enabled and a "
+        "ModuleSpine with kME is present.",
+    )
+    kme: float | None = Field(
+        None, description="Signed module-eigengene correlation (kME) from the ModuleSpine member the "
+        "entity joined to (most representative module by |kME|); None for classic/single-entity runs "
+        "or entities absent from the spine.",
+    )
+    kim: float | None = Field(
+        None, ge=0.0, description="Raw intramodular connectivity (kIM / kWithin), non-negative; None "
+        "when absent from the spine member or not provided by axis A.",
+    )
 
 
 class Finding(BaseModel):
@@ -213,6 +234,45 @@ class BridgeGrounding(BaseModel):
 
     legs: list[LegSummary] = Field(default_factory=list, description="Per-leg evidence tiers")
     label: str = Field(..., description="Chain summary, e.g. 'both legs curated-causal' / 'no KG edge'")
+
+
+class BridgeSpecificity(BaseModel):
+    """Structural-genericity signal for a bridge, from the KG degree of its intermediate node(s).
+
+    Degree-Weighted Path Count (DWPC) damping (Himmelstein & Baranzini 2015; Rephetio 2017):
+    bridges through generic, high-degree intermediates ("blood", "cancer") are penalized; bridges
+    through specific, low-degree intermediates are rewarded. Length-normalized (geometric-mean)
+    DWPC so 1-, 2-, and 3-intermediate scaffolds are comparable under one cut point.
+
+    This reports STRUCTURAL genericity, NOT mechanism confidence. It is attached non-destructively
+    as a state side-map (``specificity_by_bridge`` keyed by ``tuple(bridge.entities)``), NOT a field
+    on the frozen ``Bridge``. Field names are PINNED by the cross-axis contract (ledger L12/L17) —
+    axis E (synthesis) reads them by these exact names.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    score: float | None = Field(
+        ...,
+        description="Length-normalized DWPC in (0,1]; higher = more specific. None only when ALL "
+        "intermediate degrees are missing (label == 'unknown').",
+    )
+    label: str = Field(
+        ..., description="specific | moderate | generic | unknown"
+    )
+    intermediate_curies: list[str] = Field(
+        default_factory=list, description="Scaffold CURIEs (endpoints excluded)"
+    )
+    intermediate_degrees: list[int | None] = Field(
+        default_factory=list,
+        description="KG degree per intermediate, parallel to intermediate_curies; None where the "
+        "degree could not be fetched (preserved even when the bridge is condemned on known evidence).",
+    )
+    generic_intermediates: list[str] = Field(
+        default_factory=list,
+        description="Scaffold CURIEs whose own known degree exceeds GENERIC_CUTOFF (can be non-empty "
+        "even when some degrees are None — condemn-on-known).",
+    )
 
 
 class Bridge(BaseModel):
@@ -370,6 +430,75 @@ class ModelUsageRecord(BaseModel):
     available_tools: list[str] | None = Field(None, description="Tool names from SDK init event, if exposed")
 
 
+# =============================================================================
+# Signed-weight data spine (Axis A) — module_spine schema
+# =============================================================================
+# Owns the `module-weight-schema` seam consumed by axes B (triage), D
+# (entity-semantics), and E (synthesis). Threads per-member signed WGCNA weights
+# (kME/kIM) and an optional per-module eigengene→outcome direction from the
+# analyte-upload path into state. See docs/plans/2026-07-16-001-feat-signed-weight-data-spine-plan.md.
+
+
+class MemberWeight(BaseModel):
+    """A single module member's signed within-module weights.
+
+    ``kme`` (module eigengene correlation) is a correlation, bounded to [-1, 1] and
+    REQUIRED — "missing kME" means the member is simply absent from a spine's ``members``
+    map, never stored as ``None``. ``kim`` (raw intramodular connectivity / kWithin) is
+    UNBOUNDED and non-negative — NOT a correlation — so it carries only a ``ge=0`` floor;
+    bounding it to [-1, 1] would reject legitimate Brown uploads.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str = Field(
+        ..., description="Canonical run-set name (byte-identical to entity_groups keys)"
+    )
+    kme: float = Field(..., ge=-1.0, le=1.0, description="Signed module-eigengene correlation")
+    kim: float | None = Field(
+        None, ge=0.0, description="Raw intramodular connectivity (kWithin); unbounded, non-negative"
+    )
+
+
+class ModuleDirection(BaseModel):
+    """Optional per-module eigengene→outcome direction (signed ME-trait correlation).
+
+    Load-bearing for the sign-inversion metric (member-vs-outcome =
+    sign(kME) × sign(direction)); a module without it still runs, but the metric is
+    uncomputable for that module.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    eigengene_trait_correlation: float = Field(
+        ..., ge=-1.0, le=1.0, description="Signed correlation of the module eigengene with the trait"
+    )
+    trait_label: str = Field(..., description="Human label of the outcome/trait")
+
+
+class ModuleSpine(BaseModel):
+    """Signed within-module structure for one module (group).
+
+    Module-centric (keyed by group) because a member can belong to multiple modules with a
+    DIFFERENT kME/kIM per module; a flat name→kME map would collapse that. ``members`` holds
+    only weighted members (name → MemberWeight); a member with no kME cell is absent here but
+    still lives in ``run_analytes`` / ``entity_groups``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    group: str = Field(..., description="Display label for the module/group")
+    members: dict[str, MemberWeight] = Field(
+        ..., description="Canonical name → signed weight, weighted members only"
+    )
+    direction: ModuleDirection | None = Field(
+        None, description="Optional eigengene→outcome direction"
+    )
+    # Reserved v2 slot for the within-module N×N correlation matrix. Deliberate YAGNI
+    # exception for seam stability: stays None until the v2 task defines its shape.
+    correlation: None = Field(None, description="Reserved for v2 within-module correlation matrix")
+
+
 def merge_node_timings(
     left: dict[str, float] | None,
     right: dict[str, float] | None,
@@ -407,6 +536,31 @@ class DiscoveryState(TypedDict, total=False):
     raw_entities: list[str]  # Extracted entity names before resolution
     conversation_history: list[tuple[str, str]]  # (role, content) pairs
     biomapper_env: str | None  # prod/dev biomapper2 API toggle ("production"|"dev"); None = default
+
+    # === Analyte file upload (structured panel) ===
+    # Plain single-writer fields (set at initial_state / intake, before the direct_kg|cold_start
+    # fork) — NO operator.add reducer (learning: only parallel-superstep fields carry reducers;
+    # a reducer here would duplicate-concat the panel). structured_analytes is the FULL parsed
+    # panel ({name, group?, type?} dicts); selected_groups is the client's group selection;
+    # entity_groups is the name -> [group,...] membership map for the run set (the R14 fan-out seam).
+    structured_analytes: list[dict]  # Full parsed upload panel (pre-selection)
+    selected_groups: list[str]  # Group values chosen for the run (empty = all)
+    entity_groups: dict[str, list[str]]  # run-set analyte name -> [group, ...]
+    # Optional raw per-module eigengene→outcome direction rows carried on the WS payload
+    # ({group, eigengene_trait_correlation, trait_label}); validated in the shared R19 helper
+    # and consumed by intake to build ModuleSpine.direction. Absent for classic / no-direction runs.
+    module_directions: list[dict]  # Raw per-module direction rows (pre-validation)
+    # === Signed-weight data spine (Axis A) ===
+    # Plain single-writer field set once at intake (mirrors entity_groups) — NO operator.add
+    # reducer (a reducer would duplicate-concat the spine). Group-canonical key → ModuleSpine.
+    # ABSENT for classic and no-kME runs; nothing downstream may require it (R6). Per-run
+    # coverage of this spine rides module_spine_coverage below.
+    module_spine: dict[str, ModuleSpine]  # group -> signed within-module structure
+    module_spine_coverage: dict[str, Any]  # per-run coverage summary (R8; single-writer)
+    # Set by intake (single-writer, no reducer) when the R19 gate rejects a structured panel on a
+    # non-WS entry path (Studio/harness). route_after_intake short-circuits the graph to END so the
+    # rejection surfaces cleanly instead of crashing downstream at IntegrationInput.
+    upload_rejected: bool
 
     # === Study Context (for longitudinal analysis) ===
     is_longitudinal: bool
@@ -491,6 +645,14 @@ class DiscoveryState(TypedDict, total=False):
     grounded_bridges: list[Bridge]
     bridge_grounding_errors: Annotated[list[str], operator.add]
 
+    # === Phase 4b (axis C): Bridge specificity (structural genericity by intermediate degree) ===
+    # A state SIDE-MAP keyed by tuple(bridge.entities) -> BridgeSpecificity (NOT a Bridge field;
+    # the frozen Bridge model is unchanged). Mirrors grounded_bridges: plain last-write-wins (NO
+    # operator.add) — integration writes it once. Duplicate bridges sharing an entities tuple
+    # collapse to one entry (accepted, same as the grounding-label map). Axis E (synthesis) reads
+    # it by tuple(entities); a missing key means "not scored / no signal".
+    specificity_by_bridge: dict[tuple[str, ...], BridgeSpecificity]
+
     # === Cost Tracking ===
     # Uses operator.add reducer for parallel writes from concurrent branches
     model_usages: Annotated[list[ModelUsageRecord], operator.add]
@@ -508,3 +670,8 @@ class DiscoveryState(TypedDict, total=False):
     # Context-compression telemetry emitted by synthesis (shown/total/elided per capped section +
     # budget utilization). Single-writer (synthesis only) → plain field, last-write-wins; no reducer.
     synthesis_context_stats: dict
+    # Tier-3 prediction telemetry emitted by synthesis (Axis E): a DETERMINISTIC coverage metric
+    # (direction_computable_pct, from state) kept explicitly separate from COMPLIANCE metrics
+    # (direction_rendered_pct / falsifier_rendered_pct, regex over the report). Single-writer
+    # (synthesis only) → plain field, last-write-wins; no reducer.
+    tier3_prediction_stats: dict

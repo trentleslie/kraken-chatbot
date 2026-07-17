@@ -1,0 +1,16 @@
+[Unit]
+Description=LiteLLM Proxy (Dev)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/kraken-chatbot-dev
+EnvironmentFile=/home/ubuntu/kraken-chatbot-dev/deploy/litellm.env
+ExecStart=/home/ubuntu/.local/bin/litellm --config deploy/litellm.config.yaml --host 127.0.0.1 --port 4001
+Restart=always
+RestartSec=5
+SyslogIdentifier=litellm-proxy-dev
+
+[Install]
+WantedBy=multi-user.target

@@ -15,10 +15,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from langfuse import get_client
 
 from .config import biomapper_misconfig_reason, get_settings
+from .analyte_ingest import validate_and_normalize
 from .agent import run_agent_turn
 from .logging_config import configure_logging, generate_correlation_id, correlation_id
 from .clerk_auth import get_current_user, validate_ws_clerk_token
 from .clerk_proxy import router as clerk_proxy_router, close_http_client
+from .byok import (
+    resolve_effective_key_and_provider,
+    current_api_key,
+    current_provider,
+    NeedsKeyError,
+)
+from .clerk_identity import get_verified_email
 
 # Configure logging early
 settings = get_settings()
@@ -56,6 +64,7 @@ from .protocol import (
     PipelineProgressMessage,
     PipelineNodeDetailMessage,
     PipelineCompleteMessage,
+    KeySourceMessage,
     NODE_STATUS_MESSAGES,
 )
 from .graph.node_detail_extractors import extract_node_details
@@ -101,6 +110,9 @@ conversation_ids: dict[str, UUID] = {}
 
 # Turn counter per WebSocket connection: {connection_id: int}
 turn_counters: dict[str, int] = defaultdict(int)
+
+# Per-connection BYOK key: {connection_id: key_str | None}
+connection_api_keys: dict[str, str | None] = {}
 
 # Maximum number of user/assistant exchanges to keep in history
 MAX_HISTORY_EXCHANGES = 10
@@ -262,6 +274,46 @@ def check_langfuse_health() -> tuple[bool, str | None]:
         return True, None
     except Exception as e:
         return False, f"Langfuse error: {str(e)}"
+
+
+def _probe_anthropic_key(key: str) -> tuple[bool, str | None]:
+    """Probe an Anthropic API key with a minimal 1-token request.
+
+    Returns:
+        (True, None) if the key is valid and accepted by Anthropic.
+        (False, "invalid_api_key") if Anthropic rejects the key (AuthenticationError).
+        (False, "validation_failed") for any other exception (network, timeout, etc.)
+
+    The key is NEVER logged — callers must not log it either.
+    """
+    import anthropic
+    try:
+        anthropic.Anthropic(api_key=key).messages.create(
+            model="claude-3-5-haiku-latest",
+            max_tokens=1,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        return True, None
+    except anthropic.AuthenticationError:
+        return False, "invalid_api_key"
+    except Exception:
+        return False, "validation_failed"
+
+
+@app.post("/api/validate-key")
+async def validate_key(request: Request):
+    """Pre-flight endpoint: validate an Anthropic API key without storing it.
+
+    Body: {"key": "sk-..."}
+    Returns: {"valid": true} or {"valid": false, "reason": "..."}
+    The submitted key is never written to any log.
+    """
+    body = await request.json()
+    # _probe_anthropic_key makes a blocking (synchronous) Anthropic HTTP call.
+    # Run it in a worker thread so a slow/timing-out probe cannot stall the event
+    # loop and the active WebSocket chat streams sharing it.
+    ok, reason = await asyncio.to_thread(_probe_anthropic_key, body.get("key", ""))
+    return {"valid": ok} if ok else {"valid": False, "reason": reason}
 
 
 @app.get("/health")
@@ -504,6 +556,9 @@ async def handle_pipeline_mode(
     content: str,
     connection_id: str,
     biomapper_env: str | None = None,
+    structured_analytes: list[dict] | None = None,
+    selected_groups: list[str] | None = None,
+    module_directions: list[dict] | None = None,
 ) -> None:
     """
     Handle discovery pipeline mode - LangGraph multi-node workflow.
@@ -584,6 +639,9 @@ async def handle_pipeline_mode(
             conversation_history=list(history),
             config=pipeline_config,
             biomapper_env=biomapper_env,
+            structured_analytes=structured_analytes,
+            selected_groups=selected_groups,
+            module_directions=module_directions,
         ):
             if event["type"] != "node_update":
                 continue
@@ -816,11 +874,34 @@ async def websocket_chat(websocket: WebSocket):
             corr_id = generate_correlation_id()
             correlation_id.set(corr_id)
 
+            # R19 gate #1: reject an oversized raw frame BEFORE json.loads (DoS guard — a huge
+            # analyte upload must not be parsed into memory). Byte length, not char length.
+            _settings = get_settings()
+            if len(raw_data.encode("utf-8")) > _settings.max_ws_message_bytes:
+                await websocket.send_text(
+                    ErrorMessage(
+                        message=(
+                            f"Message too large (limit {_settings.max_ws_message_bytes} bytes). "
+                            "Reduce the uploaded panel."
+                        )
+                    ).model_dump_json()
+                )
+                continue
+
             try:
                 data = json.loads(raw_data)
             except json.JSONDecodeError:
                 await websocket.send_text(
                     ErrorMessage(message="Invalid JSON").model_dump_json()
+                )
+                continue
+
+            # BYOK: client can set/clear per-connection key before any chat turn.
+            if data.get("type") == "set_key":
+                connection_api_keys[connection_id] = data.get("key")
+                logger.debug(
+                    "BYOK set_key received",
+                    extra={"connection_id": connection_id, "has_key": data.get("key") is not None}
                 )
                 continue
 
@@ -832,11 +913,83 @@ async def websocket_chat(websocket: WebSocket):
                 continue
 
             content = data.get("content", "").strip()
-            if not content:
+
+            # Analyte file-upload fields (mirror biomapper_env). The full parsed panel + the
+            # client's group selection arrive alongside the free-text query.
+            structured_analytes_raw = data.get("structured_analytes")
+            selected_groups = data.get("selected_groups")
+            # Optional per-module eigengene→outcome directions (Axis A). kME/kIM ride each
+            # structured_analytes row (no separate field); only the direction table is new.
+            module_directions_raw = data.get("module_directions")
+
+            # Relaxed empty-content guard (R17): accept a file-only submit (panel present, no typed
+            # query); reject only when BOTH are empty.
+            if not content and not structured_analytes_raw:
                 await websocket.send_text(
                     ErrorMessage(message="Empty message").model_dump_json()
                 )
                 continue
+
+            # R19 gate #1 (per-field/ceiling): validate + normalize the panel at the door. On
+            # rejection, surface the reason and skip the pipeline entirely (fail-fast, no run).
+            normalized_analytes: list[dict] | None = None
+            if structured_analytes_raw:
+                if not isinstance(structured_analytes_raw, list):
+                    await websocket.send_text(
+                        ErrorMessage(message="structured_analytes must be a list").model_dump_json()
+                    )
+                    continue
+                if selected_groups is not None and not isinstance(selected_groups, list):
+                    await websocket.send_text(
+                        ErrorMessage(message="selected_groups must be a list").model_dump_json()
+                    )
+                    continue
+                if module_directions_raw is not None and not isinstance(module_directions_raw, list):
+                    await websocket.send_text(
+                        ErrorMessage(message="module_directions must be a list").model_dump_json()
+                    )
+                    continue
+                # The authoritative count-cap + per-row validation of directions lives in the shared
+                # helper (Unit 2), so gate #1 and intake gate #2 are bounded identically.
+                normalized = validate_and_normalize(
+                    structured_analytes_raw,
+                    selected_groups,
+                    _settings,
+                    module_directions=module_directions_raw,
+                )
+                if normalized.errors:
+                    await websocket.send_text(
+                        ErrorMessage(
+                            message="Analyte upload rejected: " + "; ".join(normalized.errors)
+                        ).model_dump_json()
+                    )
+                    continue
+                # A panel can normalize cleanly (no errors) yet yield NO runnable analytes — every
+                # row had a blank name, or the group selection matched nothing. Reject here with a
+                # clear message instead of entering the graph with raw_entities=[] and failing later
+                # as an opaque pipeline error.
+                if not normalized.run_analytes:
+                    await websocket.send_text(
+                        ErrorMessage(
+                            message="Analyte upload rejected: no usable analytes after parsing "
+                            "(check the analyte-name column mapping and group selection)."
+                        ).model_dump_json()
+                    )
+                    continue
+                # Pass the ORIGINAL panel + selection downstream; intake re-normalizes (gate #2).
+                normalized_analytes = structured_analytes_raw
+                # File-only submit: synthesize a names-bearing query so query_preview, Langfuse
+                # input, history, and add_turn all persist meaningful content (user chose full-name
+                # persistence). Names come from the validated run set (already deduped/filtered).
+                if not content:
+                    names = normalized.run_analytes
+                    shown = names[: min(len(names), 100)]
+                    more = f" (+{len(names) - len(shown)} more)" if len(names) > len(shown) else ""
+                    content = (
+                        f"Discovery analysis of {len(names)} uploaded analytes: "
+                        + ", ".join(shown)
+                        + more
+                    )
 
             # Check rate limit
             if not check_rate_limit(connection_id):
@@ -848,10 +1001,9 @@ async def websocket_chat(websocket: WebSocket):
                 continue
 
             # Create conversation on first message
-            settings = get_settings()
             if connection_id not in conversation_ids:
                 user_id = user_info.get("user_id") if user_info else None
-                conv_id = await create_conversation(connection_id, settings.model or "default", user_id)
+                conv_id = await create_conversation(connection_id, _settings.model or "default", user_id)
                 if conv_id:
                     conversation_ids[connection_id] = conv_id
                     # Send conversation_id to frontend for copy link functionality
@@ -864,9 +1016,34 @@ async def websocket_chat(websocket: WebSocket):
             # Optional prod/dev biomapper2 API toggle (mirrors biomapper-ui env routing).
             biomapper_env = data.get("biomapper_env")
 
+            # BYOK: unconditional per-turn key resolution (fail closed).
+            # An untrusted user with no key must NEVER reach synthesis — gate applies
+            # regardless of server configuration.
+            verified = await get_verified_email(user_info or {})
+            try:
+                key, provider, source = resolve_effective_key_and_provider(
+                    connection_api_keys.get(connection_id), verified)
+            except NeedsKeyError:
+                await websocket.send_text(ErrorMessage(
+                    message="Provide your Anthropic API key to run synthesis.",
+                    code="NEEDS_KEY").model_dump_json())
+                await websocket.send_text(DoneMessage().model_dump_json())
+                continue
+            await websocket.send_text(KeySourceMessage(source=source).model_dump_json())
+            tok = current_api_key.set(key)
+            prov_tok = current_provider.set(provider)
+
             try:
                 if agent_mode == "pipeline":
-                    await handle_pipeline_mode(websocket, content, connection_id, biomapper_env)
+                    await handle_pipeline_mode(
+                        websocket,
+                        content,
+                        connection_id,
+                        biomapper_env,
+                        structured_analytes=normalized_analytes,
+                        selected_groups=selected_groups,
+                        module_directions=module_directions_raw,
+                    )
                 else:
                     await handle_classic_mode(websocket, content, connection_id)
             except Exception as e:
@@ -874,6 +1051,9 @@ async def websocket_chat(websocket: WebSocket):
                     ErrorMessage(message=f"Agent error: {str(e)}").model_dump_json()
                 )
                 await websocket.send_text(DoneMessage().model_dump_json())
+            finally:
+                current_api_key.reset(tok)
+                current_provider.reset(prov_tok)
 
     except WebSocketDisconnect:
         # Clean up state for this connection
@@ -881,6 +1061,7 @@ async def websocket_chat(websocket: WebSocket):
         conversation_history.pop(connection_id, None)
         conversation_ids.pop(connection_id, None)
         turn_counters.pop(connection_id, None)
+        connection_api_keys.pop(connection_id, None)
     except Exception as e:
         logger.error(
             "WebSocket error",
@@ -891,6 +1072,7 @@ async def websocket_chat(websocket: WebSocket):
         conversation_history.pop(connection_id, None)
         conversation_ids.pop(connection_id, None)
         turn_counters.pop(connection_id, None)
+        connection_api_keys.pop(connection_id, None)
 
 
 if __name__ == "__main__":

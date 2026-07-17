@@ -867,22 +867,37 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             alias_category = biolink_class_for(entity_type_hints.get(entity))
             for alias in entity_aliases:
                 alias_result = await resolve_via_api(alias, category=alias_category)
-                if alias_result is not None:
-                    # Use alias resolution but keep original raw_name
-                    all_results[idx] = EntityResolution(
-                        raw_name=entity,  # Keep original name
-                        curie=alias_result.curie,
-                        resolved_name=alias_result.resolved_name,
-                        category=alias_result.category,
-                        confidence=alias_result.confidence,
-                        method=f"alias:{alias}",  # Track that alias was used
+                if alias_result is None:
+                    continue
+                if alias_result.curie is None:
+                    # The rank guard abstained on this alias (species→genus collapse): a non-None
+                    # result carrying curie=None + rank_collapsed=True. This is NOT an alias hit —
+                    # relabeling it method="alias:<name>" would strip the "failed" sentinel, count it
+                    # as tier15_resolved, and block Tier 2 from ever resolving the original entity.
+                    # Preserve the rank_collapsed diagnostic (keyed on the original raw_name) and let
+                    # it fall through to Tier 2 exactly as a genuine miss would (resolved_via_alias
+                    # stays False → appended to tier2_needed_indices below).
+                    all_results[idx] = alias_result.model_copy(update={"raw_name": entity})
+                    logger.info(
+                        "Tier 1.5 '%s': alias '%s' rank-collapsed (abstain); falling through to Tier 2",
+                        entity, alias,
                     )
-                    tier15_resolved += 1
-                    resolved_via_alias = True
-                    logger.info("Tier 1.5 '%s': resolved via alias '%s' to %s",
-                               entity, alias, alias_result.curie)
-                    break
-            
+                    continue
+                # Use alias resolution but keep original raw_name
+                all_results[idx] = EntityResolution(
+                    raw_name=entity,  # Keep original name
+                    curie=alias_result.curie,
+                    resolved_name=alias_result.resolved_name,
+                    category=alias_result.category,
+                    confidence=alias_result.confidence,
+                    method=f"alias:{alias}",  # Track that alias was used
+                )
+                tier15_resolved += 1
+                resolved_via_alias = True
+                logger.info("Tier 1.5 '%s': resolved via alias '%s' to %s",
+                           entity, alias, alias_result.curie)
+                break
+
             if not resolved_via_alias:
                 tier2_needed_indices.append(idx)
         else:
@@ -975,8 +990,14 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             tier2_resolved, len(tier2_needed_indices), tier2_duration
         )
     elif tier2_needed_indices:
-        # SDK not available - mark remaining as failed
+        # SDK not available - mark remaining as failed. Preserve an existing rank_collapse
+        # abstention (e.g. carried over from a Tier-1.5 alias collapse) instead of clobbering its
+        # diagnostic with a bare "failed" — both route to cold_start identically (curie=None), but
+        # the rank_collapsed marker/measurement hook would otherwise be silently lost.
         for idx in tier2_needed_indices:
+            existing = all_results[idx]
+            if existing is not None and existing.rank_collapsed:
+                continue
             all_results[idx] = EntityResolution(
                 raw_name=entities[idx],
                 curie=None,

@@ -27,6 +27,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import McpStdioServerConfig
 from .config import get_settings
 from .bash_sandbox import bash_security_hook
+from .byok import agent_cli_path, build_agent_env
 
 
 # Langfuse client (lazy initialized)
@@ -355,6 +356,36 @@ class AgentEvent:
     data: dict[str, Any]
 
 
+def build_agent_options() -> ClaudeAgentOptions:
+    """Build ClaudeAgentOptions for the classic single-agent path.
+
+    Extracts all option construction into one place so the turn loop
+    and tests can call it without duplicating the kwarg logic.
+    Injects the per-request BYOK key (if set on the contextvar) into
+    the env dict, which the SDK merges over the inherited process env.
+    """
+    kestrel_config = _get_kestrel_mcp_config()
+    options_kwargs = {
+        "allowed_tools": list(ALLOWED_TOOLS),
+        "system_prompt": SYSTEM_PROMPT,
+        "mcp_servers": {"kestrel": kestrel_config},
+        "hooks": {"PreToolUse": [HookMatcher(matcher="Bash", hooks=[bash_security_hook])]},
+        "max_buffer_size": 10 * 1024 * 1024,
+    }
+    settings = get_settings()
+    if settings.model:
+        options_kwargs["model"] = settings.model
+    # env is MERGED over the inherited process environment by the SDK, so we
+    # only override the credential(s) and leave PATH/etc. intact.
+    env = build_agent_env()
+    if env:
+        options_kwargs["env"] = env
+    cli = agent_cli_path()
+    if cli:
+        options_kwargs["cli_path"] = cli
+    return ClaudeAgentOptions(**options_kwargs)
+
+
 async def run_agent_turn(user_message: str, session_id: str | None = None) -> AsyncIterator[AgentEvent]:
     """
     Run a single agent turn and yield events for streaming to the client.
@@ -386,29 +417,8 @@ async def run_agent_turn(user_message: str, session_id: str | None = None) -> As
         if session_id:
             trace.update_trace(session_id=session_id)
 
-    # Configure Kestrel MCP server via stdio proxy
-    # The proxy handles Kestrel's non-standard MCP-over-HTTP protocol
-    kestrel_config = _get_kestrel_mcp_config()
-
-    # Build options with Kestrel MCP server and Bash security hook
-    options_kwargs = {
-        "allowed_tools": list(ALLOWED_TOOLS),
-        "system_prompt": SYSTEM_PROMPT,
-        "mcp_servers": {
-            "kestrel": kestrel_config,
-        },
-        # Security: Validate all Bash commands before execution
-        "hooks": {
-            "PreToolUse": [
-                HookMatcher(matcher="Bash", hooks=[bash_security_hook])
-            ]
-        },
-        "max_buffer_size": 10 * 1024 * 1024,  # 10MB buffer for large KG responses
-    }
-    if settings.model:
-        options_kwargs["model"] = settings.model
-
-    options = ClaudeAgentOptions(**options_kwargs)
+    # Build options for Kestrel MCP server, Bash security hook, and BYOK key injection
+    options = build_agent_options()
 
     # Track tool_use_id -> tool_name mapping for matching results
     tool_id_to_name: dict[str, str] = {}

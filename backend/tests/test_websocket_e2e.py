@@ -22,6 +22,32 @@ import pytest
 
 
 # ============================================================================
+# BYOK passthrough fixture — applies to every test in this module.
+# After the unconditional BYOK gating fix, every user_message turn resolves a
+# key. Tests here are about WS behaviour (routing, history, error propagation),
+# not BYOK policy; mock the identity + byok layer so they see a trusted user
+# with a server key and never hit NeedsKeyError.
+# ============================================================================
+
+@pytest.fixture(autouse=True)
+def byok_passthrough(monkeypatch):
+    """Patch get_verified_email → trusted address; patch byok.get_settings → server key."""
+    from kestrel_backend import byok as byok_module
+
+    class _ByokSettings:
+        byok_trusted_email_domains = ["test.com"]
+        server_anthropic_api_key = "sk-test"
+
+    monkeypatch.setattr(byok_module, "get_settings", lambda: _ByokSettings())
+
+    with patch(
+        "kestrel_backend.main.get_verified_email",
+        AsyncMock(return_value="user@test.com"),
+    ):
+        yield
+
+
+# ============================================================================
 # Test Helpers
 # ============================================================================
 
@@ -100,10 +126,9 @@ class TestWebSocketConnection:
                                 # Connect, send message, and disconnect
                                 with client.websocket_connect("/ws/chat") as websocket:
                                     websocket.send_text(create_user_message("test"))
-                                    # Wait for done
-                                    data = websocket.receive_text()
-                                    msg = json.loads(data)
-                                    assert msg["type"] == "done"
+                                    # Drain until done (key_source is sent before dispatch)
+                                    messages = collect_messages_until_done(websocket)
+                                    assert any(m["type"] == "done" for m in messages)
 
                                 # After disconnect, state should be cleaned up
                                 # (clean_connection_state fixture handles verification)
@@ -466,12 +491,12 @@ class TestRateLimiting:
                                 client = TestClient(app)
 
                                 with client.websocket_connect("/ws/chat") as websocket:
-                                    # First two messages should succeed
+                                    # First two messages should succeed (drain until done each time;
+                                    # key_source is sent before dispatch)
                                     for _ in range(2):
                                         websocket.send_text(create_user_message("test"))
-                                        data = websocket.receive_text()
-                                        msg = json.loads(data)
-                                        assert msg["type"] == "done"
+                                        messages = collect_messages_until_done(websocket)
+                                        assert any(m["type"] == "done" for m in messages)
 
                                     # Third message should be rate limited
                                     websocket.send_text(create_user_message("test"))
@@ -558,6 +583,62 @@ class TestErrorHandling:
                             assert msg["type"] == "error"
                             assert "Empty message" in msg["message"]
 
+    def test_module_directions_not_a_list_rejected(self, test_settings, clean_connection_state):
+        """WS gate #1 rejects a non-list module_directions payload before any run (Axis A)."""
+        from starlette.testclient import TestClient
+        from kestrel_backend.main import app
+
+        with patch("kestrel_backend.config.get_settings", return_value=test_settings):
+            with patch("kestrel_backend.main.get_settings", return_value=test_settings):
+                with patch("kestrel_backend.main.init_db", new_callable=AsyncMock):
+                    with patch("kestrel_backend.main.close_db", new_callable=AsyncMock):
+                        client = TestClient(app)
+
+                        with client.websocket_connect("/ws/chat") as websocket:
+                            websocket.send_text(json.dumps({
+                                "type": "user_message",
+                                "content": "",
+                                "agent_mode": "pipeline",
+                                "structured_analytes": [
+                                    {"name": "glucose", "group": "Brown", "kme": 0.8}
+                                ],
+                                "module_directions": {"not": "a list"},
+                            }))
+
+                            data = websocket.receive_text()
+                            msg = json.loads(data)
+
+                            assert msg["type"] == "error"
+                            assert "module_directions must be a list" in msg["message"]
+
+    def test_kme_out_of_range_rejected_at_gate(self, test_settings, clean_connection_state):
+        """kME cells ride structured_analytes and are validated at gate #1: an out-of-range
+        value rejects the panel before the pipeline runs (Axis A: reject, don't clip)."""
+        from starlette.testclient import TestClient
+        from kestrel_backend.main import app
+
+        with patch("kestrel_backend.config.get_settings", return_value=test_settings):
+            with patch("kestrel_backend.main.get_settings", return_value=test_settings):
+                with patch("kestrel_backend.main.init_db", new_callable=AsyncMock):
+                    with patch("kestrel_backend.main.close_db", new_callable=AsyncMock):
+                        client = TestClient(app)
+
+                        with client.websocket_connect("/ws/chat") as websocket:
+                            websocket.send_text(json.dumps({
+                                "type": "user_message",
+                                "content": "",
+                                "agent_mode": "pipeline",
+                                "structured_analytes": [
+                                    {"name": "glucose", "group": "Brown", "kme": 1.5}
+                                ],
+                            }))
+
+                            data = websocket.receive_text()
+                            msg = json.loads(data)
+
+                            assert msg["type"] == "error"
+                            assert "rejected" in msg["message"].lower()
+
 
 # ============================================================================
 # Authentication Tests
@@ -635,9 +716,9 @@ class TestWebSocketAuthentication:
                                     # Should connect successfully
                                     with client.websocket_connect("/ws/chat?token=valid-token") as websocket:
                                         websocket.send_text(create_user_message("test"))
-                                        data = websocket.receive_text()
-                                        msg = json.loads(data)
-                                        assert msg["type"] == "done"
+                                        # Drain until done (key_source is sent before dispatch)
+                                        messages = collect_messages_until_done(websocket)
+                                        assert any(m["type"] == "done" for m in messages)
 
 
 # ============================================================================

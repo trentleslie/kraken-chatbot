@@ -156,3 +156,75 @@ async def test_resolve_via_api_clean_genus_is_unaffected(monkeypatch):
     assert out is not None
     assert out.curie == "NCBITaxon:1263"
     assert out.rank_collapsed is False
+
+
+# ------------- Tier-1.5 alias abstention (Greptile P1-a) -------------
+# A rank-guard abstention returned by resolve_via_api for an ALIAS is a non-None EntityResolution
+# with curie=None. The alias branch must NOT treat it as a hit (relabel method="alias:<name>",
+# increment tier15_resolved, block Tier 2). It must preserve the rank_collapsed diagnostic and fall
+# through exactly like a genuine miss.
+
+@pytest.mark.asyncio
+async def test_alias_rank_collapse_not_counted_as_hit_and_falls_through(monkeypatch):
+    # Parent entity fails Tier 1 (None); its alias resolves species→genus → rank-guard abstains
+    # (curie=None, rank_collapsed=True). SDK off so Tier 2 does not run — the entity must end up as a
+    # preserved rank-collapse abstention, NOT an alias hit.
+    abstention = entity_resolution._rank_abstention("Ruminococcus gnavus", "Ruminococcus")
+
+    async def fake_resolve(entity, category=None):
+        # Parent name misses at Tier 1; the alias yields a rank-collapse abstention.
+        if entity == "R. gnavus":
+            return abstention
+        return None
+
+    monkeypatch.setattr(entity_resolution, "resolve_via_api", fake_resolve)
+    monkeypatch.setattr(entity_resolution, "HAS_SDK", False)
+
+    state = {
+        "raw_entities": ["Ruminococcus gnavus"],
+        "entity_aliases": {"Ruminococcus gnavus": ["R. gnavus"]},
+        "entity_type_hints": {},
+    }
+    out = await entity_resolution.run(state)
+
+    resolved = out["resolved_entities"]
+    assert len(resolved) == 1
+    r = resolved[0]
+    # NOT an alias hit: no curie, "failed" sentinel (routes to cold_start), method not alias:*
+    assert r.curie is None
+    assert r.method == "failed"
+    assert not (r.method or "").startswith("alias:")
+    # rank_collapsed diagnostic preserved through the fall-through (not clobbered by Tier-2 fallback)
+    assert r.rank_collapsed is True
+    assert r.raw_name == "Ruminococcus gnavus"
+    # measurement hook counts it
+    assert out["rank_collapse_sign_flips"] == 1
+
+
+@pytest.mark.asyncio
+async def test_alias_genuine_hit_still_counts(monkeypatch):
+    # Control: an alias that resolves cleanly (non-None curie) is still an alias hit.
+    hit = EntityResolution(
+        raw_name="R. gnavus", curie="NCBITaxon:33038", resolved_name="Ruminococcus gnavus",
+        category="biolink:OrganismTaxon", confidence=0.95, method="exact",
+    )
+
+    async def fake_resolve(entity, category=None):
+        if entity == "R. gnavus":
+            return hit
+        return None
+
+    monkeypatch.setattr(entity_resolution, "resolve_via_api", fake_resolve)
+    monkeypatch.setattr(entity_resolution, "HAS_SDK", False)
+
+    state = {
+        "raw_entities": ["Ruminococcus gnavus"],
+        "entity_aliases": {"Ruminococcus gnavus": ["R. gnavus"]},
+        "entity_type_hints": {},
+    }
+    out = await entity_resolution.run(state)
+    r = out["resolved_entities"][0]
+    assert r.curie == "NCBITaxon:33038"
+    assert r.method == "alias:R. gnavus"
+    assert r.raw_name == "Ruminococcus gnavus"
+    assert out["rank_collapse_sign_flips"] == 0

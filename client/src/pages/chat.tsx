@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { AlertCircle } from "lucide-react";
 import { Header } from "@/components/Header";
 import { ChatArea } from "@/components/ChatArea";
@@ -5,10 +6,25 @@ import { ChatInput } from "@/components/ChatInput";
 import { ModeToggle } from "@/components/ModeToggle";
 import { BiomapperEnvToggle } from "@/components/BiomapperEnvToggle";
 import { PipelineProgress } from "@/components/PipelineProgress";
+import { AnalyteUpload } from "@/components/AnalyteUpload";
+import { ColumnMappingPanel } from "@/components/ColumnMappingPanel";
+import { AnalyteReviewSummary } from "@/components/AnalyteReviewSummary";
+import { ApiKeyGate } from "@/components/ApiKeyGate";
 import { useWebSocket } from "@/hooks/useWebSocket";
+import { useApiKey } from "@/hooks/useApiKey";
+import { Badge } from "@/components/ui/badge";
+import { distinctGroups, type ParsedFile } from "@/lib/analyteParse";
 import type { ErrorMessage } from "@/types/messages";
 
+// Upload flow stages within the collapsible composer slot (pipeline mode only).
+type UploadStage =
+  | { step: "idle" }
+  | { step: "mapping"; parsed: ParsedFile; fileName: string };
+
 export default function ChatPage() {
+  // BYOK: key lives only in React state (never persisted).
+  const apiKey = useApiKey();
+
   const {
     messages,
     connectionStatus,
@@ -20,22 +36,54 @@ export default function ChatPage() {
     biomapperEnv,
     setBiomapperEnv,
     pipelineProgress,
+    structuredAnalytes,
+    setStructuredAnalytes,
+    selectedGroups,
+    setSelectedGroups,
+    setModuleDirections,
     sendMessage,
     clearMessages,
-  } = useWebSocket();
+    needsKey,
+    keySource,
+  } = useWebSocket({ apiKey: apiKey.key });
+
+  const [uploadStage, setUploadStage] = useState<UploadStage>({ step: "idle" });
+  const [queryEmpty, setQueryEmpty] = useState(true);
 
   const isConnected = connectionStatus === "connected" || connectionStatus === "demo";
+  const isPipeline = agentMode === "pipeline";
+  const hasPanel = structuredAnalytes.length > 0;
 
   // Check for AUTH_ERROR in messages
   const hasAuthError = messages.some(
     (m) => m.type === "error" && (m as ErrorMessage).code === "AUTH_ERROR"
   );
 
+  // BYOK: composer is additionally blocked when the server needs a key and none is set.
+  const keyGateBlocking = needsKey && apiKey.key === null;
+
+  const resetUpload = () => {
+    setUploadStage({ step: "idle" });
+    setStructuredAnalytes([]);
+    setSelectedGroups([]);
+    setModuleDirections([]);
+  };
+
   const handleSelectStarter = (query: string) => {
     if (isConnected && !isAgentResponding) {
       sendMessage(query);
     }
   };
+
+  const handleSend = (query: string) => {
+    sendMessage(query);
+    // sendMessage clears the hook's panel/selection after a successful send (one-shot);
+    // collapse the composer slot back to the drop zone.
+    setUploadStage({ step: "idle" });
+  };
+
+  // The review summary shows once analytes are staged and mapping is done.
+  const showReview = hasPanel && uploadStage.step === "idle";
 
   return (
     <div className="flex flex-col h-screen bg-background">
@@ -54,7 +102,7 @@ export default function ChatPage() {
         hasMessages={messages.length > 0}
         conversationId={conversationId}
       />
-      
+
       {/* Mode Toggle - below header, above messages */}
       <div className="px-4 py-2 border-b flex items-center justify-center gap-4">
         <ModeToggle
@@ -63,12 +111,18 @@ export default function ChatPage() {
           disabled={isAgentResponding}
         />
         {/* Biomapper prod/dev API toggle — only relevant to the discovery pipeline's resolver. */}
-        {agentMode === "pipeline" && (
+        {isPipeline && (
           <BiomapperEnvToggle
             env={biomapperEnv}
             onEnvChange={setBiomapperEnv}
             disabled={isAgentResponding}
           />
+        )}
+        {/* BYOK: key-source badge — shown when the server has confirmed which key is in use. */}
+        {keySource !== null && (
+          <Badge variant={keySource === "byok" ? "default" : "secondary"} className="text-xs">
+            {keySource === "byok" ? "Using your key" : "Using server key"}
+          </Badge>
         )}
       </div>
 
@@ -87,10 +141,55 @@ export default function ChatPage() {
         </div>
       )}
 
+      {/* Analyte upload slot — pipeline mode only, between the mode row and the textarea.
+          Collapses to zero height when no upload is in progress. Sequence: drop → mapping → review. */}
+      {isPipeline && !hasAuthError && (
+        <div className="px-4 pb-2">
+          {uploadStage.step === "idle" && !showReview && (
+            <AnalyteUpload
+              onParsed={(parsed, fileName) => setUploadStage({ step: "mapping", parsed, fileName })}
+            />
+          )}
+          {uploadStage.step === "mapping" && (
+            <ColumnMappingPanel
+              parsed={uploadStage.parsed}
+              fileName={uploadStage.fileName}
+              onCancel={() => setUploadStage({ step: "idle" })}
+              onConfirm={(analytes, moduleDirections) => {
+                setStructuredAnalytes(analytes);
+                // Default the group selection to all groups present.
+                setSelectedGroups(distinctGroups(analytes));
+                setModuleDirections(moduleDirections);
+                setUploadStage({ step: "idle" });
+              }}
+            />
+          )}
+          {showReview && (
+            <AnalyteReviewSummary
+              analytes={structuredAnalytes}
+              selectedGroups={selectedGroups}
+              onSelectedGroupsChange={setSelectedGroups}
+              onRemove={resetUpload}
+              queryEmpty={queryEmpty}
+            />
+          )}
+        </div>
+      )}
+
+      {/* BYOK: key gate — blocks composer when server sends NEEDS_KEY and no key is set,
+          or shows a "clear key" control when a key is already loaded for this session. */}
+      {!hasAuthError && (
+        <div className="px-4 pb-2">
+          <ApiKeyGate apiKey={apiKey} needsKey={needsKey} />
+        </div>
+      )}
+
       <ChatInput
-        onSend={sendMessage}
-        disabled={isAgentResponding || hasAuthError}
+        onSend={handleSend}
+        disabled={isAgentResponding || hasAuthError || keyGateBlocking}
         isConnected={isConnected}
+        hasPanel={isPipeline && hasPanel}
+        onQueryEmptyChange={setQueryEmpty}
       />
     </div>
   );

@@ -24,6 +24,7 @@ to route entities to the appropriate analysis branches (direct_kg or cold_start)
 import asyncio
 import json
 import logging
+import math
 import time
 from typing import Any
 
@@ -157,6 +158,106 @@ def classify_by_edge_count(edge_count: int) -> str:
         return "cold_start"
 
 
+# =============================================================================
+# Axis B: intramodular-centrality hubs + inverted routing (consumes axis A ModuleSpine)
+# Plan: docs/plans/2026-07-16-001-feat-triage-intramodular-centrality-inverted-routing-plan.md
+#
+# Rationale (validation memo 20260716-212442): KG edge-count degree is study bias, not biology
+# (PNAS 2025 10.1073/pnas.2416646122; arXiv 2405.14985) — a degree-bias-only link predictor beats
+# sophisticated models, so the edge-count hub is an artifact. The biologically meaningful hub is the
+# one central WITHIN its WGCNA module (intramodular connectivity). And in validation cold_start beat
+# direct_kg, so high-degree entities we currently trust onto the fast path should get MORE scrutiny.
+# This pass marks the top-k% |kME| members of each module as hubs and inverts their routing.
+# =============================================================================
+
+
+def _normalize_name(name: str) -> str:
+    """Normalized join key: case-insensitive, trimmed. The ModuleSpine ``members`` map is keyed by
+    the canonical analyte name the user uploaded, which is also ``NoveltyScore.raw_name`` — but the
+    spine predates resolution, so we join on the name, not the CURIE (mirror the analyte-upload dedup
+    identity, R10)."""
+    return (name or "").strip().lower()
+
+
+def _spine_get(obj: Any, key: str, default: Any = None) -> Any:
+    """Duck-typed attribute/item access. Axis A owns the ModuleSpine Pydantic type (not importable
+    here); in-process it is a model (attribute access), but after any JSON round-trip it is a dict —
+    so read both. (Q1: coded against L1's shape, joined by name.)"""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _module_top_k(n_members: int, top_k_pct: float) -> int:
+    """Relative top-k%: ceil(pct/100 * module_size), at least 1. Percentile, never an absolute
+    |kME| threshold — module |kME| distributions vary, so a relative cut is cohort-portable."""
+    return max(1, math.ceil((top_k_pct / 100.0) * n_members))
+
+
+def compute_hub_members(module_spine: Any, cfg: Any) -> dict[str, dict[str, Any]]:
+    """Per-module |kME| top-k% hub detection with kIM veto → ``{normalized_name: entry}``.
+
+    ``entry`` = ``{"kme": float, "kim": float|None, "crowned": bool, "group": str}``. For each module
+    (group), members are ranked by ``abs(kme)`` descending and the top ``ceil(k% * size)`` are hub
+    candidates. A candidate is vetoed (``crowned=False``) only when a ``kim_floor`` is configured AND
+    the member's ``kim`` is present AND below the floor (the low-n kME caveat, R4); a missing ``kim``
+    skips the veto (|kME| alone decides, L4). A member appearing in several modules is ``crowned`` if
+    crowned in ANY; its reported ``kme``/``kim`` are from the module where ``|kME|`` is largest (most
+    representative). Members without a ``kme`` are ignored (they carry no centrality signal).
+    """
+    agg: dict[str, dict[str, Any]] = {}
+    if not module_spine:
+        return agg
+    kim_floor = getattr(cfg, "intramodular_kim_floor", None)
+    top_k_pct = getattr(cfg, "intramodular_hub_top_k_pct", 10.0)
+
+    for group, module in module_spine.items():
+        members = _spine_get(module, "members", {}) or {}
+        parsed: list[tuple[str, float, float | None]] = []
+        for name, mw in members.items():
+            kme = _spine_get(mw, "kme")
+            if kme is None:
+                continue
+            kim = _spine_get(mw, "kim")
+            parsed.append((name, float(kme), None if kim is None else float(kim)))
+        if not parsed:
+            continue
+        parsed.sort(key=lambda t: abs(t[1]), reverse=True)
+        top_k = _module_top_k(len(parsed), top_k_pct)
+        crowned_names = {parsed[i][0] for i in range(min(top_k, len(parsed)))}
+
+        for name, kme, kim in parsed:
+            crowned = name in crowned_names
+            if crowned and kim_floor is not None and kim is not None and kim < kim_floor:
+                crowned = False  # kIM veto: high |kME|, low connectivity = false hub at low n
+            norm = _normalize_name(name)
+            entry = agg.get(norm)
+            if entry is None:
+                agg[norm] = {"kme": kme, "kim": kim, "crowned": crowned, "group": group}
+            else:
+                entry["crowned"] = entry["crowned"] or crowned
+                if abs(kme) > abs(entry["kme"]):
+                    entry.update(kme=kme, kim=kim, group=group)
+    return agg
+
+
+def expected_hub_count(module_spine: Any, cfg: Any) -> int:
+    """Sum over modules of ceil(k% * weighted_module_size) — the count of hubs the top-k% rule would
+    crown before the kIM veto and the name-join. Compared against the actual hub count in the R11
+    hook so a silent name-join failure (actual << expected) is caught, not read as 'a small hub set'.
+    """
+    if not module_spine:
+        return 0
+    top_k_pct = getattr(cfg, "intramodular_hub_top_k_pct", 10.0)
+    total = 0
+    for _group, module in module_spine.items():
+        members = _spine_get(module, "members", {}) or {}
+        n = sum(1 for mw in members.values() if _spine_get(mw, "kme") is not None)
+        if n:
+            total += _module_top_k(n, top_k_pct)
+    return total
+
+
 @validate_state(TriageInput, TriageOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
@@ -267,11 +368,46 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         else:
             final_scores.append(s)
 
-    # Classify into routing buckets
-    well_characterized = [s.curie for s in final_scores if s.classification == "well_characterized"]
-    moderate = [s.curie for s in final_scores if s.classification == "moderate"]
-    sparse = [s.curie for s in final_scores if s.classification == "sparse"]
-    cold_start = [s.curie for s in final_scores if s.classification == "cold_start"]
+    # ========== Axis B: intramodular-centrality hub detection + inverted routing ==========
+    # Flag-gated and consumes axis A's ModuleSpine (read-only). When disabled, or no ModuleSpine, or
+    # no member carries kME → is_intramodular_hub stays False everywhere and bucketing below is
+    # byte-identical to the edge-count baseline (fallback identity). The pass runs AFTER the
+    # measurement-failure→moderate backfill, so a measurement failure is never rescued — it only
+    # gains hub status if it is genuinely a top-k% kME module member (then cold_start = more
+    # scrutiny, the intended safe direction).
+    cfg = get_pipeline_config().triage
+    module_spine = state.get("module_spine")
+    centrality_active = bool(cfg.intramodular_centrality_enabled and module_spine)
+    hub_members: dict[str, dict[str, Any]] = {}
+    if centrality_active:
+        hub_members = compute_hub_members(module_spine, cfg)
+        if hub_members:
+            promoted = []
+            for s in final_scores:
+                m = hub_members.get(_normalize_name(s.raw_name))
+                if m is not None:
+                    s = s.model_copy(update={
+                        "is_intramodular_hub": bool(m["crowned"]),
+                        "kme": m["kme"],
+                        "kim": m["kim"],
+                    })
+                promoted.append(s)
+            final_scores = promoted
+
+    # Classify into routing buckets. An intramodular hub is kept OUT of its edge-count bucket and
+    # placed into cold_start (inversion, R6/R8) — routing keys on the boolean, not the classification,
+    # which is preserved for synthesis/display. When centrality is off, no score is a hub, so this
+    # reduces exactly to the original bucketing.
+    well_characterized = [s.curie for s in final_scores
+                          if s.classification == "well_characterized" and not s.is_intramodular_hub]
+    moderate = [s.curie for s in final_scores
+                if s.classification == "moderate" and not s.is_intramodular_hub]
+    sparse = [s.curie for s in final_scores
+              if s.classification == "sparse" and not s.is_intramodular_hub]
+    cold_start = [s.curie for s in final_scores
+                  if s.classification == "cold_start" and not s.is_intramodular_hub]
+    hub_curies = [s.curie for s in final_scores if s.is_intramodular_hub]
+    cold_start.extend(hub_curies)  # inverted routing: all intramodular hubs → cold_start
 
     # Add failed resolutions to cold_start bucket
     failed_names = [e.raw_name for e in resolved if e.method == "failed"]
@@ -291,20 +427,45 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     # traffic accrues, so the well-characterized latency cost of ground-before-synthesis becomes an
     # evidenced choice. `produces_speculative` is the routing-relevant predicate (sparse OR cold_start
     # entities are what generate cold-start hypotheses). One structured line per run; no new table.
-    logger.info(
-        "triage_outcome %s",
-        json.dumps({
-            "event": "triage_outcome",
-            "well_characterized": len(well_characterized),
-            "moderate": len(moderate),
-            "sparse": len(sparse),
-            "cold_start": len(cold_start),
-            "tier1_ok": tier1_success,
-            "tier1_failed": len(valid_entities) - tier1_success,
-            "produces_speculative": bool(sparse or cold_start),
-            "duration_seconds": round(duration, 2),
-        }),
-    )
+    outcome: dict[str, Any] = {
+        "event": "triage_outcome",
+        "well_characterized": len(well_characterized),
+        "moderate": len(moderate),
+        "sparse": len(sparse),
+        "cold_start": len(cold_start),
+        "tier1_ok": tier1_success,
+        "tier1_failed": len(valid_entities) - tier1_success,
+        "produces_speculative": bool(sparse or cold_start),
+        "duration_seconds": round(duration, 2),
+    }
+    # Axis B measurement hooks (R10-R11) — added ONLY when the centrality pass ran, so the flag-off
+    # line is unchanged. They quantify how the |kME| hub notion diverges from the edge-degree hub
+    # notion (finding #2: KG degree = study bias) and the routing blast radius. `expected_hub_n` vs
+    # `kme_hub_n` is the join-integrity check: a silent name-join failure collapses `kme_hub_n` toward
+    # 0 while `expected_hub_n` stays positive, so the shift-toward-0 is not mistaken for "few hubs".
+    if centrality_active:
+        edge_degree_hub_set = {s.curie for s in final_scores
+                               if s.edge_count >= THRESHOLD_WELL_CHARACTERIZED}
+        kme_hub_set = {s.curie for s in final_scores if s.is_intramodular_hub}
+        union = edge_degree_hub_set | kme_hub_set
+        intersection = edge_degree_hub_set & kme_hub_set
+        outcome.update({
+            "hub_set_jaccard": round(len(intersection) / len(union), 4) if union else 0.0,
+            "edge_degree_hub_n": len(edge_degree_hub_set),                # edge_count >= 200
+            "edge_degree_hub_n_1000": sum(1 for s in final_scores if s.edge_count > 1000),
+            "kme_hub_n": len(kme_hub_set),
+            "hub_set_only_edge_degree_n": len(edge_degree_hub_set - kme_hub_set),
+            "hub_set_only_kme_n": len(kme_hub_set - edge_degree_hub_set),
+            # entities edge-count would have sent to direct_kg (well_characterized/moderate) but are
+            # now hub → cold_start
+            "routing_shift_direct_to_cold": sum(
+                1 for s in final_scores if s.is_intramodular_hub
+                and s.classification in ("well_characterized", "moderate")),
+            # 0 under pure inversion; emitted for auditing (no mechanism moves cold→direct)
+            "routing_shift_cold_to_direct": 0,
+            "expected_hub_n": expected_hub_count(module_spine, cfg),
+        })
+    logger.info("triage_outcome %s", json.dumps(outcome))
 
     result = {
         "novelty_scores": final_scores,
