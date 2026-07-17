@@ -7,6 +7,10 @@ import {
   applyGroupFilter,
   distinctNameCount,
   isFormulaInjection,
+  parseKmeCell,
+  parseKimCell,
+  countInvalidWeightCells,
+  buildModuleDirections,
   MAX_ROWS,
 } from "./analyteParse";
 
@@ -200,5 +204,115 @@ describe("isFormulaInjection", () => {
     expect(isFormulaInjection("glucose")).toBe(false);
     expect(isFormulaInjection("")).toBe(false);
     expect(isFormulaInjection(undefined)).toBe(false);
+  });
+});
+
+describe("signed-weight parsing (Axis A)", () => {
+  it("suggestMapping auto-maps unambiguous kME / kIM headers", () => {
+    const m = suggestMapping(["analyte", "module", "kME", "kIM"]);
+    expect(m.analyte).toBe("analyte");
+    expect(m.group).toBe("module");
+    expect(m.kme).toBe("kME");
+    expect(m.kim).toBe("kIM");
+  });
+
+  it("suggestMapping leaves an ambiguous header (value) unmapped for kME", () => {
+    const m = suggestMapping(["analyte", "value"]);
+    expect(m.kme).toBeUndefined();
+  });
+
+  it("buildAnalytes parses kME/kIM cells to numbers, blank → undefined", () => {
+    const rows = [
+      { analyte: "glucose", module: "Brown", kME: "0.8", kIM: "12" },
+      { analyte: "IL6", module: "Brown", kME: "-0.6", kIM: "" },
+    ];
+    const { analytes } = buildAnalytes(rows, {
+      analyte: "analyte",
+      group: "module",
+      kme: "kME",
+      kim: "kIM",
+    });
+    expect(analytes[0].kme).toBe(0.8);
+    expect(analytes[0].kim).toBe(12);
+    expect(analytes[1].kme).toBe(-0.6);
+    expect(analytes[1].kim).toBeUndefined();
+  });
+
+  it("buildAnalytes omits kME when the column is unmapped (no regression)", () => {
+    const rows = [{ analyte: "glucose", module: "Brown" }];
+    const { analytes } = buildAnalytes(rows, { analyte: "analyte", group: "module" });
+    expect(analytes[0].kme).toBeUndefined();
+    expect(analytes[0].kim).toBeUndefined();
+  });
+
+  it("buildAnalytes leaves an out-of-range / non-numeric kME cell unset (server rejects)", () => {
+    const rows = [
+      { analyte: "a", kME: "1.5" },
+      { analyte: "b", kME: "abc" },
+    ];
+    const { analytes } = buildAnalytes(rows, { analyte: "analyte", kme: "kME" });
+    expect(analytes[0].kme).toBeUndefined();
+    expect(analytes[1].kme).toBeUndefined();
+  });
+
+  it("parseKmeCell classifies absent / value / invalid (range mirrors backend)", () => {
+    expect(parseKmeCell("")).toEqual({ status: "absent" });
+    expect(parseKmeCell("0.5")).toEqual({ status: "value", value: 0.5 });
+    expect(parseKmeCell("-1")).toEqual({ status: "value", value: -1 });
+    expect(parseKmeCell("1.5")).toEqual({ status: "invalid" });
+    expect(parseKmeCell("abc")).toEqual({ status: "invalid" });
+  });
+
+  it("parseKimCell accepts unbounded non-negative, rejects negative / non-numeric", () => {
+    expect(parseKimCell("40")).toEqual({ status: "value", value: 40 });
+    expect(parseKimCell("0")).toEqual({ status: "value", value: 0 });
+    expect(parseKimCell("-1")).toEqual({ status: "invalid" });
+    expect(parseKimCell("x")).toEqual({ status: "invalid" });
+    expect(parseKimCell("")).toEqual({ status: "absent" });
+  });
+
+  it("countInvalidWeightCells reports mapped-but-bad cells for the Continue gate", () => {
+    const rows = [
+      { analyte: "a", kME: "0.5", kIM: "3" },
+      { analyte: "b", kME: "1.5", kIM: "-2" },
+      { analyte: "c", kME: "nope", kIM: "" },
+    ];
+    const counts = countInvalidWeightCells(rows, {
+      analyte: "analyte",
+      kme: "kME",
+      kim: "kIM",
+    });
+    expect(counts.kme).toBe(2); // 1.5 and nope
+    expect(counts.kim).toBe(1); // -2 ("" is absent, not invalid)
+  });
+
+  it("countInvalidWeightCells is zero when kME/kIM columns are unmapped", () => {
+    const rows = [{ analyte: "a", value: "-3" }];
+    const counts = countInvalidWeightCells(rows, { analyte: "analyte" });
+    expect(counts.kme).toBe(0);
+    expect(counts.kim).toBe(0);
+  });
+
+  it("buildModuleDirections yields one row per group with the shared trait label", () => {
+    const dirs = buildModuleDirections(
+      { Brown: "-0.5", Blue: "0.3" },
+      "frailty",
+    );
+    expect(dirs).toEqual([
+      { group: "Brown", eigengene_trait_correlation: -0.5, trait_label: "frailty" },
+      { group: "Blue", eigengene_trait_correlation: 0.3, trait_label: "frailty" },
+    ]);
+  });
+
+  it("buildModuleDirections skips blank correlations and returns [] when all blank", () => {
+    expect(buildModuleDirections({ Brown: "", Blue: "  " }, "frailty")).toEqual([]);
+    const dirs = buildModuleDirections({ Brown: "-0.5", Blue: "" }, "frailty");
+    expect(dirs).toEqual([
+      { group: "Brown", eigengene_trait_correlation: -0.5, trait_label: "frailty" },
+    ]);
+  });
+
+  it("buildModuleDirections returns [] when no trait label is given", () => {
+    expect(buildModuleDirections({ Brown: "-0.5" }, "")).toEqual([]);
   });
 });
