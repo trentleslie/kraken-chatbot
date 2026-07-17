@@ -32,12 +32,13 @@ from ..state import BridgeSpecificity
 logger = logging.getLogger(__name__)
 
 # --- Cited / tuned module constants (NOT runtime config) -----------------------------------
-# These are calibrated once from a real intermediate-degree distribution (Unit 4 probe), then
-# frozen — they are cited constants, not a per-run config surface (there is no consumer for
-# runtime-tunable cut points). The values below are placeholders pending the Unit 4 calibration
-# and are known to be mis-skewed relative to real KG degrees; they are chosen to (a) keep the
-# `specific` reward bucket reachable and (b) align the per-node generic cutoff with the pipeline's
-# existing "hub" notion (SharedNeighbor.is_hub = degree > 1000; direct_kg/integration hub guard).
+# These are calibrated once from a real intermediate-degree distribution (the Unit 4 live-Kestrel
+# probe, tests/fixtures/bridge_specificity_1mna_degrees.json), then frozen — they are cited
+# constants, not a per-run config surface (there is no consumer for runtime-tunable cut points).
+# The values below are chosen from that recorded distribution to (a) keep the `specific` reward
+# bucket reachable on real KG degrees (the genuine-specific cluster {115, 143}), and (b) align the
+# per-node generic cutoff with the pipeline's existing "hub" notion (SharedNeighbor.is_hub =
+# degree > 1000; direct_kg/integration hub guard).
 
 # DWPC damping exponent (Himmelstein 2015: w ~= 0.4 optimal for disease-gene prediction).
 DAMPING_W: float = 0.4
@@ -46,15 +47,28 @@ DAMPING_W: float = 0.4
 #   score >= SPECIFIC_CUT -> "specific"
 #   score >= MODERATE_CUT -> "moderate"
 #   else                  -> "generic"
-# With w=0.4 and a single intermediate, score = degree**-0.4, so SPECIFIC_CUT=0.20 admits
-# degree <= ~55 and MODERATE_CUT=0.10 admits degree <= ~316. Placeholders (see note above).
-SPECIFIC_CUT: float = 0.20
-MODERATE_CUT: float = 0.10
+# Calibrated against the recorded real-KG intermediate-degree distribution
+# (tests/fixtures/bridge_specificity_1mna_degrees.json — n=14 live Kestrel degrees): the population
+# splits into a genuine-specific cluster {115, 143} and a hub cluster {1270, 5333, 7471, 7808,
+# 10000...} with a wide gap between. With w=0.4 and a single intermediate (score = degree**-0.4),
+# the cut points map to degree boundaries: SPECIFIC_CUT=0.12 admits degree <= ~200 (the specific
+# cluster + headroom, still below the gap) and MODERATE_CUT=0.063 admits degree <= ~1000 (which
+# coincides with GENERIC_CUTOFF, so the score-based and degree-based generic boundaries agree).
+# The prior placeholders (0.20 / 0.10 -> degree <= ~55) left the "specific" band unreachable on
+# real data (the lowest real intermediate measured is 115).
+SPECIFIC_CUT: float = 0.12
+MODERATE_CUT: float = 0.063
 
 # Per-node degree cutoff: an intermediate whose OWN known degree strictly exceeds this is
 # "generic" and lands in `generic_intermediates`. Aligned with the existing is_hub definition
-# (degree > 1000). Placeholder pending the Unit 4 quantile calibration.
+# (degree > 1000) and sits in the observed real-degree gap (143 <-> 1270).
 GENERIC_CUTOFF: int = 1000
+
+# one_hop_query preview saturates results_count at this value, so a measured degree == this is a
+# FLOOR on the true (larger) hub degree, not an exact count. A saturated intermediate is therefore
+# always treated as a generic mega-hub, independent of GENERIC_CUTOFF. Mirrored by the provider's
+# _DEGREE_QUERY_LIMIT below.
+SATURATION_DEGREE: int = 10000
 
 
 def _bucket(score: float) -> str:
@@ -103,9 +117,13 @@ def bridge_specificity(
             generic_intermediates=[],
         )
 
-    # Generic hubs are decided on KNOWN degrees (strict >), independent of the score.
+    # Generic hubs are decided on KNOWN degrees, independent of the score. A degree at/above the
+    # query-saturation floor is only a lower bound on a mega-hub, so it is generic even if
+    # GENERIC_CUTOFF were ever raised above the saturation point.
     generic_intermediates = [
-        c for c, d in zip(curies, degrees) if d is not None and d > GENERIC_CUTOFF
+        c
+        for c, d in zip(curies, degrees)
+        if d is not None and (d > GENERIC_CUTOFF or d >= SATURATION_DEGREE)
     ]
 
     known = [d for d in degrees if d is not None]
@@ -143,9 +161,10 @@ def bridge_specificity(
 # a CURIE" helper across triage / pathway_enrichment / this provider — deliberately NOT coupled
 # here (that convergence is a separate refactor).
 
-# one_hop_query count limit. Preview mode returns results_count (the edge count == degree);
-# a high limit yields an accurate count, matching triage's read.
-_DEGREE_QUERY_LIMIT = 10000
+# one_hop_query count limit. Preview mode returns results_count (the edge count == degree).
+# This IS the saturation point: a returned count == the limit is a floor, not an exact degree, so
+# the scorer force-generics any intermediate at/above SATURATION_DEGREE (which this mirrors).
+_DEGREE_QUERY_LIMIT = SATURATION_DEGREE
 
 
 def _inline_degree(node: Any) -> int | None:
