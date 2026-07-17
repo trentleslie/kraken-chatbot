@@ -200,6 +200,45 @@ class BridgeGrounding(BaseModel):
     label: str = Field(..., description="Chain summary, e.g. 'both legs curated-causal' / 'no KG edge'")
 
 
+class BridgeSpecificity(BaseModel):
+    """Structural-genericity signal for a bridge, from the KG degree of its intermediate node(s).
+
+    Degree-Weighted Path Count (DWPC) damping (Himmelstein & Baranzini 2015; Rephetio 2017):
+    bridges through generic, high-degree intermediates ("blood", "cancer") are penalized; bridges
+    through specific, low-degree intermediates are rewarded. Length-normalized (geometric-mean)
+    DWPC so 1-, 2-, and 3-intermediate scaffolds are comparable under one cut point.
+
+    This reports STRUCTURAL genericity, NOT mechanism confidence. It is attached non-destructively
+    as a state side-map (``specificity_by_bridge`` keyed by ``tuple(bridge.entities)``), NOT a field
+    on the frozen ``Bridge``. Field names are PINNED by the cross-axis contract (ledger L12/L17) —
+    axis E (synthesis) reads them by these exact names.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    score: float | None = Field(
+        ...,
+        description="Length-normalized DWPC in (0,1]; higher = more specific. None only when ALL "
+        "intermediate degrees are missing (label == 'unknown').",
+    )
+    label: str = Field(
+        ..., description="specific | moderate | generic | unknown"
+    )
+    intermediate_curies: list[str] = Field(
+        default_factory=list, description="Scaffold CURIEs (endpoints excluded)"
+    )
+    intermediate_degrees: list[int | None] = Field(
+        default_factory=list,
+        description="KG degree per intermediate, parallel to intermediate_curies; None where the "
+        "degree could not be fetched (preserved even when the bridge is condemned on known evidence).",
+    )
+    generic_intermediates: list[str] = Field(
+        default_factory=list,
+        description="Scaffold CURIEs whose own known degree exceeds GENERIC_CUTOFF (can be non-empty "
+        "even when some degrees are None — condemn-on-known).",
+    )
+
+
 class Bridge(BaseModel):
     """Cross-entity-type connection discovered through multi-hop analysis."""
 
@@ -465,6 +504,14 @@ class DiscoveryState(TypedDict, total=False):
     # whose operator.add reducer is load-bearing for integration/synthesis writes; see plan U1).
     grounded_bridges: list[Bridge]
     bridge_grounding_errors: Annotated[list[str], operator.add]
+
+    # === Phase 4b (axis C): Bridge specificity (structural genericity by intermediate degree) ===
+    # A state SIDE-MAP keyed by tuple(bridge.entities) -> BridgeSpecificity (NOT a Bridge field;
+    # the frozen Bridge model is unchanged). Mirrors grounded_bridges: plain last-write-wins (NO
+    # operator.add) — integration writes it once. Duplicate bridges sharing an entities tuple
+    # collapse to one entry (accepted, same as the grounding-label map). Axis E (synthesis) reads
+    # it by tuple(entities); a missing key means "not scored / no signal".
+    specificity_by_bridge: dict[tuple[str, ...], BridgeSpecificity]
 
     # === Cost Tracking ===
     # Uses operator.add reducer for parallel writes from concurrent branches
