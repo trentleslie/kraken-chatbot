@@ -51,6 +51,27 @@ class NoveltyScore(BaseModel):
     classification: Literal["cold_start", "sparse", "moderate", "well_characterized"] = Field(
         ..., description="Classification based on edge count thresholds"
     )
+    # === Axis B: intramodular-centrality hub verdict ===
+    # A boolean, NOT a 5th `classification` Literal value: synthesis.py builds a `by_class` dict on
+    # exactly the four Literal keys and would KeyError on a fifth. Hub-ness rides this flag; the
+    # entity keeps its edge-count `classification` for synthesis/display compatibility. When True,
+    # triage reroutes the entity to cold_start (inverted routing) regardless of edge count.
+    is_intramodular_hub: bool = Field(
+        False,
+        description="True if this entity is a top-k% |kME| member of its WGCNA module (axis A "
+        "ModuleSpine), confirmed by the kIM veto. Drives inverted routing (hub → cold_start). "
+        "Default False; only ever True when triage's intramodular-centrality pass is enabled and a "
+        "ModuleSpine with kME is present.",
+    )
+    kme: float | None = Field(
+        None, description="Signed module-eigengene correlation (kME) from the ModuleSpine member the "
+        "entity joined to (most representative module by |kME|); None for classic/single-entity runs "
+        "or entities absent from the spine.",
+    )
+    kim: float | None = Field(
+        None, ge=0.0, description="Raw intramodular connectivity (kIM / kWithin), non-negative; None "
+        "when absent from the spine member or not provided by axis A.",
+    )
 
 
 class Finding(BaseModel):
