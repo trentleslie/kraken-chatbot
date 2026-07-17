@@ -23,6 +23,7 @@ References:
 import asyncio
 import json
 import logging
+import statistics
 from typing import Any, Awaitable, Callable
 
 from ...kestrel_client import call_kestrel_tool
@@ -227,3 +228,66 @@ def make_degree_provider(
         return await task
 
     return get
+
+
+# --- Emit-only scoring pass over (bridge, scaffold) pairs (R3/R4, ledger L11/L26) -----------
+
+async def score_bridges(
+    pairs: list[tuple[Any, list[str]]],
+    inline_nodes: dict[str, Any] | None = None,
+    *,
+    max_scored_bridges: int,
+    concurrency: int,
+) -> tuple[dict[tuple[str, ...], BridgeSpecificity], list[str]]:
+    """Score a batch of ``(bridge, scaffold_curies)`` pairs into a ``tuple(entities) -> spec`` map.
+
+    Emit-only and per-bridge isolated: a scoring failure on one bridge is captured as an error
+    string and that bridge simply gets no map entry — the pass never raises and the caller's
+    ``bridges`` list is untouched. Bridges beyond ``max_scored_bridges`` are not scored (no entry;
+    axis E treats a missing key as "no signal"). One degree provider per call: a hub intermediate
+    shared across bridges is fetched at most once (per-run dedup cache), bounded by ``concurrency``.
+
+    The scaffold is supplied EXPLICITLY per pair by the caller (per-builder, never a positional
+    slice — subgraph bridges list endpoints first). Keyed by ``tuple(bridge.entities)``; duplicate
+    bridges sharing an entities tuple collapse to one entry (accepted, mirrors the grounding map).
+    """
+    provider = make_degree_provider(inline_nodes, concurrency)
+    capped = pairs[:max_scored_bridges]
+
+    async def _score(bridge: Any, scaffold: list[str]) -> tuple[tuple[str, ...], BridgeSpecificity | None, str | None]:
+        key = tuple(bridge.entities)
+        try:
+            degrees = list(await asyncio.gather(*[provider(c) for c in scaffold]))
+            return key, bridge_specificity(scaffold, degrees), None
+        except Exception as e:  # per-bridge isolation: skip this key, keep the pass alive
+            label = getattr(bridge, "path_description", None) or str(key)
+            logger.warning("bridge_specificity: scoring failed for %s: %s", label, e)
+            return key, None, f"bridge_specificity: {label}: {e}"
+
+    results = await asyncio.gather(*[_score(b, s) for b, s in capped])
+    specificity_by_bridge: dict[tuple[str, ...], BridgeSpecificity] = {}
+    errors: list[str] = []
+    for key, spec, err in results:
+        if err is not None:
+            errors.append(err)
+        elif spec is not None:
+            specificity_by_bridge[key] = spec
+    return specificity_by_bridge, errors
+
+
+def summarize_specificity(
+    specificity_by_bridge: dict[tuple[str, ...], BridgeSpecificity],
+) -> dict[str, Any]:
+    """Per-run label histogram + score min/median/max, for the measurement-hook log line (R5)."""
+    counts = {"specific": 0, "moderate": 0, "generic": 0, "unknown": 0}
+    scores: list[float] = []
+    for spec in specificity_by_bridge.values():
+        counts[spec.label] = counts.get(spec.label, 0) + 1
+        if spec.score is not None:
+            scores.append(spec.score)
+    summary: dict[str, Any] = {"scored": len(specificity_by_bridge), "counts": counts}
+    if scores:
+        summary["score_min"] = min(scores)
+        summary["score_median"] = statistics.median(scores)
+        summary["score_max"] = max(scores)
+    return summary

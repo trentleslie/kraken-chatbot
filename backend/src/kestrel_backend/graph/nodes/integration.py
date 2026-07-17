@@ -30,6 +30,7 @@ from ...kestrel_client import multi_hop_query, call_kestrel_tool, parse_kestrel_
 from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
 from ..state_contracts import validate_state, IntegrationInput, IntegrationOutput
 from ..pipeline_config import get_pipeline_config
+from .bridge_specificity import score_bridges, summarize_specificity
 
 logger = logging.getLogger(__name__)
 
@@ -595,8 +596,41 @@ Analyze these findings to identify cross-type bridges and expected-but-absent en
         if subgraph_bridges:
             logger.info("Subgraph detection added %d connecting-structure bridge(s)",
                         len(subgraph_bridges))
+        multi_hop_bridges = api_bridges  # ordered [endpoint, ...intermediates..., endpoint]
         api_bridges = api_bridges + subgraph_bridges
         api_errors = api_errors + subgraph_errors
+
+        # Phase A.3 (axis C, flag-gated, emit-only): score bridge specificity by intermediate
+        # degree (DWPC) into a state SIDE-MAP keyed by tuple(entities). Non-destructive — no bridge
+        # is dropped, re-tiered, or mutated, and the frozen Bridge model gains no field. Ships
+        # enabled=False until axis E (synthesis) consumes the side-map. When off: zero Kestrel calls.
+        specificity_by_bridge: dict[tuple[str, ...], Any] = {}
+        spec_cfg = get_pipeline_config().bridge_specificity
+        if spec_cfg.enabled:
+            input_curies = {e.curie for e in resolved if e.curie}
+            # Scaffold identification is PER-BUILDER, never positional:
+            #   multi_hop bridges are ordered endpoint..intermediates..endpoint -> entities[1:-1];
+            #   subgraph bridges list endpoints FIRST, so the scaffold is the non-input-CURIE
+            #   entities (a positional entities[1:-1] slice would mis-score them).
+            pairs: list[tuple[Bridge, list[str]]] = [
+                (b, list(b.entities[1:-1])) for b in multi_hop_bridges
+            ]
+            pairs += [
+                (b, [c for c in b.entities if c not in input_curies]) for b in subgraph_bridges
+            ]
+            # Inline degree is threaded as None: the documented multi_hop/subgraph `nodes` entry is
+            # {name, categories} (no per-node degree), so the provider is fetch-dominant. The
+            # provider stays inline-capable for a future envelope that carries degree.
+            specificity_by_bridge, spec_errors = await score_bridges(
+                pairs,
+                inline_nodes=None,
+                max_scored_bridges=spec_cfg.max_scored_bridges,
+                concurrency=spec_cfg.concurrency,
+            )
+            api_errors = api_errors + spec_errors
+            logger.info(
+                "bridge_specificity: %s", summarize_specificity(specificity_by_bridge)
+            )
 
         # Phase B: Gap analysis using LLM (reasoning-intensive)
         logger.info("Starting LLM-based gap analysis...")
@@ -702,6 +736,8 @@ If no gaps found, return: {{"gaps": []}}
             "gap_entities": gaps,
             "direct_findings": findings,  # Uses operator.add reducer
             "errors": parse_errors,
+            # Axis C side-map (empty when disabled); NOT a Bridge field. Last-write-wins.
+            "specificity_by_bridge": specificity_by_bridge,
         }
         if usage_record is not None:
             result_dict["model_usages"] = [usage_record]
