@@ -281,6 +281,28 @@ export function buildModuleDirections(
   return out;
 }
 
+/**
+ * Count per-module direction correlations that are finite but OUTSIDE [-1, 1] (a correlation, same
+ * bound as kME). The backend REJECTS these; because the WS layer clears the staged upload the
+ * instant it sends, a server-side rejection loses the upload with no recovery. The Continue gate
+ * reads this count so an out-of-range direction is caught client-side instead. Blank / non-numeric
+ * entries are NOT counted (buildModuleDirections drops them; they are simply "no direction"). When
+ * `groups` is given, only those groups are considered so a stale value for a no-longer-shown group
+ * cannot invisibly block Continue.
+ */
+export function countInvalidDirections(
+  correlationByGroup: Record<string, string>,
+  groups?: string[],
+): number {
+  const keys = groups ?? Object.keys(correlationByGroup);
+  let n = 0;
+  for (const g of keys) {
+    const c = coerceFinite(correlationByGroup[g]);
+    if (c.status === "value" && (c.value < -1 || c.value > 1)) n += 1;
+  }
+  return n;
+}
+
 function normalizeType(raw: string | undefined): AnalyteType | undefined {
   if (!raw) return undefined;
   const lower = raw.trim().toLowerCase();
@@ -294,6 +316,13 @@ export interface BuildResult {
   analytes: StructuredAnalyte[];
   rowsRead: number;
   rowsKept: number;
+  /**
+   * Count of (name, group) rows whose kME/kIM DISAGREE with an earlier row for the same key.
+   * The display dedup collapses these to the first value, so the backend — which receives the
+   * already-deduped panel — can never see the conflict its `validate_and_normalize` is designed to
+   * REJECT. Detected here so the UI can block Continue instead of silently coercing to row one.
+   */
+  weightConflicts: number;
 }
 
 /**
@@ -307,11 +336,15 @@ export function buildAnalytes(
   mapping: ColumnMapping,
 ): BuildResult {
   if (!mapping.analyte) {
-    return { analytes: [], rowsRead: rows.length, rowsKept: 0 };
+    return { analytes: [], rowsRead: rows.length, rowsKept: 0, weightConflicts: 0 };
   }
   const analytes: StructuredAnalyte[] = [];
   const seen = new Set<string>();
+  // First-seen VALID weight pair per (name, group) key, for conflict detection independent of the
+  // display dedup below (mirrors the backend, which admits a member to the spine via a valid kME).
+  const weightByKey = new Map<string, { kme: number; kim: number | undefined }>();
   let rowsRead = 0;
+  let weightConflicts = 0;
 
   for (const row of rows) {
     const name = (row[mapping.analyte] ?? "").trim();
@@ -321,7 +354,28 @@ export function buildAnalytes(
     const group = mapping.group ? (row[mapping.group] ?? "").trim() || undefined : undefined;
     const type = mapping.type ? normalizeType(row[mapping.type]) : undefined;
 
+    // Parse signed weights once (used for both conflict detection and the display attach). Only a
+    // VALID (finite, in-range) cell yields a number; invalid/absent stays undefined.
+    const kmeCell = mapping.kme ? parseKmeCell(row[mapping.kme]) : undefined;
+    const kimCell = mapping.kim ? parseKimCell(row[mapping.kim]) : undefined;
+    const kmeVal = kmeCell?.status === "value" ? kmeCell.value : undefined;
+    const kimVal = kimCell?.status === "value" ? kimCell.value : undefined;
+
     const dedupKey = `${name.toLowerCase()} ${group ?? ""}`;
+    // Conflict detection (mirrors backend validate_and_normalize): a member enters the signed spine
+    // only via a valid kME. Two rows for the same (name, group) that BOTH carry a valid kME but
+    // disagree on (kME, kIM) are a mis-map/duplicate footgun the backend REJECTS. Detected here,
+    // BEFORE the display collapse, so a conflicting file cannot be silently coerced to the first
+    // value and slipped past the (now blind) server-side check.
+    if (kmeVal !== undefined) {
+      const prior = weightByKey.get(dedupKey);
+      if (prior === undefined) {
+        weightByKey.set(dedupKey, { kme: kmeVal, kim: kimVal });
+      } else if (prior.kme !== kmeVal || prior.kim !== kimVal) {
+        weightConflicts += 1;
+      }
+    }
+
     if (seen.has(dedupKey)) continue; // (name, group) collapse
     seen.add(dedupKey);
 
@@ -331,18 +385,12 @@ export function buildAnalytes(
     // Signed weights (Axis A): attach only VALID cells. An invalid (out-of-range / non-numeric)
     // cell is left unset here — never silently coerced — and surfaced separately via
     // countInvalidWeightCells so the UI badges it and blocks Continue.
-    if (mapping.kme) {
-      const c = parseKmeCell(row[mapping.kme]);
-      if (c.status === "value") analyte.kme = c.value;
-    }
-    if (mapping.kim) {
-      const c = parseKimCell(row[mapping.kim]);
-      if (c.status === "value") analyte.kim = c.value;
-    }
+    if (kmeVal !== undefined) analyte.kme = kmeVal;
+    if (kimVal !== undefined) analyte.kim = kimVal;
     analytes.push(analyte);
   }
 
-  return { analytes, rowsRead, rowsKept: analytes.length };
+  return { analytes, rowsRead, rowsKept: analytes.length, weightConflicts };
 }
 
 /** Distinct group values present in a built analyte list, in first-seen order. */

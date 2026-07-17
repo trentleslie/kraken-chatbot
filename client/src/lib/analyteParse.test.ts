@@ -10,6 +10,7 @@ import {
   parseKmeCell,
   parseKimCell,
   countInvalidWeightCells,
+  countInvalidDirections,
   buildModuleDirections,
   MAX_ROWS,
 } from "./analyteParse";
@@ -314,5 +315,80 @@ describe("signed-weight parsing (Axis A)", () => {
 
   it("buildModuleDirections returns [] when no trait label is given", () => {
     expect(buildModuleDirections({ Brown: "-0.5" }, "")).toEqual([]);
+  });
+});
+
+describe("conflicting-duplicate weight detection (Greptile P1 #1)", () => {
+  // Two Brown/glucose rows with DIFFERENT kME must NOT be silently coerced to the first value; the
+  // display collapse means the backend never sees the conflict it is built to reject, so buildAnalytes
+  // must surface it so the Continue gate can block.
+  it("flags a (name, group) duplicate whose kME conflicts", () => {
+    const rows = [
+      { analyte: "glucose", module: "Brown", kME: "0.8" },
+      { analyte: "glucose", module: "Brown", kME: "0.2" },
+    ];
+    const res = buildAnalytes(rows, { analyte: "analyte", group: "module", kme: "kME" });
+    expect(res.weightConflicts).toBe(1);
+    // Display list still collapses to one entry (first value kept for display only).
+    expect(res.analytes).toHaveLength(1);
+    expect(res.analytes[0].kme).toBe(0.8);
+  });
+
+  it("flags a duplicate whose kIM conflicts even when kME agrees", () => {
+    const rows = [
+      { analyte: "glucose", module: "Brown", kME: "0.8", kIM: "10" },
+      { analyte: "glucose", module: "Brown", kME: "0.8", kIM: "42" },
+    ];
+    const res = buildAnalytes(rows, {
+      analyte: "analyte",
+      group: "module",
+      kme: "kME",
+      kim: "kIM",
+    });
+    expect(res.weightConflicts).toBe(1);
+  });
+
+  it("does NOT flag idempotent (identical) duplicate weights", () => {
+    const rows = [
+      { analyte: "glucose", module: "Brown", kME: "0.8", kIM: "10" },
+      { analyte: "glucose", module: "Brown", kME: "0.8", kIM: "10" },
+    ];
+    const res = buildAnalytes(rows, {
+      analyte: "analyte",
+      group: "module",
+      kme: "kME",
+      kim: "kIM",
+    });
+    expect(res.weightConflicts).toBe(0);
+  });
+
+  it("does NOT flag the same name in DIFFERENT groups (kept as two entries)", () => {
+    const rows = [
+      { analyte: "glucose", module: "Brown", kME: "0.8" },
+      { analyte: "glucose", module: "Blue", kME: "0.2" },
+    ];
+    const res = buildAnalytes(rows, { analyte: "analyte", group: "module", kme: "kME" });
+    expect(res.weightConflicts).toBe(0);
+    expect(res.analytes).toHaveLength(2);
+  });
+});
+
+describe("countInvalidDirections (Greptile P1 #2)", () => {
+  it("counts finite correlations outside [-1, 1]", () => {
+    expect(countInvalidDirections({ Brown: "1.5", Blue: "-0.3", Turquoise: "-2" })).toBe(2);
+  });
+
+  it("does not count blank or non-numeric entries (those are dropped, not rejected)", () => {
+    expect(countInvalidDirections({ Brown: "", Blue: "abc", Turquoise: "0.4" })).toBe(0);
+  });
+
+  it("respects the boundary values -1 and 1 as valid", () => {
+    expect(countInvalidDirections({ A: "-1", B: "1" })).toBe(0);
+  });
+
+  it("only considers the provided groups when given (ignores stale entries)", () => {
+    const byGroup = { Brown: "0.4", Removed: "5" };
+    expect(countInvalidDirections(byGroup)).toBe(1);
+    expect(countInvalidDirections(byGroup, ["Brown"])).toBe(0);
   });
 });

@@ -10,6 +10,7 @@ import {
 import {
   buildAnalytes,
   buildModuleDirections,
+  countInvalidDirections,
   countInvalidWeightCells,
   distinctGroups,
   isFormulaInjection,
@@ -81,7 +82,26 @@ export function ColumnMappingPanel({
 
   const groups = built ? distinctGroups(built.analytes) : [];
 
-  const canConfirm = Boolean(mapping.analyte) && hasDataRows && !hasInvalidWeights;
+  // Conflicting duplicate weights: two (name, group) rows with disagreeing kME/kIM. The display
+  // dedup would silently keep the first value and the backend never sees the conflict it is
+  // designed to reject — so block Continue here (client twin of the server's reject-on-conflict).
+  const hasWeightConflicts = (built?.weightConflicts ?? 0) > 0;
+
+  // The per-module direction table is only meaningful (and only rendered) once a kME column and
+  // groups exist. When active, a direction correlation outside [-1, 1] would be sent and then
+  // rejected server-side AFTER the staged upload is cleared (unrecoverable) — gate on it here.
+  const directionTableActive = Boolean(mapping.kme) && groups.length > 0;
+  const invalidDirectionCount = directionTableActive
+    ? countInvalidDirections(dirByGroup, groups)
+    : 0;
+  const hasInvalidDirections = invalidDirectionCount > 0;
+
+  const canConfirm =
+    Boolean(mapping.analyte) &&
+    hasDataRows &&
+    !hasInvalidWeights &&
+    !hasWeightConflicts &&
+    !hasInvalidDirections;
 
   const renderSelect = (target: MappingTarget, label: string, required?: boolean) => (
     <div className="flex flex-col gap-1">
@@ -139,6 +159,13 @@ export function ColumnMappingPanel({
             {invalidCounts.kme > 0 && invalidCounts.kim > 0 && "; "}
             {invalidCounts.kim > 0 && `${invalidCounts.kim} kIM value(s) negative or non-numeric`}
             {" "}— the server will reject this upload. Fix the column mapping to continue.
+          </p>
+        )}
+        {hasWeightConflicts && (
+          <p className="text-xs text-amber-600" data-testid="weight-conflict-warning">
+            ⚠ {built?.weightConflicts} duplicate row(s) carry conflicting kME/kIM for the same
+            analyte and group. The server rejects conflicting duplicates — resolve them in the file
+            (or remap columns) to continue.
           </p>
         )}
       </div>
@@ -223,6 +250,12 @@ export function ColumnMappingPanel({
               </div>
             ))}
           </div>
+          {hasInvalidDirections && (
+            <p className="text-xs text-amber-600" data-testid="direction-invalid-warning">
+              ⚠ {invalidDirectionCount} correlation(s) are outside the −1…1 range. The server
+              rejects these — fix them to continue.
+            </p>
+          )}
           <p className="text-[11px] text-muted-foreground">
             Leave all blank to run without a direction. Required to compute the sign-inversion metric.
           </p>
