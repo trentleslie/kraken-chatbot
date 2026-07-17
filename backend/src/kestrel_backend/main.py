@@ -1037,7 +1037,10 @@ async def websocket_chat(websocket: WebSocket):
                         biomapper_env,
                         structured_analytes=normalized_analytes,
                         selected_groups=selected_groups,
-                        module_directions=module_directions,
+                        # Directions are meaningful only with a validated panel; gate so an
+                        # unchecked value can't reach state on a no-panel send (the type-check +
+                        # validation live inside the `structured_analytes_raw` block above).
+                        module_directions=module_directions if normalized_analytes else None,
                     )
                 else:
                     await handle_classic_mode(websocket, content, connection_id)
