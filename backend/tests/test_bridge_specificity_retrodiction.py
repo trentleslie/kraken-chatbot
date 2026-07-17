@@ -15,12 +15,12 @@ version whose "live retrodiction" actually asserted against fabricated placehold
   * SCORER MATH — uses SYNTHETIC degrees, clearly labelled, to prove the pure scorer transform (that
     the `specific` reward band is reachable in principle). No claim about real KG data.
 
-The real degrees also exposed a genuine calibration gap: under the current PLACEHOLDER cut points
-(SPECIFIC_CUT=0.20), the `specific` reward band is unreachable on the real intermediate-degree
-population (the lowest real intermediate measured is ~115; `specific` admits degree <= ~55). That
-gap is asserted as an ``xfail`` below rather than hidden behind fabricated low degrees — it clears
-once the constants are recalibrated from a real distribution (and _DEGREE_QUERY_LIMIT raised so the
-mega-hubs are not saturated at the query cap).
+The real degrees drove the cut-point calibration: the population splits into a genuine-specific
+cluster {115, 143} and a hub cluster {1270 .. 10000} with a wide gap, so the constants are set to
+SPECIFIC_CUT=0.12 (single-intermediate degree <= ~200 -> specific) and MODERATE_CUT=0.063
+(degree <= ~1000, coinciding with GENERIC_CUTOFF). Saturated degrees (== the one_hop query cap) are
+treated as a FLOOR and force-generic rather than raising the query cap — a mega-hub is generic
+regardless of its exact degree, so paying for a higher cap buys nothing.
 
 Run with: uv run python -m pytest tests/test_bridge_specificity_retrodiction.py -v
 """
@@ -79,9 +79,8 @@ def test_low_degree_control_scores_above_generic_scaffold(recorded):
     # The recorded control (1-methylnicotinamide) is a genuinely low-degree metabolite. The
     # meaningful retrodiction contrast is that it is NOT condemned as a generic hub and scores
     # strictly above the all-hub scaffold — i.e. the DWPC signal separates them on real degrees.
-    # NOTE: under the current PLACEHOLDER constants it lands `moderate`, not `specific` (its real
-    # degree ~143 clears the generic cutoff but not the un-calibrated `specific` threshold); the
-    # reward-threshold gap is characterised by the xfail'd population test below.
+    # With the calibrated constants the control's real degree (~143) now lands `specific` — a
+    # genuinely low-degree metabolite is rewarded, not merely "not condemned".
     control = recorded["control_specific"]
     curies = list(control)
     degrees = [control[c]["degree"] for c in curies]
@@ -93,7 +92,7 @@ def test_low_degree_control_scores_above_generic_scaffold(recorded):
         scaffold_curies, [scaffold[c]["degree"] for c in scaffold_curies]
     )
 
-    assert control_spec.label != "generic"
+    assert control_spec.label == "specific"
     assert control_spec.generic_intermediates == []
     assert control_spec.score is not None and scaffold_spec.score is not None
     assert control_spec.score > scaffold_spec.score
@@ -110,26 +109,32 @@ def test_scorer_specific_band_reachable_synthetic():
     assert spec.generic_intermediates == []
 
 
-# --- REAL-population reward reachability: currently a KNOWN calibration gap (xfail) --------------
+# --- REAL-population reward reachability: closed by the Unit-4 recalibration ---------------------
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="PLACEHOLDER cut points leave `specific` unreachable on the real intermediate-degree "
-    "population (lowest measured ~115; SPECIFIC_CUT=0.20 admits degree <= ~55). Un-xfail after the "
-    "constants are recalibrated from a real distribution (bridge_specificity_calibration.py "
-    "recommends quantile cut points) and _DEGREE_QUERY_LIMIT is raised so mega-hubs are not "
-    "saturated at the query cap.",
-)
 def test_specific_reachable_on_recorded_population(recorded):
-    # Under a properly calibrated set of constants a nontrivial fraction of the real
-    # intermediate-degree population should land `specific` — else the reward axis is decorative
-    # (only the penalty side ever fires). This asserts the calibrated TARGET, not today's behaviour.
+    # Both label bands must be reachable on the REAL intermediate-degree population — else the
+    # reward axis is decorative (only the penalty side ever fires). Calibrated cut points
+    # (SPECIFIC_CUT=0.12 / MODERATE_CUT=0.063) reward the genuine-specific cluster {115, 143} while
+    # the hubs (>= 1270, incl. saturated) stay generic. This previously xfail'd under the
+    # placeholder constants; the recalibration closes the gap.
     population = recorded["recorded_intermediate_population"]
     labels = [bridge_specificity([f"N:{i}"], [d]).label for i, d in enumerate(population)]
     n_specific = labels.count("specific")
     assert n_specific >= 2, f"reward bucket collapsed: labels={labels}"
-    # the generic penalty side must also fire (the hubs) — this half holds on real degrees today
+    # the generic penalty side must also fire (the hubs)
     assert labels.count("generic") >= 1
+
+
+# --- saturation is treated as a FLOOR -> force-generic -------------------------------------------
+
+def test_saturated_degree_is_forced_generic():
+    from kestrel_backend.graph.nodes.bridge_specificity import SATURATION_DEGREE
+
+    # A degree measured AT the one_hop query cap is a lower bound on a mega-hub, not an exact count,
+    # so the intermediate must be condemned generic regardless of the score-band arithmetic.
+    spec = bridge_specificity(["SAT:1"], [SATURATION_DEGREE])
+    assert spec.label == "generic"
+    assert spec.generic_intermediates == ["SAT:1"]
 
 
 # --- distribution measurement hook --------------------------------------------------------
