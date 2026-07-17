@@ -387,6 +387,43 @@ class SynthesisConfig(BaseModel):
         "prevent reaching it. Tune downward if R7 shows headroom is tight.",
     )
 
+    # --- Tier-3 direction / falsifier contract (Axis E) ---------------------------------
+    # Deterministic direction (sign) label for Tier-3 predictions, computed from axis A's signed
+    # module weights (`module_spine`) and stamped into the report post-LLM. Coarse banding now;
+    # refine once axis A's real kME distribution is observable (plan Deferred-to-Implementation).
+    direction_high_abs_kme: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Minimum |kME| for a Tier-3 direction to render the 'high' confidence tier. "
+        "kME is a WGCNA module-membership correlation in [-1, 1]; a high magnitude means the member "
+        "sits near the module eigengene. Coarse default; tune against axis A's real distribution.",
+    )
+    direction_moderate_abs_kme: float = Field(
+        default=0.4,
+        ge=0.0,
+        le=1.0,
+        description="Minimum |kME| for the 'moderate' direction confidence tier; below this the tier "
+        "is 'low'. Must be <= direction_high_abs_kme.",
+    )
+    direction_kim_floor: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Intramodular-connectivity (kIM) floor. When > 0 and a contributing member's kIM "
+        "is present and below this floor, the confidence tier is capped one step below 'high' (a "
+        "weakly-connected member cannot anchor top confidence — the low-n kME caveat). Default 0 "
+        "disables the cap until axis A's kIM values are observable.",
+    )
+    direction_small_n_cap: int = Field(
+        default=15,
+        ge=1,
+        description="Derivation-cohort size below which a Tier-3 direction cannot reach the 'high' "
+        "confidence tier (small-sample |kME| inflation crowns weakly-supported members — validation "
+        "memo low-n kME caveat). Applied only when a per-module derivation n is supplied to the "
+        "direction helper; axis A does not yet emit cohort n, so the cap is exercised via unit tests "
+        "and ready when that field lands.",
+    )
+
 
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration with per-node sub-models.
