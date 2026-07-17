@@ -219,15 +219,28 @@ function coerceFinite(raw: string | undefined): WeightCell {
   return { status: "value", value: n };
 }
 
+// kME / eigengene-trait correlations are bounded to [-1, 1], but a serialized WGCNA export can
+// round to e.g. 1.0000002. Mirror the backend (analyte_ingest.py `_KME_EPSILON`): tolerate
+// ±epsilon on the bound and clamp a within-epsilon value back inside, rather than rejecting a
+// rounded export the shared ingest gate would ACCEPT.
+export const KME_EPSILON = 1e-6;
+
+/** Clamp a correlation to [-1, 1] (used after the epsilon-tolerant bound check passes). */
+function clampCorrelation(v: number): number {
+  return Math.max(-1, Math.min(1, v));
+}
+
 /**
- * Coerce a kME cell. kME is a correlation → valid only when finite AND within [-1, 1] (mirrors the
- * backend's reject-don't-clip rule). Blank = absent (member simply unweighted).
+ * Coerce a kME cell. kME is a correlation → valid only when finite AND within [-1, 1] up to
+ * ±KME_EPSILON (mirrors the backend's epsilon-tolerant-clamp rule). A within-epsilon value is
+ * clamped back inside so the payload sent to the backend is already in-bounds; only values beyond
+ * the epsilon are rejected. Blank = absent (member simply unweighted).
  */
 export function parseKmeCell(raw: string | undefined): WeightCell {
   const c = coerceFinite(raw);
   if (c.status !== "value") return c;
-  if (c.value < -1 || c.value > 1) return { status: "invalid" };
-  return c;
+  if (c.value < -1 - KME_EPSILON || c.value > 1 + KME_EPSILON) return { status: "invalid" };
+  return { status: "value", value: clampCorrelation(c.value) };
 }
 
 /**
@@ -276,7 +289,14 @@ export function buildModuleDirections(
   for (const [group, raw] of Object.entries(correlationByGroup)) {
     const c = coerceFinite(raw);
     if (c.status !== "value") continue;
-    out.push({ group, eigengene_trait_correlation: c.value, trait_label: label });
+    // Clamp a within-epsilon rounded export back inside [-1, 1] (mirrors the backend) so the
+    // payload is already in-bounds. A value beyond the epsilon is left as-is here; it is flagged
+    // by countInvalidDirections and the Continue gate blocks the upload before this is sent.
+    const corr =
+      c.value >= -1 - KME_EPSILON && c.value <= 1 + KME_EPSILON
+        ? clampCorrelation(c.value)
+        : c.value;
+    out.push({ group, eigengene_trait_correlation: corr, trait_label: label });
   }
   return out;
 }
@@ -298,7 +318,9 @@ export function countInvalidDirections(
   let n = 0;
   for (const g of keys) {
     const c = coerceFinite(correlationByGroup[g]);
-    if (c.status === "value" && (c.value < -1 || c.value > 1)) n += 1;
+    // Epsilon-tolerant bound (mirrors backend): a within-epsilon rounded export is VALID (and gets
+    // clamped in buildModuleDirections); only values beyond the epsilon are counted as invalid.
+    if (c.status === "value" && (c.value < -1 - KME_EPSILON || c.value > 1 + KME_EPSILON)) n += 1;
   }
   return n;
 }

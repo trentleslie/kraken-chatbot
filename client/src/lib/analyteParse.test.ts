@@ -264,6 +264,25 @@ describe("signed-weight parsing (Axis A)", () => {
     expect(parseKmeCell("abc")).toEqual({ status: "invalid" });
   });
 
+  it("parseKmeCell accepts a within-epsilon rounded export and clamps it (mirrors backend)", () => {
+    // WGCNA exports can round to just past the bound; the backend tolerates ±1e-6 and clamps.
+    expect(parseKmeCell("1.0000002")).toEqual({ status: "value", value: 1 });
+    expect(parseKmeCell("-1.0000002")).toEqual({ status: "value", value: -1 });
+    // Beyond the epsilon is still rejected.
+    expect(parseKmeCell("1.01")).toEqual({ status: "invalid" });
+    expect(parseKmeCell("-1.01")).toEqual({ status: "invalid" });
+  });
+
+  it("buildAnalytes clamps a within-epsilon kME into the outgoing payload", () => {
+    const rows = [
+      { analyte: "a", kME: "1.0000002" },
+      { analyte: "b", kME: "-1.0000002" },
+    ];
+    const { analytes } = buildAnalytes(rows, { analyte: "analyte", kme: "kME" });
+    expect(analytes[0].kme).toBe(1);
+    expect(analytes[1].kme).toBe(-1);
+  });
+
   it("parseKimCell accepts unbounded non-negative, rejects negative / non-numeric", () => {
     expect(parseKimCell("40")).toEqual({ status: "value", value: 40 });
     expect(parseKimCell("0")).toEqual({ status: "value", value: 0 });
@@ -384,6 +403,20 @@ describe("countInvalidDirections (Greptile P1 #2)", () => {
 
   it("respects the boundary values -1 and 1 as valid", () => {
     expect(countInvalidDirections({ A: "-1", B: "1" })).toBe(0);
+  });
+
+  it("accepts a within-epsilon rounded correlation, rejects beyond it (mirrors backend)", () => {
+    // A rounded export just past the bound is VALID (not counted); beyond the epsilon is invalid.
+    expect(countInvalidDirections({ A: "1.0000002", B: "-1.0000002" })).toBe(0);
+    expect(countInvalidDirections({ A: "1.01", B: "-1.01" })).toBe(2);
+  });
+
+  it("buildModuleDirections clamps a within-epsilon correlation into the payload", () => {
+    const dirs = buildModuleDirections({ Brown: "1.0000002", Blue: "-1.0000002" }, "frailty");
+    expect(dirs).toEqual([
+      { group: "Brown", eigengene_trait_correlation: 1, trait_label: "frailty" },
+      { group: "Blue", eigengene_trait_correlation: -1, trait_label: "frailty" },
+    ]);
   });
 
   it("only considers the provided groups when given (ignores stale entries)", () => {
