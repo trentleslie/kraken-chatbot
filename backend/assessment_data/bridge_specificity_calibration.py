@@ -32,7 +32,15 @@ import statistics
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Load Kestrel creds from backend/.env before importing the client (KESTREL_API_KEY is read at
+# module-import time). This probe is run standalone, so it owns its dotenv load rather than
+# relying on the caller's environment (see docs/solutions: Kestrel 403 was dotenv-from-/tmp).
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
 from src.kestrel_backend.graph.nodes.bridge_specificity import (  # noqa: E402
+    _DEGREE_QUERY_LIMIT,
     DAMPING_W,
     GENERIC_CUTOFF,
     MODERATE_CUT,
@@ -170,8 +178,13 @@ async def main() -> None:
                 "query_sha": query_sha,
                 "recorded_at": stamp,
                 "damping_w": DAMPING_W,
+                "degree_query_limit": _DEGREE_QUERY_LIMIT,
                 "note": "1-MNA hypothesis: TNFRSF10A -> 1-MNA via blood, placenta, cancer. "
-                        "Intermediates are near-universal high-degree nodes; the bridge INVERTED.",
+                        "Intermediates are near-universal high-degree nodes; the bridge INVERTED. "
+                        "Degrees are one_hop_query preview results_count, saturated at "
+                        f"degree_query_limit ({_DEGREE_QUERY_LIMIT}) — so a value == the limit is a "
+                        "FLOOR on the true (larger) hub degree, not an exact count. This is "
+                        "immaterial to the generic retrodiction (limit >> GENERIC_CUTOFF).",
             },
             "one_mna_scaffold": {
                 c: {"name": ONE_MNA_SCAFFOLD[c], "degree": degrees[c]} for c in ONE_MNA_SCAFFOLD
