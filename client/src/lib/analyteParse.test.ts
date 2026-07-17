@@ -232,12 +232,23 @@ describe("buildAnalytes — kME/kIM (Axis A)", () => {
     expect(res.analytes[0]).toEqual({ name: "glucose" });
   });
 
-  it("non-numeric kME cell → undefined client-side (backend authoritative)", () => {
+  it("non-numeric kME cell → raw string preserved so the backend R19 gate can reject it", () => {
     const res = buildAnalytes([{ analyte: "glucose", kME: "high" }], {
       analyte: "analyte",
       kme: "kME",
     });
-    expect(res.analytes[0].kme).toBeUndefined();
+    // Preserved verbatim (NOT dropped): dropping it would silently unweight the member and
+    // change module-spine coverage instead of surfacing the bad upload.
+    expect(res.analytes[0].kme).toBe("high");
+  });
+
+  it("non-numeric kIM cell → raw string preserved for backend rejection", () => {
+    const res = buildAnalytes([{ analyte: "glucose", kME: "0.5", kIM: "n/a" }], {
+      analyte: "analyte",
+      kme: "kME",
+      kim: "kIM",
+    });
+    expect(res.analytes[0]).toEqual({ name: "glucose", kme: 0.5, kim: "n/a" });
   });
 
   it("kME column unmapped → analytes built exactly as before (no regression)", () => {
@@ -271,11 +282,28 @@ describe("buildModuleDirections (Axis A)", () => {
     expect(buildModuleDirections(rows, { group: "module", correlation: "cor" })).toEqual([]);
   });
 
-  it("skips rows with a blank group or non-numeric correlation", () => {
+  it("preserves malformed rows VERBATIM so the backend R19 gate can reject them", () => {
     const out = buildModuleDirections(
       [
-        { module: "", cor: "0.6", trait: "t" },
-        { module: "Brown", cor: "n/a", trait: "t" },
+        { module: "", cor: "0.6", trait: "t" }, // blank group → backend warns + drops
+        { module: "Brown", cor: "n/a", trait: "t" }, // non-numeric corr → backend rejects
+        { module: "Green", cor: "", trait: "t" }, // blank corr → backend rejects
+        { module: "Blue", cor: "0.2", trait: "t" }, // valid → number
+      ],
+      { group: "module", correlation: "cor", trait: "trait" },
+    );
+    expect(out).toEqual([
+      { group: "", eigengene_trait_correlation: 0.6, trait_label: "t" },
+      { group: "Brown", eigengene_trait_correlation: "n/a", trait_label: "t" },
+      { group: "Green", eigengene_trait_correlation: "", trait_label: "t" },
+      { group: "Blue", eigengene_trait_correlation: 0.2, trait_label: "t" },
+    ]);
+  });
+
+  it("skips only fully-empty rows (no group, correlation, or trait)", () => {
+    const out = buildModuleDirections(
+      [
+        { module: "", cor: "", trait: "" }, // filler → skipped
         { module: "Blue", cor: "0.2", trait: "t" },
       ],
       { group: "module", correlation: "cor", trait: "trait" },

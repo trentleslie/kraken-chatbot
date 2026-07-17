@@ -12,14 +12,18 @@ export type StructuredAnalyte = {
   group?: string;
   type?: "metabolite" | "protein" | "gene";
   // Signed within-module weights (Axis A). kME ∈ [-1, 1]; kIM (kWithin) >= 0. Backend authoritative.
-  kme?: number;
-  kim?: number;
+  // A number when the mapped cell parsed; a raw string is preserved for a present-but-non-numeric
+  // cell so the backend R19 gate REJECTS it rather than the client silently dropping the weight.
+  kme?: number | string;
+  kim?: number | string;
 };
 
 // One per-module eigengene→outcome direction row (Axis A). Optional; the backend validates it.
+// eigengene_trait_correlation is a number when the mapped cell parsed, else the raw string so the
+// backend rejects a malformed direction instead of it silently vanishing from the module spine.
 export type ModuleDirectionInput = {
   group: string;
-  eigengene_trait_correlation: number;
+  eigengene_trait_correlation: number | string;
   trait_label: string;
 };
 

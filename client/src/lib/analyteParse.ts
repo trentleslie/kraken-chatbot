@@ -36,16 +36,26 @@ export interface StructuredAnalyte {
   name: string;
   group?: string;
   type?: AnalyteType;
-  /** Signed kME ∈ [-1, 1] (backend re-validates; client is best-effort). */
-  kme?: number;
-  /** Raw kIM (kWithin) >= 0 (backend re-validates). */
-  kim?: number;
+  /**
+   * Signed kME ∈ [-1, 1]. A `number` when the mapped cell parsed cleanly; the raw string is
+   * preserved (verbatim) for a present-but-non-numeric cell so the backend R19 gate can REJECT
+   * the bad weight instead of the client silently dropping it (which would unweight the member
+   * and change module-spine coverage without surfacing the bad upload). Absent when unmapped/blank.
+   */
+  kme?: number | string;
+  /** Raw kIM (kWithin) >= 0. `number` when parsed; raw string preserved for backend rejection. */
+  kim?: number | string;
 }
 
 /** A per-module eigengene→outcome direction row (Axis A). Optional; backend authoritative. */
 export interface ModuleDirectionInput {
   group: string;
-  eigengene_trait_correlation: number;
+  /**
+   * `number` when the mapped correlation cell parsed; the raw string is preserved for a
+   * present-but-non-numeric (or blank) cell so the backend R19 gate REJECTS the malformed
+   * direction instead of it silently vanishing from the module spine.
+   */
+  eigengene_trait_correlation: number | string;
   trait_label: string;
 }
 
@@ -213,16 +223,23 @@ function normalizeType(raw: string | undefined): AnalyteType | undefined {
 }
 
 /**
- * Coerce a cell to a finite number, or undefined when blank/non-numeric. The backend R19 gate is
- * authoritative (it REJECTS a non-numeric mapped weight); the client is best-effort so a typo in
- * an unmapped-ish column never blocks the submit — it just omits the weight.
+ * Classify a mapped weight/correlation cell, mirroring the backend R19 `_coerce_weight` states:
+ *   - `absent`  — missing/blank cell (member simply carries no weight);
+ *   - `value`   — a finite number was parsed;
+ *   - `invalid` — present but non-numeric/non-finite (the raw string is carried through so the
+ *                 backend R19 gate — authoritative — can REJECT it; the client must NOT drop it).
  */
-function coerceNumber(raw: string | undefined): number | undefined {
-  if (raw === undefined) return undefined;
+type WeightCell =
+  | { status: "absent" }
+  | { status: "value"; value: number }
+  | { status: "invalid"; raw: string };
+
+function coerceWeightCell(raw: string | undefined): WeightCell {
+  if (raw === undefined) return { status: "absent" };
   const s = raw.trim();
-  if (s === "") return undefined;
+  if (s === "") return { status: "absent" };
   const n = Number(s);
-  return Number.isFinite(n) ? n : undefined;
+  return Number.isFinite(n) ? { status: "value", value: n } : { status: "invalid", raw: s };
 }
 
 export interface BuildResult {
@@ -264,11 +281,20 @@ export function buildAnalytes(
     const analyte: StructuredAnalyte = { name };
     if (group) analyte.group = group;
     if (type) analyte.type = type;
-    // Signed weights (Axis A): only attach when the column is mapped AND the cell parses numeric.
-    const kme = mapping.kme ? coerceNumber(row[mapping.kme]) : undefined;
-    const kim = mapping.kim ? coerceNumber(row[mapping.kim]) : undefined;
-    if (kme !== undefined) analyte.kme = kme;
-    if (kim !== undefined) analyte.kim = kim;
+    // Signed weights (Axis A): when the column is mapped, a numeric cell rides through as a
+    // number and a present-but-non-numeric cell is preserved VERBATIM so the backend R19 gate
+    // rejects the malformed weight. Dropping the invalid cell here would silently unweight the
+    // member and change module-spine coverage without surfacing the bad upload. Blank → omitted.
+    if (mapping.kme) {
+      const cell = coerceWeightCell(row[mapping.kme]);
+      if (cell.status === "value") analyte.kme = cell.value;
+      else if (cell.status === "invalid") analyte.kme = cell.raw;
+    }
+    if (mapping.kim) {
+      const cell = coerceWeightCell(row[mapping.kim]);
+      if (cell.status === "value") analyte.kim = cell.value;
+      else if (cell.status === "invalid") analyte.kim = cell.raw;
+    }
     analytes.push(analyte);
   }
 
@@ -277,8 +303,11 @@ export function buildAnalytes(
 
 /**
  * Build per-module direction rows from a (separately-exported) ME-trait table (Axis A). Returns
- * [] unless all three columns (group, correlation, trait) are mapped. Skips rows with a blank
- * group or a non-numeric correlation; the backend R19 gate re-validates + range-checks.
+ * [] unless all three columns (group, correlation, trait) are mapped. Every row with ANY content
+ * in a mapped column is preserved VERBATIM (a numeric correlation as a number, otherwise the raw
+ * string) so the backend R19 gate re-validates + range-checks and REJECTS a malformed direction —
+ * dropping it here would let a typo'd correlation or blank trait silently vanish from the module
+ * spine. Only fully-empty rows (blank group, correlation, and trait) are skipped as filler.
  */
 export function buildModuleDirections(
   rows: Record<string, string>[],
@@ -289,9 +318,15 @@ export function buildModuleDirections(
   for (const row of rows) {
     const group = (row[mapping.group] ?? "").trim();
     const trait = (row[mapping.trait] ?? "").trim();
-    const corr = coerceNumber(row[mapping.correlation]);
-    if (!group || corr === undefined || !trait) continue;
-    out.push({ group, eigengene_trait_correlation: corr, trait_label: trait });
+    const rawCorr = (row[mapping.correlation] ?? "").trim();
+    if (!group && !rawCorr && !trait) continue; // fully-empty row = filler, not a direction
+    const corr = coerceWeightCell(rawCorr);
+    out.push({
+      group,
+      // number when parsed; otherwise the raw cell (or "" for a blank) so the backend rejects it.
+      eigengene_trait_correlation: corr.status === "value" ? corr.value : rawCorr,
+      trait_label: trait,
+    });
   }
   return out;
 }
