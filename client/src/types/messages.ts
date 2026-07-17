@@ -11,6 +11,18 @@ export type StructuredAnalyte = {
   name: string;
   group?: string;
   type?: "metabolite" | "protein" | "gene";
+  // Signed-weight data spine (Axis A): kME (module-eigengene correlation, [-1,1]) and kIM (raw
+  // intramodular connectivity kWithin, ≥ 0) ride each row when the user maps those columns.
+  kme?: number;
+  kim?: number;
+};
+
+// One per-module eigengene→outcome direction sent alongside the panel (Axis A). Load-bearing for
+// the sign-inversion metric (member-vs-outcome = sign(kME) × sign(direction)).
+export type ModuleDirectionInput = {
+  group: string;
+  eigengene_trait_correlation: number;
+  trait_label: string;
 };
 
 export type UserMessage = {

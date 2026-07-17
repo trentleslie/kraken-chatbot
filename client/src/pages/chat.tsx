@@ -40,6 +40,7 @@ export default function ChatPage() {
     setStructuredAnalytes,
     selectedGroups,
     setSelectedGroups,
+    setModuleDirections,
     sendMessage,
     clearMessages,
     needsKey,
@@ -65,6 +66,7 @@ export default function ChatPage() {
     setUploadStage({ step: "idle" });
     setStructuredAnalytes([]);
     setSelectedGroups([]);
+    setModuleDirections([]);
   };
 
   const handleSelectStarter = (query: string) => {
@@ -153,10 +155,11 @@ export default function ChatPage() {
               parsed={uploadStage.parsed}
               fileName={uploadStage.fileName}
               onCancel={() => setUploadStage({ step: "idle" })}
-              onConfirm={(analytes) => {
+              onConfirm={(analytes, moduleDirections) => {
                 setStructuredAnalytes(analytes);
                 // Default the group selection to all groups present.
                 setSelectedGroups(distinctGroups(analytes));
+                setModuleDirections(moduleDirections);
                 setUploadStage({ step: "idle" });
               }}
             />

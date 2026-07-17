@@ -9,10 +9,15 @@ import {
 } from "@/components/ui/select";
 import {
   buildAnalytes,
+  buildModuleDirections,
+  countInvalidDirections,
+  countInvalidWeightCells,
+  distinctGroups,
   isFormulaInjection,
   suggestMapping,
   type ColumnMapping,
   type MappingTarget,
+  type ModuleDirectionInput,
   type ParsedFile,
   type StructuredAnalyte,
 } from "@/lib/analyteParse";
@@ -20,17 +25,21 @@ import {
 interface ColumnMappingPanelProps {
   parsed: ParsedFile;
   fileName: string;
-  onConfirm: (analytes: StructuredAnalyte[]) => void;
+  onConfirm: (analytes: StructuredAnalyte[], moduleDirections: ModuleDirectionInput[]) => void;
   onCancel: () => void;
 }
 
 const UNMAPPED = "__none__";
 
 /**
- * Column-mapping panel (Unit 6, R5–R8). Radix Select dropdowns assign file columns to three
- * targets (analyte required, group/type optional). Auto-suggests unambiguous mappings; Confirm is
- * disabled until the analyte column is mapped. Preview cells that look like formula-injection are
- * badged and rendered as plain text nodes (never innerHTML).
+ * Column-mapping panel (Unit 6, R5–R8; extended for Axis A signed weights). Radix Select dropdowns
+ * assign file columns to targets (analyte required; group/type/kME/kIM optional). Auto-suggests
+ * unambiguous mappings; Continue is disabled until the analyte column is mapped AND every mapped
+ * kME/kIM cell is valid (reject-don't-clip: a mapped-but-invalid weight column must not silently
+ * degrade to a no-kME run). When groups are known, an optional per-module direction table
+ * (one signed eigengene→outcome correlation per group + one shared trait label) is offered.
+ * Preview cells that look like formula-injection are badged — EXCEPT numeric (kME/kIM) columns,
+ * whose legitimately-negative values would otherwise be false-flagged.
  */
 export function ColumnMappingPanel({
   parsed,
@@ -39,18 +48,60 @@ export function ColumnMappingPanel({
   onCancel,
 }: ColumnMappingPanelProps) {
   const [mapping, setMapping] = useState<ColumnMapping>(() => suggestMapping(parsed.headers));
+  // Per-group eigengene→outcome correlation (as raw strings) + one shared trait label.
+  const [dirByGroup, setDirByGroup] = useState<Record<string, string>>({});
+  const [traitLabel, setTraitLabel] = useState("");
 
   const setTarget = (target: MappingTarget, value: string) => {
     setMapping((prev) => ({ ...prev, [target]: value === UNMAPPED ? undefined : value }));
   };
 
   const hasDataRows = parsed.rows.length > 0;
-  const canConfirm = Boolean(mapping.analyte) && hasDataRows;
 
   const built = useMemo(
     () => (mapping.analyte ? buildAnalytes(parsed.rows, mapping) : null),
     [parsed.rows, mapping],
   );
+
+  // Mapped-but-invalid weight cells across the FULL panel (not just the preview) — the Continue
+  // gate reads these so a bad kME/kIM column can't slip through as a clean no-kME run.
+  const invalidCounts = useMemo(
+    () => countInvalidWeightCells(parsed.rows, mapping),
+    [parsed.rows, mapping],
+  );
+  const hasInvalidWeights = invalidCounts.kme > 0 || invalidCounts.kim > 0;
+
+  // Numeric-mapped columns (kME/kIM) are excluded from the formula-injection badge so a signed
+  // (leading-"-") kME value isn't false-flagged.
+  const numericHeaders = useMemo(() => {
+    const s = new Set<string>();
+    if (mapping.kme) s.add(mapping.kme);
+    if (mapping.kim) s.add(mapping.kim);
+    return s;
+  }, [mapping.kme, mapping.kim]);
+
+  const groups = built ? distinctGroups(built.analytes) : [];
+
+  // Conflicting duplicate weights: two (name, group) rows with disagreeing kME/kIM. The display
+  // dedup would silently keep the first value and the backend never sees the conflict it is
+  // designed to reject — so block Continue here (client twin of the server's reject-on-conflict).
+  const hasWeightConflicts = (built?.weightConflicts ?? 0) > 0;
+
+  // The per-module direction table is only meaningful (and only rendered) once a kME column and
+  // groups exist. When active, a direction correlation outside [-1, 1] would be sent and then
+  // rejected server-side AFTER the staged upload is cleared (unrecoverable) — gate on it here.
+  const directionTableActive = Boolean(mapping.kme) && groups.length > 0;
+  const invalidDirectionCount = directionTableActive
+    ? countInvalidDirections(dirByGroup, groups)
+    : 0;
+  const hasInvalidDirections = invalidDirectionCount > 0;
+
+  const canConfirm =
+    Boolean(mapping.analyte) &&
+    hasDataRows &&
+    !hasInvalidWeights &&
+    !hasWeightConflicts &&
+    !hasInvalidDirections;
 
   const renderSelect = (target: MappingTarget, label: string, required?: boolean) => (
     <div className="flex flex-col gap-1">
@@ -74,6 +125,12 @@ export function ColumnMappingPanel({
     </div>
   );
 
+  const handleConfirm = () => {
+    if (!built) return;
+    const directions = buildModuleDirections(dirByGroup, traitLabel);
+    onConfirm(built.analytes, directions);
+  };
+
   return (
     <div className="max-w-3xl mx-auto rounded-md border p-3 space-y-3" data-testid="mapping-panel">
       <div className="flex items-center justify-between">
@@ -87,7 +144,33 @@ export function ColumnMappingPanel({
         {renderSelect("type", "Analyte type")}
       </div>
 
-      {/* Preview (first ~5 rows). Formula-injection cells are badged and rendered as text. */}
+      {/* Signed weights (Axis A) — visually distinct optional mapping row. */}
+      <div className="rounded border border-dashed p-2 space-y-2">
+        <p className="text-xs font-medium text-muted-foreground">Signed weights (optional)</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {renderSelect("kme", "kME (module membership, −1…1)")}
+          {renderSelect("kim", "kIM (kWithin, ≥ 0)")}
+        </div>
+        {hasInvalidWeights && (
+          <p className="text-xs text-amber-600" data-testid="weight-invalid-warning">
+            ⚠{" "}
+            {invalidCounts.kme > 0 &&
+              `${invalidCounts.kme} kME value(s) out of range or non-numeric`}
+            {invalidCounts.kme > 0 && invalidCounts.kim > 0 && "; "}
+            {invalidCounts.kim > 0 && `${invalidCounts.kim} kIM value(s) negative or non-numeric`}
+            {" "}— the server will reject this upload. Fix the column mapping to continue.
+          </p>
+        )}
+        {hasWeightConflicts && (
+          <p className="text-xs text-amber-600" data-testid="weight-conflict-warning">
+            ⚠ {built?.weightConflicts} duplicate row(s) carry conflicting kME/kIM for the same
+            analyte and group. The server rejects conflicting duplicates — resolve them in the file
+            (or remap columns) to continue.
+          </p>
+        )}
+      </div>
+
+      {/* Preview (first ~5 rows). Formula-injection cells are badged (numeric columns excluded). */}
       <div className="overflow-x-auto rounded border">
         <table className="w-full text-xs">
           <thead>
@@ -104,7 +187,7 @@ export function ColumnMappingPanel({
               <tr key={i} className="border-t">
                 {parsed.headers.map((h) => (
                   <td key={h} className="px-2 py-1">
-                    {isFormulaInjection(row[h]) ? (
+                    {!numericHeaders.has(h) && isFormulaInjection(row[h]) ? (
                       <span title="Looks like a spreadsheet formula" className="text-amber-600">
                         ⚠ {row[h]}
                       </span>
@@ -119,13 +202,64 @@ export function ColumnMappingPanel({
         </table>
       </div>
 
-      {!hasDataRows && (
-        <p className="text-xs text-destructive">No data rows found.</p>
-      )}
+      {!hasDataRows && <p className="text-xs text-destructive">No data rows found.</p>}
       {built && (
         <p className="text-xs text-muted-foreground">
           {built.rowsRead} rows read, {built.rowsKept} analytes kept.
         </p>
+      )}
+
+      {/* Per-module direction table (optional). Only shown once groups + a kME column are present,
+          since the direction is only meaningful for signed modules. Group is bound to the panel's
+          distinct groups (a typo is structurally impossible); one shared trait label for the run. */}
+      {mapping.kme && groups.length > 0 && (
+        <div className="rounded border p-2 space-y-2" data-testid="direction-table">
+          <p className="text-xs font-medium text-muted-foreground">
+            Module → outcome direction (optional)
+          </p>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-muted-foreground">Outcome / trait label</label>
+            <input
+              type="text"
+              className="h-8 rounded border px-2 text-sm"
+              placeholder="e.g. frailty"
+              value={traitLabel}
+              data-testid="direction-trait-label"
+              onChange={(e) => setTraitLabel(e.target.value)}
+            />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {groups.map((g) => (
+              <div key={g} className="flex items-center gap-2">
+                <span className="text-xs w-28 truncate" title={g}>
+                  {g}
+                </span>
+                <input
+                  type="number"
+                  step="any"
+                  min={-1}
+                  max={1}
+                  className="h-8 w-24 rounded border px-2 text-sm"
+                  placeholder="corr −1…1"
+                  value={dirByGroup[g] ?? ""}
+                  data-testid={`direction-corr-${g}`}
+                  onChange={(e) =>
+                    setDirByGroup((prev) => ({ ...prev, [g]: e.target.value }))
+                  }
+                />
+              </div>
+            ))}
+          </div>
+          {hasInvalidDirections && (
+            <p className="text-xs text-amber-600" data-testid="direction-invalid-warning">
+              ⚠ {invalidDirectionCount} correlation(s) are outside the −1…1 range. The server
+              rejects these — fix them to continue.
+            </p>
+          )}
+          <p className="text-[11px] text-muted-foreground">
+            Leave all blank to run without a direction. Required to compute the sign-inversion metric.
+          </p>
+        </div>
       )}
 
       <div className="flex justify-end gap-2">
@@ -135,7 +269,7 @@ export function ColumnMappingPanel({
         <Button
           size="sm"
           disabled={!canConfirm}
-          onClick={() => built && onConfirm(built.analytes)}
+          onClick={handleConfirm}
           data-testid="mapping-confirm"
         >
           Continue

@@ -583,6 +583,62 @@ class TestErrorHandling:
                             assert msg["type"] == "error"
                             assert "Empty message" in msg["message"]
 
+    def test_module_directions_not_a_list_rejected(self, test_settings, clean_connection_state):
+        """WS gate #1 rejects a non-list module_directions payload before any run (Axis A)."""
+        from starlette.testclient import TestClient
+        from kestrel_backend.main import app
+
+        with patch("kestrel_backend.config.get_settings", return_value=test_settings):
+            with patch("kestrel_backend.main.get_settings", return_value=test_settings):
+                with patch("kestrel_backend.main.init_db", new_callable=AsyncMock):
+                    with patch("kestrel_backend.main.close_db", new_callable=AsyncMock):
+                        client = TestClient(app)
+
+                        with client.websocket_connect("/ws/chat") as websocket:
+                            websocket.send_text(json.dumps({
+                                "type": "user_message",
+                                "content": "",
+                                "agent_mode": "pipeline",
+                                "structured_analytes": [
+                                    {"name": "glucose", "group": "Brown", "kme": 0.8}
+                                ],
+                                "module_directions": {"not": "a list"},
+                            }))
+
+                            data = websocket.receive_text()
+                            msg = json.loads(data)
+
+                            assert msg["type"] == "error"
+                            assert "module_directions must be a list" in msg["message"]
+
+    def test_kme_out_of_range_rejected_at_gate(self, test_settings, clean_connection_state):
+        """kME cells ride structured_analytes and are validated at gate #1: an out-of-range
+        value rejects the panel before the pipeline runs (Axis A: reject, don't clip)."""
+        from starlette.testclient import TestClient
+        from kestrel_backend.main import app
+
+        with patch("kestrel_backend.config.get_settings", return_value=test_settings):
+            with patch("kestrel_backend.main.get_settings", return_value=test_settings):
+                with patch("kestrel_backend.main.init_db", new_callable=AsyncMock):
+                    with patch("kestrel_backend.main.close_db", new_callable=AsyncMock):
+                        client = TestClient(app)
+
+                        with client.websocket_connect("/ws/chat") as websocket:
+                            websocket.send_text(json.dumps({
+                                "type": "user_message",
+                                "content": "",
+                                "agent_mode": "pipeline",
+                                "structured_analytes": [
+                                    {"name": "glucose", "group": "Brown", "kme": 1.5}
+                                ],
+                            }))
+
+                            data = websocket.receive_text()
+                            msg = json.loads(data)
+
+                            assert msg["type"] == "error"
+                            assert "rejected" in msg["message"].lower()
+
 
 # ============================================================================
 # Authentication Tests

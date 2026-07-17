@@ -14,12 +14,81 @@ import logging
 import re
 import time
 from typing import Any
-from ..state import DiscoveryState
+from ..state import (
+    DiscoveryState,
+    MemberWeight,
+    ModuleDirection,
+    ModuleSpine,
+)
 from ..state_contracts import validate_state, IntakeInput, IntakeOutput
-from ...analyte_ingest import validate_and_normalize
+from ...analyte_ingest import NormalizedPanel, validate_and_normalize
 from ...config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _build_module_spine(
+    normalized: NormalizedPanel,
+) -> tuple[dict[str, ModuleSpine], dict[str, Any]]:
+    """Assemble the signed-weight ``module_spine`` + a coverage summary from a normalized panel.
+
+    Builds one ``ModuleSpine`` per canonical group key from the helper's already-validated member
+    weights and directions (Axis A Units 1/2). Returns ``({}, {})`` when the panel carries no kME
+    material so intake can stay byte-identical to classic / no-kME runs (R6).
+
+    The coverage summary (R8) reports members-with-kME / with-kIM / direction-supplied counts and a
+    ``metric_computable`` flag — True only when at least one module has BOTH weighted members and a
+    direction, so the sign-inversion metric (member-vs-outcome = sign(kME) × sign(direction)) is
+    computable. When no direction was supplied the flag is False rather than silently reporting
+    healthy coverage.
+    """
+    module_spine: dict[str, ModuleSpine] = {}
+    for group_key, members_raw in normalized.module_members.items():
+        if not members_raw:
+            continue
+        members = {
+            name: MemberWeight(name=m["name"], kme=m["kme"], kim=m["kim"])
+            for name, m in members_raw.items()
+        }
+        dir_raw = normalized.module_directions.get(group_key)
+        direction = ModuleDirection(**dir_raw) if dir_raw else None
+        module_spine[group_key] = ModuleSpine(
+            group=normalized.module_group_labels.get(group_key, group_key),
+            members=members,
+            direction=direction,
+        )
+
+    if not module_spine:
+        return {}, {}
+
+    per_group = {
+        gk: {
+            "members_with_kme": len(spine.members),
+            "members_with_kim": sum(1 for mw in spine.members.values() if mw.kim is not None),
+            "direction_supplied": spine.direction is not None,
+        }
+        for gk, spine in module_spine.items()
+    }
+    coverage: dict[str, Any] = {
+        "modules": len(module_spine),
+        "members_with_kme": sum(len(s.members) for s in module_spine.values()),
+        "members_with_kim": sum(
+            1 for s in module_spine.values() for mw in s.members.values() if mw.kim is not None
+        ),
+        "groups_with_direction": sum(
+            1 for s in module_spine.values() if s.direction is not None
+        ),
+        # Sign-inversion metric needs at least one module with both weighted members and a
+        # direction; otherwise it is uncomputable and must not be reported as healthy (R3/R8).
+        "metric_computable": any(
+            s.members and s.direction is not None for s in module_spine.values()
+        ),
+        "per_group": per_group,
+        # Non-fatal ingest warnings (group-less weights dropped, unmatched directions) surfaced
+        # here rather than swallowed.
+        "warnings": list(normalized.warnings),
+    }
+    return module_spine, coverage
 
 
 # Trigger phrases that indicate discovery mode
@@ -650,7 +719,10 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         # bounded identically to the main.py door. Idempotent when the WS path already normalized.
         settings = get_settings()
         normalized = validate_and_normalize(
-            structured_analytes, state.get("selected_groups") or [], settings
+            structured_analytes,
+            state.get("selected_groups") or [],
+            settings,
+            module_directions=state.get("module_directions") or None,
         )
 
         # A panel is rejected when the R19 guard reports errors OR when normalization yields no
@@ -695,14 +767,25 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         fdr_entities, marginal_entities = extract_fdr_groups(query, entities)
         analytical_directives = extract_analytical_directives(query)
 
+        # Signed-weight data spine (Axis A): build module_spine from the already-validated
+        # member weights + directions. Absent for classic / no-kME runs (R6).
+        module_spine, module_spine_coverage = _build_module_spine(normalized)
+
         duration_sec = time.time() - start
         logger.info(
-            "Completed intake (structured) in %.1fs — analytes=%d, groups=%d, longitudinal=%s",
+            "Completed intake (structured) in %.1fs — analytes=%d, groups=%d, longitudinal=%s, "
+            "spine_modules=%d, metric_computable=%s",
             duration_sec, len(entities), len({g for gs in entity_groups.values() for g in gs}),
-            is_longitudinal,
+            is_longitudinal, len(module_spine),
+            module_spine_coverage.get("metric_computable") if module_spine else None,
         )
+        if module_spine and module_spine_coverage.get("warnings"):
+            logger.warning(
+                "module_spine ingest warnings: %s",
+                "; ".join(module_spine_coverage["warnings"]),
+            )
 
-        return {
+        out: dict[str, Any] = {
             # Force discovery routing: uploads are panel-oriented (accepted trade-off — a small
             # uploaded lookup still runs the full discovery pipeline).
             "query_type": "discovery",
@@ -717,6 +800,12 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             "analytical_directives": analytical_directives,
             "entity_groups": entity_groups,
         }
+        # Emit the spine + coverage ONLY when kME material is present so no-kME / classic runs stay
+        # byte-identical (R6). Downstream axes B/D/E treat module_spine as optional.
+        if module_spine:
+            out["module_spine"] = module_spine
+            out["module_spine_coverage"] = module_spine_coverage
+        return out
 
     # Extract entities from query (aliases NOT included)
     entities = extract_entities(query)

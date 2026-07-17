@@ -118,6 +118,26 @@ class StructuredAnalyte(BaseModel):
     type: str | None = Field(
         None, description="Optional analyte type hint: metabolite|protein|gene"
     )
+    # Signed-weight data spine (Axis A): kME (module-eigengene correlation, [-1,1]) and kIM (raw
+    # intramodular connectivity kWithin, unbounded/non-negative) ride each row; validated in
+    # analyte_ingest.validate_and_normalize (kME reject-if-outside-[-1,1]; kIM reject-if-negative).
+    kme: float | None = Field(None, description="Signed module-eigengene correlation ([-1, 1])")
+    kim: float | None = Field(None, description="Raw intramodular connectivity kWithin (>= 0)")
+
+
+class ModuleDirection(BaseModel):
+    """One per-module eigengene→outcome direction row (Axis A).
+
+    Documentation-only, like ``StructuredAnalyte`` — the WS handler reads these via
+    ``data.get('module_directions')`` and validation is centralized in
+    ``analyte_ingest.validate_and_normalize``. Load-bearing for the sign-inversion metric
+    (member-vs-outcome = sign(kME) × sign(direction)).
+    """
+    group: str = Field(..., description="Group/module the direction applies to")
+    eigengene_trait_correlation: float = Field(
+        ..., description="Signed correlation of the module eigengene with the trait ([-1, 1])"
+    )
+    trait_label: str = Field(..., description="Human label of the outcome/trait")
 
 
 class KeySourceMessage(BaseModel):
@@ -150,6 +170,11 @@ class UserMessageRequest(BaseModel):
     )
     selected_groups: list[str] | None = Field(
         None, description="Group values the user chose to run (None/empty = all groups)"
+    )
+    # Optional per-module eigengene→outcome directions (Axis A). Validated + count-bounded in the
+    # shared R19 helper; absent for classic / no-direction runs.
+    module_directions: list[ModuleDirection] | None = Field(
+        None, description="Per-module eigengene→outcome direction rows for the signed-weight spine"
     )
 
 

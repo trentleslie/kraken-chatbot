@@ -1,0 +1,11 @@
+analyte,module,type,kME,kIM
+Glucose,Brown,metabolite,0.82,14.3
+Insulin,Brown,protein,0.74,11.1
+IL6,Brown,protein,-0.61,8.7
+CRP,Brown,protein,-0.55,7.2
+Leptin,Brown,protein,0.48,5.9
+Adiponectin,Blue,protein,-0.71,10.4
+HDL cholesterol,Blue,metabolite,-0.66,9.1
+Triglycerides,Blue,metabolite,0.58,6.8
+Albumin,Blue,protein,0.44,4.5
+Creatinine,Grey,metabolite,,
