@@ -978,7 +978,11 @@ def render_bridge_specificity(spec: Any) -> str | None:
 
 # --- Post-LLM Direction stamp (Unit 4) ------------------------------------------------
 
-_HEADING_RE = re.compile(r"^#{1,3}\s")
+# Match h1–h6 so a prediction block anchored on ``#### <title>`` (h4, per SYNTHESIS_PROMPT) still
+# bounds the *previous* block's scan. If only h1–h3 counted, a later, non-stampable ``####`` block
+# would not be seen as a boundary and the prior hypothesis's deterministic Direction could be written
+# into it.
+_HEADING_RE = re.compile(r"^#{1,6}\s")
 
 
 def _is_direction_line(line: str) -> bool:
@@ -996,17 +1000,30 @@ def _line_prefix(line: str) -> str:
 def _find_anchor_index(lines: list[str], title: str) -> int | None:
     """Index of the report line that anchors a Tier-3 block for ``title``.
 
-    Prefers a heading (``#…``) or bold (``**title**``) occurrence over an incidental mention (e.g. in
-    the executive summary), falling back to the first line that contains the title at all.
+    Prefers the prediction *heading* (``#### <title>``, per SYNTHESIS_PROMPT) the LLM is instructed to
+    author each block under, so an incidental bold mention in the executive summary (e.g.
+    ``**title** is the lead signal``) never becomes the stamp anchor ahead of the real block. Falls
+    back, in order, to a bold ``**title**``/leading-bold occurrence, then the first line that contains
+    the title at all.
     """
+    heading: int | None = None
+    bold: int | None = None
     fallback: int | None = None
     for i, ln in enumerate(lines):
-        if title in ln:
-            if fallback is None:
-                fallback = i
-            stripped = ln.lstrip()
-            if stripped.startswith("#") or f"**{title}**" in ln or stripped.startswith("**"):
-                return i
+        if title not in ln:
+            continue
+        if fallback is None:
+            fallback = i
+        stripped = ln.lstrip()
+        if stripped.startswith("#"):
+            if heading is None:
+                heading = i
+        elif (f"**{title}**" in ln or stripped.startswith("**")) and bold is None:
+            bold = i
+    if heading is not None:
+        return heading
+    if bold is not None:
+        return bold
     return fallback
 
 

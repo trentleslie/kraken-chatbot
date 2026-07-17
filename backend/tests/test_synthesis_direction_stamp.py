@@ -99,3 +99,40 @@ def test_anchor_prefers_heading_over_summary_mention():
     # the Direction line sits under the heading, not injected into the summary
     assert lines[lines.index("#### MyPred") + 1] == "**Direction:** ↑ (confidence: high)"
     assert "leading signal." in out
+
+
+def test_anchor_prefers_heading_over_bold_summary_mention():
+    # Greptile P1: a *bold* executive-summary mention (``**MyPred**``) must NOT become the anchor
+    # ahead of the real ``#### MyPred`` prediction heading.
+    report = (
+        "## Executive Summary\n"
+        "**MyPred** is the lead signal this cohort.\n"
+        "#### MyPred\n"
+        "**Prediction:** X drives Y\n"
+    )
+    out = stamp_directions(report, {"MyPred": _up("high")})
+    lines = out.split("\n")
+    # Direction inserted under the heading block, not into the summary sentence.
+    assert lines[lines.index("#### MyPred") + 1] == "**Direction:** ↑ (confidence: high)"
+    summary_idx = lines.index("**MyPred** is the lead signal this cohort.")
+    assert not lines[summary_idx + 1].startswith("**Direction:**")
+
+
+def test_h4_block_boundary_isolates_directions_across_non_stampable_block():
+    # Greptile P1: PredA has no Direction line and PredB (a later, non-stampable ``####`` block) does.
+    # The h4 heading must bound PredA's scan so PredA's value is INSERTED, not written over PredB's
+    # own Direction line.
+    report = (
+        "#### PredA\n"
+        "**Prediction:** A drives outcome\n"
+        "#### PredB\n"
+        "**Prediction:** B drives outcome\n"
+        "**Direction:** ↑ (confidence: low)\n"
+    )
+    out = stamp_directions(report, {"PredA": _down("high")})
+    lines = out.split("\n")
+    # PredA gets its own inserted Direction line, directly under its heading.
+    assert lines[lines.index("#### PredA") + 1] == "**Direction:** ↓ (confidence: high)"
+    # PredB's pre-existing (non-stampable) Direction line is untouched.
+    assert lines[lines.index("#### PredB") + 2] == "**Direction:** ↑ (confidence: low)"
+    assert "↓" in out and out.count("↑") == 1
