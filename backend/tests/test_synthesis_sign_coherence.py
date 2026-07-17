@@ -12,6 +12,7 @@ from kestrel_backend.graph.nodes import synthesis
 from kestrel_backend.graph.nodes.synthesis import (
     assemble_synthesis_context,
     compute_sign_splits,
+    fallback_report,
     format_sign_coherence,
 )
 from kestrel_backend.graph.state import Finding
@@ -99,6 +100,24 @@ class TestAssembleContextIntegration:
         ctx = assemble_synthesis_context(dict(base))
         assert "GGT dipeptides (+)" not in ctx
         assert "Sign-coherence" not in ctx
+
+
+class TestFallbackReportPreservesGuard:
+    """The deterministic fallback must ALSO split sign-incoherent groups (P1 review fix): when the
+    LLM is unavailable or its call falls back, opposite-sign members must not be fused into one
+    program. Mirrors TestAssembleContextIntegration for the degraded path."""
+
+    def test_split_group_appears_in_fallback_report(self):
+        report = fallback_report(dict(GG_SPLIT_STATE))
+        assert "GGT dipeptides (+)" in report
+        assert "GGT dipeptides (−)" in report  # (−) minus sign
+        assert "Sign-coherence" in report or "sign-coherent" in report.lower()
+
+    def test_fallback_report_inert_without_module_spine(self):
+        base = {k: v for k, v in GG_SPLIT_STATE.items() if k != "module_spine"}
+        report = fallback_report(dict(base))
+        assert "GGT dipeptides (+)" not in report
+        assert "Sign-coherence" not in report
 
 
 class TestRunPersistsHooks:

@@ -1322,6 +1322,16 @@ def fallback_report(state: DiscoveryState) -> str:
     if temporal_section:
         report_lines.append(temporal_section)
 
+    # Guard 2 (Axis D): sign-coherence at the group-fusion boundary — mirror the LLM path so the
+    # degraded fallback report ALSO splits sign-incoherent groups into two sign-coherent sub-programs
+    # instead of fusing opposite-sign members into one disease/pathway/member-table program. Rendered
+    # before the disease/pathway sections so the direction guard frames the coordinated-group reading
+    # that follows. Inert (no section) when no ModuleSpine / no split → byte-identical for coherent
+    # modules, matching assemble_synthesis_context.
+    sign_section = format_sign_coherence(compute_sign_splits(state)[0])
+    if sign_section:
+        report_lines.append(sign_section)
+
     # Disease + pathway (module-aware: aggregation + member table at module scale, per-entity
     # dumps for small queries — keeps the fallback path bounded too)
     report_lines.extend(_disease_pathway_sections(state))
