@@ -347,6 +347,37 @@ class BridgeGroundingConfig(BaseModel):
     )
 
 
+class BridgeSpecificityConfig(BaseModel):
+    """Configuration for bridge specificity scoring (axis C — DWPC structural genericity).
+
+    Only OPERATIONAL knobs live here. The DWPC damping exponent and the label cut points /
+    per-node generic cutoff are cited/tuned module constants in
+    ``graph.nodes.bridge_specificity`` (calibrated once from a real intermediate-degree
+    distribution — Unit 4 — not a per-run config surface with no consumer).
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Ships False: this is a PRODUCER whose only consumer (axis E synthesis) is a "
+        "separate deferred PR, so it should not incur live Kestrel degree fetches to populate a "
+        "side-map nothing reads yet. Flip to True when axis E lands (mirrors bridge_grounding's "
+        "gated flip). The Unit 4 measurement runs via an explicit probe, not prod default-on.",
+    )
+    max_scored_bridges: int = Field(
+        default=20,
+        ge=1,
+        description="Cap on bridges scored per run. Each un-cached intermediate costs one "
+        "one_hop_query preview call; per-CURIE fetches are deduped within a run, so a module whose "
+        "bridges share hub intermediates fetches each hub once. Bounds the added Kestrel load.",
+    )
+    concurrency: int = Field(
+        default=8,
+        ge=1,
+        description="Max concurrent degree one_hop_query calls. Bounded + per-run deduped to avoid "
+        "the unbounded one_hop fan-out that once exhausted Kestrel's LMDB readers (MDB_READERS_FULL).",
+    )
+
+
 class SynthesisConfig(BaseModel):
     """Configuration for the synthesis node's context-assembly caps.
 
@@ -470,6 +501,7 @@ class PipelineConfig(BaseModel):
     hypothesis_extraction: HypothesisExtractionConfig = Field(default_factory=HypothesisExtractionConfig)
     integration: IntegrationConfig = Field(default_factory=IntegrationConfig)
     bridge_grounding: BridgeGroundingConfig = Field(default_factory=BridgeGroundingConfig)
+    bridge_specificity: BridgeSpecificityConfig = Field(default_factory=BridgeSpecificityConfig)
     synthesis: SynthesisConfig = Field(default_factory=SynthesisConfig)
 
 
