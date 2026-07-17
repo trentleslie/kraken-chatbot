@@ -196,6 +196,34 @@ class TriageConfig(BaseModel):
         default=6,
         description="DEPRECATED/unused: legacy batch knob from the removed Tier-2 path.",
     )
+    # === Axis B: intramodular-centrality hubs + inverted routing (consumes axis A ModuleSpine) ===
+    intramodular_centrality_enabled: bool = Field(
+        default=False,
+        description="Default-off flag (A/B gate). When True AND a ModuleSpine with kME is present, "
+        "triage marks the top-k% |kME| members of each module as intramodular hubs and INVERTS "
+        "routing (hub → cold_start instead of direct_kg), on the validated findings that KG degree "
+        "is study bias (PNAS 2025 10.1073/pnas.2416646122) and cold_start beat direct_kg in "
+        "validation. When False, or no ModuleSpine, or no kME → today's edge-count behavior exactly. "
+        "Ships off because the evidence base is thin (n=1 duel); flip is gated on a sign-safety "
+        "retrodiction check.",
+    )
+    intramodular_hub_top_k_pct: float = Field(
+        default=10.0,
+        gt=0.0,
+        le=100.0,
+        description="Percent of each module's members (by |kME|, descending) crowned as hub "
+        "candidates — RELATIVE (per-module percentile), never an absolute |kME| threshold, so the hub "
+        "notion is cohort-portable across differing module |kME| distributions. Default 10% mirrors "
+        "common WGCNA hub analyses; tunable.",
+    )
+    intramodular_kim_floor: float | None = Field(
+        default=None,
+        description="Optional absolute kIM (raw intramodular connectivity) floor for the low-n kME "
+        "caveat: a top-k% |kME| candidate whose kIM is below this is vetoed back to its edge-count "
+        "classification (high |kME| + low connectivity = a false hub at low sample size). None "
+        "disables the veto (|kME| alone decides); a candidate whose kIM is itself missing also skips "
+        "the veto. Scale depends on axis A's kIM units; final value pinned once A's kIM scale is known.",
+    )
 
 
 class ColdStartConfig(BaseModel):

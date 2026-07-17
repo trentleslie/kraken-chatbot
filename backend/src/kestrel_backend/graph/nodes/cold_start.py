@@ -614,6 +614,22 @@ def score_entity_complexity(edge_count: int) -> float:
     return float(edge_count)
 
 
+# Axis B (Q6 / feasibility P0-1): a rerouted intramodular hub carries a HIGH edge count, so under the
+# plain ascending-edge-count priority it sorts last and is dropped by the MAX_COLD_START cap — giving
+# hubs LESS analysis, the opposite of the inversion's intent. A hub therefore gets a sentinel priority
+# strictly below the 0-edge cold_start entities (0.0), so it survives the cap and is analyzed first.
+HUB_PRIORITY = -1.0
+
+
+def _priority_score(curie: str, edge_count: int, hub_curies: set[str]) -> float:
+    """Cold_start selection priority (lower = higher priority). A rerouted intramodular hub
+    (``curie in hub_curies``) gets ``HUB_PRIORITY`` so it outranks even genuine 0-edge entities;
+    every other entity keeps the ascending-edge-count ordering of ``score_entity_complexity``."""
+    if curie in hub_curies:
+        return HUB_PRIORITY
+    return score_entity_complexity(edge_count)
+
+
 def get_entity_info(
     curie_or_name: str,
     novelty_scores: list[NoveltyScore],
@@ -675,16 +691,21 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     resolved_entities = state.get("resolved_entities", [])
 
     # Prioritize entities: limit to top 5 sparse + top 3 cold-start by edge count
-    # This reduces SDK serialization overhead while focusing on most important entities
+    # This reduces SDK serialization overhead while focusing on most important entities.
+    # Axis B: a rerouted intramodular hub (is_intramodular_hub on its NoveltyScore) is given top
+    # priority so the MAX_COLD_START cap does not drop it (Q6) — otherwise the inversion is a silent
+    # no-op that gives hubs LESS analysis.
+    hub_curies = {s.curie for s in novelty_scores if getattr(s, "is_intramodular_hub", False)}
+
     sparse_with_scores = []
     for curie in sparse:
         _, _, edge_count = get_entity_info(curie, novelty_scores, resolved_entities)
-        sparse_with_scores.append((curie, score_entity_complexity(edge_count)))
+        sparse_with_scores.append((curie, _priority_score(curie, edge_count, hub_curies)))
 
     cold_start_with_scores = []
     for curie in cold_start:
         _, _, edge_count = get_entity_info(curie, novelty_scores, resolved_entities)
-        cold_start_with_scores.append((curie, score_entity_complexity(edge_count)))
+        cold_start_with_scores.append((curie, _priority_score(curie, edge_count, hub_curies)))
 
     # Sort by complexity score (lower = higher priority)
     sparse_with_scores.sort(key=lambda x: x[1])
