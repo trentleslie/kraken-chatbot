@@ -134,3 +134,96 @@ def bridge_specificity(
         intermediate_degrees=degrees,
         generic_intermediates=generic_intermediates,
     )
+
+
+# --- Hybrid, bounded, per-run cached degree provider (R2, ledger L9) ------------------------
+# NOTE (R6): this reads RAW KG connectivity (an intermediate node's edge count), which is
+# distinct from axis B's intramodular centrality. It is a candidate future shared "KG degree for
+# a CURIE" helper across triage / pathway_enrichment / this provider — deliberately NOT coupled
+# here (that convergence is a separate refactor).
+
+# one_hop_query count limit. Preview mode returns results_count (the edge count == degree);
+# a high limit yields an accurate count, matching triage's read.
+_DEGREE_QUERY_LIMIT = 10000
+
+
+def _inline_degree(node: Any) -> int | None:
+    """Opportunistic per-node degree from a KG envelope's ``nodes`` entry.
+
+    The documented multi_hop/subgraph ``nodes`` entry is ``{name, categories}`` — NO degree — so
+    this almost always returns None and the provider falls back to the bounded fetch. Kept only as
+    an opportunistic bonus IF a live envelope is confirmed to carry an integer ``degree``.
+    """
+    if isinstance(node, dict):
+        d = node.get("degree")
+        if isinstance(d, int) and not isinstance(d, bool):
+            return d
+    return None
+
+
+async def _fetch_degree(curie: str) -> int | None:
+    """Best-effort KG degree via one_hop_query preview (``results_count``). None on any failure."""
+    try:
+        resp = await call_kestrel_tool(
+            "one_hop_query",
+            {"start_node_ids": curie, "mode": "preview", "limit": _DEGREE_QUERY_LIMIT},
+        )
+    except Exception as e:  # best-effort: a Kestrel failure -> no degree, never propagates
+        logger.warning("bridge_specificity: degree fetch failed for %s: %s", curie, e)
+        return None
+    if not isinstance(resp, dict) or resp.get("isError"):
+        return None
+    content = resp.get("content") or []
+    if not content:
+        return None
+    try:
+        data = json.loads(content[0].get("text", ""))
+    except (json.JSONDecodeError, AttributeError, IndexError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    rc = data.get("results_count")
+    if rc is None:
+        return None
+    try:
+        return int(rc)
+    except (TypeError, ValueError):
+        return None
+
+
+def make_degree_provider(
+    inline_nodes: dict[str, Any] | None = None,
+    concurrency: int = 8,
+) -> Callable[[str], Awaitable[int | None]]:
+    """Build a single-flight, concurrency-bounded, per-run cached CURIE->degree resolver.
+
+    Fetch-dominant: for each CURIE, read an opportunistic inline degree from ``inline_nodes`` if
+    present, else acquire the semaphore and fetch the KG degree once (``one_hop_query`` preview,
+    ``results_count``). The result — including ``None`` — is cached per run so a hub intermediate
+    shared across bridges is fetched at most once, and concurrent callers await the same in-flight
+    task. Never raises; returns ``int | None``.
+
+    Mirrors ``bridge_grounding.cached_leg_fetcher`` (per-run dedup cache + bounded fetch). Bounding
+    is mandatory: an unbounded per-bridge one_hop fan-out once exhausted Kestrel's LMDB readers
+    (MDB_READERS_FULL incident, 2026-06-24). A fresh cache is built per call — never stale across runs.
+    """
+    inline = inline_nodes or {}
+    sem = asyncio.Semaphore(concurrency)
+    cache: dict[str, "asyncio.Future[int | None]"] = {}
+
+    async def get(curie: str) -> int | None:
+        task = cache.get(curie)
+        if task is None:
+            async def _go() -> int | None:
+                # Opportunistic inline read is free (no Kestrel call, outside the semaphore).
+                d = _inline_degree(inline.get(curie))
+                if d is not None:
+                    return d
+                async with sem:
+                    return await _fetch_degree(curie)
+
+            task = asyncio.ensure_future(_go())
+            cache[curie] = task
+        return await task
+
+    return get
