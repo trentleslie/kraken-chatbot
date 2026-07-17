@@ -3,6 +3,7 @@ import {
   parseDelimitedText,
   suggestMapping,
   buildAnalytes,
+  buildModuleDirections,
   distinctGroups,
   applyGroupFilter,
   distinctNameCount,
@@ -185,6 +186,101 @@ describe("group filtering + counts", () => {
         { name: "GLUCOSE", group: "Blue" },
       ]),
     ).toBe(1);
+  });
+});
+
+describe("suggestMapping — kME/kIM (Axis A)", () => {
+  it("auto-maps kME and kIM headers", () => {
+    expect(suggestMapping(["analyte", "module", "kME", "kIM"])).toEqual({
+      analyte: "analyte",
+      group: "module",
+      kme: "kME",
+      kim: "kIM",
+    });
+  });
+
+  it("maps case/spacing variants of kME/kIM", () => {
+    const m = suggestMapping(["feature", "kme_signed", "k_within"]);
+    expect(m.kme).toBe("kme_signed");
+    expect(m.kim).toBe("k_within");
+  });
+
+  it("does not auto-map an ambiguous 'value' header to kME", () => {
+    expect(suggestMapping(["analyte", "value"]).kme).toBeUndefined();
+  });
+});
+
+describe("buildAnalytes — kME/kIM (Axis A)", () => {
+  it("parses numeric kME/kIM cells onto each analyte", () => {
+    const res = buildAnalytes(
+      [
+        { analyte: "glucose", module: "Brown", kME: "0.82", kIM: "40" },
+        { analyte: "IL6", module: "Brown", kME: "-0.4", kIM: "" },
+      ],
+      { analyte: "analyte", group: "module", kme: "kME", kim: "kIM" },
+    );
+    expect(res.analytes[0]).toEqual({ name: "glucose", group: "Brown", kme: 0.82, kim: 40 });
+    // blank kIM → undefined (member without kIM)
+    expect(res.analytes[1]).toEqual({ name: "IL6", group: "Brown", kme: -0.4 });
+  });
+
+  it("blank kME cell → no kme field on the analyte", () => {
+    const res = buildAnalytes([{ analyte: "glucose", kME: "" }], {
+      analyte: "analyte",
+      kme: "kME",
+    });
+    expect(res.analytes[0]).toEqual({ name: "glucose" });
+  });
+
+  it("non-numeric kME cell → undefined client-side (backend authoritative)", () => {
+    const res = buildAnalytes([{ analyte: "glucose", kME: "high" }], {
+      analyte: "analyte",
+      kme: "kME",
+    });
+    expect(res.analytes[0].kme).toBeUndefined();
+  });
+
+  it("kME column unmapped → analytes built exactly as before (no regression)", () => {
+    const res = buildAnalytes([{ analyte: "glucose", module: "Brown" }], {
+      analyte: "analyte",
+      group: "module",
+    });
+    expect(res.analytes[0]).toEqual({ name: "glucose", group: "Brown" });
+  });
+});
+
+describe("buildModuleDirections (Axis A)", () => {
+  const rows = [
+    { module: "Brown", cor: "0.6", trait: "frailty index" },
+    { module: "Blue", cor: "-0.3", trait: "frailty index" },
+  ];
+
+  it("builds per-group direction rows from mapped columns", () => {
+    const out = buildModuleDirections(rows, {
+      group: "module",
+      correlation: "cor",
+      trait: "trait",
+    });
+    expect(out).toEqual([
+      { group: "Brown", eigengene_trait_correlation: 0.6, trait_label: "frailty index" },
+      { group: "Blue", eigengene_trait_correlation: -0.3, trait_label: "frailty index" },
+    ]);
+  });
+
+  it("returns [] when the mapping is incomplete", () => {
+    expect(buildModuleDirections(rows, { group: "module", correlation: "cor" })).toEqual([]);
+  });
+
+  it("skips rows with a blank group or non-numeric correlation", () => {
+    const out = buildModuleDirections(
+      [
+        { module: "", cor: "0.6", trait: "t" },
+        { module: "Brown", cor: "n/a", trait: "t" },
+        { module: "Blue", cor: "0.2", trait: "t" },
+      ],
+      { group: "module", correlation: "cor", trait: "trait" },
+    );
+    expect(out).toEqual([{ group: "Blue", eigengene_trait_correlation: 0.2, trait_label: "t" }]);
   });
 });
 

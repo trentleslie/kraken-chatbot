@@ -13,6 +13,7 @@ import type {
   BiomapperEnv,
   PipelineProgress,
   StructuredAnalyte,
+  ModuleDirectionInput,
 } from "@/types/messages";
 import { applyGroupFilter, distinctNameCount } from "@/lib/analyteParse";
 
@@ -253,6 +254,9 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
   // after each successful send so a follow-up text message doesn't silently re-run the panel.
   const [structuredAnalytes, setStructuredAnalytes] = useState<StructuredAnalyte[]>([]);
   const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
+  // Optional per-module eigengene→outcome direction rows (Axis A). Sent alongside the panel; the
+  // backend validates + range-checks them. One-shot, cleared with the panel after each send.
+  const [moduleDirections, setModuleDirections] = useState<ModuleDirectionInput[]>([]);
 
   // BYOK state: set true when the server returns a NEEDS_KEY error, reset when a key is accepted.
   const [needsKey, setNeedsKey] = useState(false);
@@ -658,6 +662,9 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
         // Send the FULL parsed panel + the selection; the backend forms the run set.
         structured_analytes: hasPanel ? structuredAnalytes : undefined,
         selected_groups: hasPanel ? selectedGroups : undefined,
+        // Optional per-module directions (Axis A) ride alongside the panel; kME/kIM already
+        // travel inside each structured_analytes row so they need no separate field.
+        module_directions: hasPanel && moduleDirections.length > 0 ? moduleDirections : undefined,
       });
 
       if (hasPanel) {
@@ -697,13 +704,14 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
 
       wsRef.current.send(serialized);
 
-      // One-shot upload: clear the panel + selection so the next turn is clean.
+      // One-shot upload: clear the panel + selection (+ directions) so the next turn is clean.
       if (hasPanel) {
         setStructuredAnalytes([]);
         setSelectedGroups([]);
+        setModuleDirections([]);
       }
     },
-    [runDemoScenario, agentMode, biomapperEnv, structuredAnalytes, selectedGroups],
+    [runDemoScenario, agentMode, biomapperEnv, structuredAnalytes, selectedGroups, moduleDirections],
   );
 
   const clearMessages = useCallback(() => {
@@ -759,6 +767,8 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
     setStructuredAnalytes,
     selectedGroups,
     setSelectedGroups,
+    moduleDirections,
+    setModuleDirections,
     sendMessage,
     clearMessages,
     // BYOK additions

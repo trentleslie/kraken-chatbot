@@ -11,6 +11,16 @@ export type StructuredAnalyte = {
   name: string;
   group?: string;
   type?: "metabolite" | "protein" | "gene";
+  // Signed within-module weights (Axis A). kME ∈ [-1, 1]; kIM (kWithin) >= 0. Backend authoritative.
+  kme?: number;
+  kim?: number;
+};
+
+// One per-module eigengene→outcome direction row (Axis A). Optional; the backend validates it.
+export type ModuleDirectionInput = {
+  group: string;
+  eigengene_trait_correlation: number;
+  trait_label: string;
 };
 
 export type UserMessage = {

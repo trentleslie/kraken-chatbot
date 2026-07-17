@@ -87,6 +87,13 @@ export function ColumnMappingPanel({
         {renderSelect("type", "Analyte type")}
       </div>
 
+      {/* Signed module weights (Axis A) — optional. kME is the signed module-eigengene
+          correlation ∈ [-1, 1]; kIM is raw intramodular connectivity (kWithin), >= 0. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {renderSelect("kme", "Signed kME")}
+        {renderSelect("kim", "kIM (kWithin)")}
+      </div>
+
       {/* Preview (first ~5 rows). Formula-injection cells are badged and rendered as text. */}
       <div className="overflow-x-auto rounded border">
         <table className="w-full text-xs">
