@@ -14,9 +14,9 @@ import logging
 import re
 import time
 from typing import Any
-from ..state import DiscoveryState
+from ..state import DiscoveryState, MemberWeight, ModuleDirection, ModuleSpine
 from ..state_contracts import validate_state, IntakeInput, IntakeOutput
-from ...analyte_ingest import validate_and_normalize
+from ...analyte_ingest import NormalizedPanel, validate_and_normalize
 from ...config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -627,6 +627,66 @@ def detect_longitudinal_context(query: str) -> tuple[bool, int | None]:
     return is_longitudinal, duration
 
 
+def _build_module_spine(
+    normalized: NormalizedPanel,
+) -> tuple[dict[str, ModuleSpine], dict[str, Any]]:
+    """Build the ``module_spine`` dict + a coverage summary from a validated panel (Axis A).
+
+    The R19 helper has already range-validated every kME/kIM/direction, so constructing the
+    frozen pydantic models here cannot raise. Only groups with at least one weighted member get a
+    ``ModuleSpine`` (members-only, R6). A direction whose group has no weighted members was already
+    warn-dropped by the helper, so every entry in ``normalized.module_directions`` attaches.
+
+    Returns ``(module_spine, coverage)``. ``module_spine`` is empty when the panel carried no kME.
+    """
+    module_spine: dict[str, ModuleSpine] = {}
+    groups_cov: dict[str, dict[str, Any]] = {}
+
+    for group_key, members_material in normalized.module_members.items():
+        members = {
+            name: MemberWeight(name=m["name"], kme=m["kme"], kim=m["kim"])
+            for name, m in members_material.items()
+        }
+        raw_dir = normalized.module_directions.get(group_key)
+        direction = (
+            ModuleDirection(
+                eigengene_trait_correlation=raw_dir["eigengene_trait_correlation"],
+                trait_label=raw_dir["trait_label"],
+            )
+            if raw_dir is not None
+            else None
+        )
+        module_spine[group_key] = ModuleSpine(
+            group=normalized.module_group_labels.get(group_key, group_key),
+            members=members,
+            direction=direction,
+        )
+        groups_cov[group_key] = {
+            "members_with_kme": len(members),
+            "members_with_kim": sum(1 for m in members.values() if m.kim is not None),
+            "direction_supplied": direction is not None,
+        }
+
+    total_with_kme = sum(g["members_with_kme"] for g in groups_cov.values())
+    total_with_kim = sum(g["members_with_kim"] for g in groups_cov.values())
+    directions_supplied = sum(1 for g in groups_cov.values() if g["direction_supplied"])
+    # The sign-inversion metric (sign(kME) × sign(direction)) needs BOTH per module; flag it
+    # explicitly rather than silently reporting healthy coverage when no direction was supplied.
+    metric_computable = any(
+        g["members_with_kme"] > 0 and g["direction_supplied"] for g in groups_cov.values()
+    )
+
+    coverage = {
+        "groups": groups_cov,
+        "total_members_with_kme": total_with_kme,
+        "total_members_with_kim": total_with_kim,
+        "directions_supplied": directions_supplied,
+        "metric_computable": metric_computable,
+        "warnings": list(normalized.warnings),
+    }
+    return module_spine, coverage
+
+
 @validate_state(IntakeInput, IntakeOutput)
 async def run(state: DiscoveryState) -> dict[str, Any]:
     """
@@ -650,7 +710,10 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         # bounded identically to the main.py door. Idempotent when the WS path already normalized.
         settings = get_settings()
         normalized = validate_and_normalize(
-            structured_analytes, state.get("selected_groups") or [], settings
+            structured_analytes,
+            state.get("selected_groups") or [],
+            settings,
+            state.get("module_directions") or [],
         )
 
         # A panel is rejected when the R19 guard reports errors OR when normalization yields no
@@ -695,14 +758,20 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         fdr_entities, marginal_entities = extract_fdr_groups(query, entities)
         analytical_directives = extract_analytical_directives(query)
 
+        # Signed-weight data spine (Axis A): build the module_spine + coverage from the validated
+        # panel. Emit module_spine ONLY when a kME column produced weighted members (R6 — absent
+        # for classic / no-kME runs keeps state byte-identical to today).
+        module_spine, module_spine_coverage = _build_module_spine(normalized)
+
         duration_sec = time.time() - start
         logger.info(
-            "Completed intake (structured) in %.1fs — analytes=%d, groups=%d, longitudinal=%s",
+            "Completed intake (structured) in %.1fs — analytes=%d, groups=%d, longitudinal=%s, "
+            "weighted_modules=%d, metric_computable=%s",
             duration_sec, len(entities), len({g for gs in entity_groups.values() for g in gs}),
-            is_longitudinal,
+            is_longitudinal, len(module_spine), module_spine_coverage["metric_computable"],
         )
 
-        return {
+        result: dict[str, Any] = {
             # Force discovery routing: uploads are panel-oriented (accepted trade-off — a small
             # uploaded lookup still runs the full discovery pipeline).
             "query_type": "discovery",
@@ -717,6 +786,10 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             "analytical_directives": analytical_directives,
             "entity_groups": entity_groups,
         }
+        if module_spine:
+            result["module_spine"] = module_spine
+            result["module_spine_coverage"] = module_spine_coverage
+        return result
 
     # Extract entities from query (aliases NOT included)
     entities = extract_entities(query)
