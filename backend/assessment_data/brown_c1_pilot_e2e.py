@@ -131,6 +131,10 @@ def build_query(proteins, metabolites, module="Brown"):
 
 def coverage(state):
     """Per-node analyzed-vs-dropped accounting from the (merged) final state."""
+    # Axis C (bridge specificity): label histogram + score stats from the specificity_by_bridge
+    # side-map. Emits {scored, counts:{specific/moderate/generic/unknown}, score_min/median/max}.
+    from kestrel_backend.graph.nodes.bridge_specificity import summarize_specificity
+    spec_summary = summarize_specificity(state.get("specificity_by_bridge", {}) or {})
     re_ = state.get("resolved_entities", []) or []
     methods = Counter(getattr(e, "method", None) or (e.get("method") if isinstance(e, dict) else None)
                       for e in re_)
@@ -168,6 +172,7 @@ def coverage(state):
         "biological_themes": len(state.get("biological_themes", []) or []),
         "bridges": len(state.get("bridges", []) or []),
         "grounded_bridges": len(state.get("grounded_bridges", []) or []),
+        "bridge_specificity": spec_summary,
         "hypotheses": len(hyps),
         "literature_support_total": lit_total,
         "synthesis_report_chars": len(report),

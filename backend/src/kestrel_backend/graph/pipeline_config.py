@@ -357,11 +357,11 @@ class BridgeSpecificityConfig(BaseModel):
     """
 
     enabled: bool = Field(
-        default=False,
-        description="Ships False: this is a PRODUCER whose only consumer (axis E synthesis) is a "
-        "separate deferred PR, so it should not incur live Kestrel degree fetches to populate a "
-        "side-map nothing reads yet. Flip to True when axis E lands (mirrors bridge_grounding's "
-        "gated flip). The Unit 4 measurement runs via an explicit probe, not prod default-on.",
+        default=True,
+        description="Enabled: axis E synthesis (the consumer) landed 2026-07-17 (PR #95) and the "
+        "DWPC cut points were calibrated from a real degree distribution (PR #101), so the producer "
+        "now populates the specificity_by_bridge side-map that synthesis renders. Bounded + per-run "
+        "deduped degree fetches (max_scored_bridges × concurrency). Set False to disable.",
     )
     max_scored_bridges: int = Field(
         default=20,
