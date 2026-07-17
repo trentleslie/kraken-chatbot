@@ -25,6 +25,7 @@ from ..state import (
 )
 from ...literature_utils import format_pmid_link
 from ..pipeline_config import get_pipeline_config
+from ..sign_coherence import SplitResult, detect_sign_split
 from ..sdk_utils import HAS_SDK, ClaudeAgentOptions, query_with_usage
 from ..state_contracts import validate_state, SynthesisInput, SynthesisOutput
 from ...writing_style import RESEARCH_REGISTER
@@ -904,6 +905,107 @@ def format_literature_evidence(hypotheses: list[Hypothesis]) -> str:
     return "\n".join(lines)
 
 
+# =============================================================================
+# Guard 2 — class-agnostic sign-coherence at the synthesis group-fusion boundary (Axis D)
+# =============================================================================
+# A group about to be treated as one coordinated program is checked against axis A's per-member
+# signed kME; if it splits in sign it is rendered as two sign-coherent sub-programs rather than fused
+# (the mechanism that otherwise averages an opposite-sign signal away). The whole feature is gated on
+# a ModuleSpine being present in state — absent (the state today, before axis A lands) → no section,
+# assembled context byte-identical.
+
+
+def _spine_member_kme(module_spine: Any) -> dict[str, float | None]:
+    """Adapter: read axis A's ModuleSpine into a flat ``member-name -> signed kME`` map.
+
+    This is the single point of coupling to axis A's ``ModuleSpine`` schema (the plan's "adapter
+    isolates the field-name coupling to one function"), so Guard 2 can be developed and tested
+    against a stub before axis A lands. Accepts the ModuleSpine object (with a ``.members`` mapping),
+    its dict serialization (``{"members": {...}}``), or a bare ``{name: kME}`` map. Non-numeric
+    (or missing) kME becomes ``None`` (sign undefined for that member).
+    """
+    if not module_spine:
+        return {}
+    members = getattr(module_spine, "members", None)
+    if members is None and isinstance(module_spine, dict):
+        members = module_spine.get("members", module_spine)
+    if not isinstance(members, dict):
+        return {}
+    out: dict[str, float | None] = {}
+    for name, kme in members.items():
+        out[name] = float(kme) if isinstance(kme, (int, float)) and not isinstance(kme, bool) else None
+    return out
+
+
+def compute_sign_splits(state: DiscoveryState) -> tuple[dict[str, SplitResult], dict[str, int]]:
+    """Per-group sign-coherence over ``entity_groups`` × ``ModuleSpine.members``.
+
+    Returns ``(splits, counts)`` where ``splits`` maps each sign-split group name to its
+    ``SplitResult`` and ``counts`` carries the measurement hooks ``groups_sign_split`` (groups that
+    split in sign) and ``groups_split`` (sign-coherent sub-programs produced — 2 per clean +/- split).
+    Inert (empty) when no ModuleSpine or no entity_groups are present → byte-identical rendering.
+    """
+    zero = {"groups_sign_split": 0, "groups_split": 0}
+    kme = _spine_member_kme(state.get("module_spine"))
+    entity_groups = state.get("entity_groups", {}) or {}
+    if not kme or not entity_groups:
+        return {}, dict(zero)
+
+    cfg = get_pipeline_config().synthesis
+    # Optional config knobs (default 0.0 → no floor / no minority tolerance) so this lands without an
+    # axis-A SynthesisConfig change; getattr keeps it forward-compatible if the knobs are added later.
+    floor = float(getattr(cfg, "sign_coherence_floor", 0.0))
+    minority_tol = float(getattr(cfg, "sign_coherence_minority_tol", 0.0))
+
+    # group value -> member analyte names (from the run-set membership map)
+    groups: dict[str, list[str]] = {}
+    for name, group_values in entity_groups.items():
+        for g in group_values:
+            groups.setdefault(g, []).append(name)
+
+    splits: dict[str, SplitResult] = {}
+    subprograms = 0
+    for group, names in groups.items():
+        members_kme = {n: kme[n] for n in names if n in kme}
+        if not members_kme:
+            continue
+        result = detect_sign_split(members_kme, floor=floor, minority_tol=minority_tol)
+        if result.is_split:
+            splits[group] = result
+            subprograms += sum(1 for part in (result.positive, result.negative) if part)
+
+    return splits, {"groups_sign_split": len(splits), "groups_split": subprograms}
+
+
+def format_sign_coherence(splits: dict[str, SplitResult]) -> str:
+    """Render sign-split groups as two sign-coherent sub-programs each, with a visible annotation.
+
+    Returns ``""`` when nothing split (so the section never appears for coherent modules — the
+    byte-identical path).
+    """
+    if not splits:
+        return ""
+    lines = ["## Sign-coherence (direction guard)\n"]
+    lines.append(
+        "*The following module group(s) split in sign (opposite-direction members) and are shown as "
+        "separate sign-coherent sub-programs — do NOT treat a split group as one coordinated "
+        "program; reason over each sub-program's members separately.*\n"
+    )
+    for group in sorted(splits):
+        result = splits[group]
+        lines.append(
+            f"- **{group}** splits in sign: {len(result.positive)} up (+) / "
+            f"{len(result.negative)} down (−)"
+            + (f"; {len(result.unassigned)} unassigned" if result.unassigned else "")
+        )
+        lines.append(f"  - **{group} (+)**: {', '.join(result.positive)}")
+        lines.append(f"  - **{group} (−)**: {', '.join(result.negative)}")
+        if result.unassigned:
+            lines.append(f"  - *unassigned (no usable sign)*: {', '.join(result.unassigned)}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _disease_pathway_sections(state: DiscoveryState) -> list[str]:
     """Disease + pathway sections, module-aware.
 
@@ -1056,6 +1158,17 @@ def assemble_synthesis_context(state: DiscoveryState, stats_out: dict | None = N
     if hub_section:
         sections.append(hub_section)
     
+    # Guard 2 (Axis D): sign-coherence at the group-fusion boundary. A group that splits in sign is
+    # rendered as two sign-coherent sub-programs (never fused). Inert (no section) when no ModuleSpine
+    # is present → assembled context byte-identical. Rendered before the disease/pathway sections so
+    # the direction guard frames the coordinated-group reading that follows.
+    sign_splits, sign_counts = compute_sign_splits(state)
+    sign_section = format_sign_coherence(sign_splits)
+    if sign_section:
+        sections.append(sign_section)
+    if stats_out is not None:
+        stats_out["sign_coherence"] = sign_counts
+
     # Disease associations + pathway memberships (module-aware: aggregation + member table at
     # module scale, per-entity dumps for small queries — these two sections were 38% of the overflow)
     sections.extend(_disease_pathway_sections(state))
@@ -1388,6 +1501,12 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     # Context-compression telemetry (plan 004) — single-writer plain field, last-write-wins.
     if context_stats:
         result["synthesis_context_stats"] = context_stats
+    # Guard-2 measurement hooks (Axis D) — persisted by default (not behind a flag), pinned alongside
+    # run outputs. Derived once here so the top-level hooks match the section rendered in the context.
+    # Both 0 when no ModuleSpine / no split → byte-identical semantics for coherent modules.
+    _sign_counts = compute_sign_splits(state)[1]
+    result["groups_sign_split"] = _sign_counts["groups_sign_split"]
+    result["groups_split"] = _sign_counts["groups_split"]
     # errors uses an operator.add reducer; only emit on a degraded fallback (Unit 7).
     if fallback_marker:
         result["errors"] = [fallback_marker]
