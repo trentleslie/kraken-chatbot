@@ -80,7 +80,7 @@ class TestReconcile:
             return _gn_envelope(args["curies"], _human_gene_node(args["curies"]))
         monkeypatch.setattr(entity_resolution, "call_kestrel_tool", fake_get_nodes)
         out = await reconcile_to_kestrel(_biomapper_result(), "gene")
-        assert out == ("NCBIGene:7132", "biolink:Gene")
+        assert out == ("NCBIGene:7132", "biolink:Gene", None)
 
     async def test_gene_without_hgnc_rejected(self, monkeypatch):
         # Ortholog confirms in Kestrel but lacks HGNC → defense gate rejects; no other candidate → None.
@@ -101,7 +101,7 @@ class TestReconcile:
         monkeypatch.setattr(entity_resolution, "call_kestrel_tool", fake)
         out = await reconcile_to_kestrel(
             {"curie": "CHEBI:16946", "tier": "high", "xrefs": {}}, "metabolite")
-        assert out == ("CHEBI:16946", "biolink:ChemicalEntity")
+        assert out == ("CHEBI:16946", "biolink:ChemicalEntity", None)
 
     async def test_none_confirm_returns_none(self, monkeypatch):
         async def fake(tool, args):
@@ -120,7 +120,7 @@ class TestReconcile:
             return _gn_envelope(c, None)
         monkeypatch.setattr(entity_resolution, "call_kestrel_tool", fake)
         out = await reconcile_to_kestrel(_biomapper_result(), "gene")
-        assert out == ("NCBIGene:7132", "biolink:Gene")  # node.id, not the queried HGNC curie
+        assert out == ("NCBIGene:7132", "biolink:Gene", None)  # node.id, not the queried HGNC curie
 
     async def test_accepts_list_wrapped_node_envelope(self, monkeypatch):
         # Some Kestrel versions wrap the node as {curie: [node]}; both shapes must parse.
@@ -128,7 +128,19 @@ class TestReconcile:
             return _gn_envelope(args["curies"], _human_gene_node(args["curies"]), as_list=True)
         monkeypatch.setattr(entity_resolution, "call_kestrel_tool", fake)
         out = await reconcile_to_kestrel(_biomapper_result(), "gene")
-        assert out == ("NCBIGene:7132", "biolink:Gene")
+        assert out == ("NCBIGene:7132", "biolink:Gene", None)
+
+    async def test_surfaces_confirmed_node_name(self, monkeypatch):
+        # A genus taxon node carrying a `name` -> reconcile surfaces it as the 3rd tuple element,
+        # so the biomapper rank guard can detect a species->genus collapse (Greptile P1).
+        genus_node = {"id": "NCBITaxon:1263", "name": "Ruminococcus",
+                      "categories": ["biolink:OrganismTaxon"], "equivalent_ids": ["NCBITaxon:1263"]}
+        async def fake(tool, args):
+            return _gn_envelope(args["curies"], genus_node)
+        monkeypatch.setattr(entity_resolution, "call_kestrel_tool", fake)
+        out = await reconcile_to_kestrel(
+            {"curie": "NCBITaxon:1263", "tier": "high", "xrefs": {}}, "metabolite")
+        assert out == ("NCBITaxon:1263", "biolink:OrganismTaxon", "Ruminococcus")
 
     async def test_transport_error_tries_next_candidate(self, monkeypatch):
         calls = {"n": 0}
@@ -226,8 +238,8 @@ class TestRunPrepass:
         monkeypatch.setattr(entity_resolution, "biomapper_resolve", fake_bm)
 
         async def fake_reconcile(r, hint):
-            # Reconciliation confirms the coarse genus CURIE in Kestrel (the pre-fix accept path).
-            return ("NCBITaxon:1263", "biolink:OrganismTaxon")
+            # Reconciliation confirms the coarse genus CURIE + its Kestrel node name ("Ruminococcus").
+            return ("NCBITaxon:1263", "biolink:OrganismTaxon", "Ruminococcus")
         monkeypatch.setattr(entity_resolution, "reconcile_to_kestrel", fake_reconcile)
 
         # A biomapper abstention is terminal for its index: Tier-1 (hybrid_search) must NOT run.
@@ -258,7 +270,7 @@ class TestRunPrepass:
         monkeypatch.setattr(entity_resolution, "biomapper_resolve", fake_bm)
 
         async def fake_reconcile(r, hint):
-            return ("NCBITaxon:33038", "biolink:OrganismTaxon")
+            return ("NCBITaxon:33038", "biolink:OrganismTaxon", "Ruminococcus gnavus")
         monkeypatch.setattr(entity_resolution, "reconcile_to_kestrel", fake_reconcile)
 
         state = {"raw_entities": ["Ruminococcus gnavus"],
@@ -269,3 +281,43 @@ class TestRunPrepass:
         assert r.method == "biomapper"
         assert r.rank_collapsed is False
         assert out["rank_collapse_sign_flips"] == 0
+
+    async def test_flag_on_echoed_query_name_still_abstains_via_confirmed_node(self, monkeypatch):
+        """Greptile P1 (Axis D): the REAL biomapper wrapper returns the raw query VERBATIM as
+        ``resolved_name`` when it has no canonical display name. So for a species query confirmed to
+        a GENUS node, resolved_name == the query ("Ruminococcus gnavus") and requested_rank ==
+        resolved_rank — the rank guard would see NO collapse and wrongly accept the coarse genus
+        CURIE. The guard must instead compare against the CONFIRMED KESTREL NODE name (the genus
+        "Ruminococcus", surfaced by reconcile_to_kestrel) and ABSTAIN. Exercises the REAL reconcile
+        path end-to-end (only get_nodes is mocked)."""
+        _enable_biomapper(monkeypatch)
+        monkeypatch.setattr(entity_resolution, "HAS_SDK", False)
+
+        async def fake_bm(name, hint, base_url=None):
+            # The wrapper ECHOES the raw query as resolved_name (no canonical name available),
+            # while the primary CURIE is the genus node.
+            return {"curie": "NCBITaxon:1263", "tier": "high", "confidence": 2.5,
+                    "resolved_name": "Ruminococcus gnavus", "category": "biolink:OrganismTaxon",
+                    "xrefs": {}}
+        monkeypatch.setattr(entity_resolution, "biomapper_resolve", fake_bm)
+
+        # REAL reconcile_to_kestrel runs; get_nodes confirms the genus CURIE with its Kestrel name.
+        genus_node = {"id": "NCBITaxon:1263", "name": "Ruminococcus",
+                      "categories": ["biolink:OrganismTaxon"], "equivalent_ids": ["NCBITaxon:1263"]}
+        async def fake_kestrel(tool, args):
+            assert tool == "get_nodes", f"Tier-1 must not run for a biomapper-abstained entity (got {tool})"
+            return _gn_envelope(args["curies"], genus_node)
+        monkeypatch.setattr(entity_resolution, "call_kestrel_tool", fake_kestrel)
+
+        # metabolite hint: routes to biomapper (biolink class is non-None) but is NOT HGNC-gated,
+        # so the genus taxon node is accepted by reconcile (the hint is only a routing key here).
+        state = {"raw_entities": ["Ruminococcus gnavus"],
+                 "entity_type_hints": {"Ruminococcus gnavus": "metabolite"}, "entity_aliases": {}}
+        out = await run(state)
+        r = out["resolved_entities"][0]
+        assert r.curie is None                       # coarse genus CURIE dropped despite the echo
+        assert r.method == "failed"                  # routes to cold_start like Tier-1/2 abstain
+        assert r.rank_collapsed is True              # collapse detected via the confirmed node name
+        assert r.raw_name == "Ruminococcus gnavus"
+        assert out["rank_collapse_sign_flips"] == 1  # measurement hook counts it
+

@@ -324,19 +324,29 @@ def _rank_abstention(entity: str, resolved_name: str | None) -> EntityResolution
     )
 
 
-def _apply_rank_guard(entity: str, resolution: EntityResolution) -> EntityResolution:
+def _apply_rank_guard(
+    entity: str, resolution: EntityResolution, *, resolved_name: str | None = None
+) -> EntityResolution:
     """Tier-1 guard: abstain-only. Tier-1 (`resolve_via_api`, limit=1) has no alternative candidates
     in scope, so a rank collapse goes straight to abstain (no extra search — reader-pool budget).
-    Returns the input unchanged when there is no collapse."""
-    if resolution.curie is None or resolution.resolved_name is None:
+    Returns the input unchanged when there is no collapse.
+
+    ``resolved_name`` overrides which name the collapse check compares against. Tier-1 leaves it
+    ``None`` → the guard uses ``resolution.resolved_name`` (unchanged behavior). The biomapper path
+    passes the CONFIRMED Kestrel node name, because ``resolution.resolved_name`` may echo the raw
+    query (the wrapper returns the query verbatim when it has no canonical name) — comparing the
+    query to itself never detects a species→genus collapse.
+    """
+    check_name = resolved_name if resolved_name is not None else resolution.resolved_name
+    if resolution.curie is None or check_name is None:
         return resolution
-    if not is_rank_collapse(entity, resolution.resolved_name):
+    if not is_rank_collapse(entity, check_name):
         return resolution
     logger.info(
         "FALLBACK_EVENT node=entity_resolution reason=rank_collapse tier=1 entity=%s resolved=%s",
-        entity, resolution.resolved_name,
+        entity, check_name,
     )
-    return _rank_abstention(entity, resolution.resolved_name)
+    return _rank_abstention(entity, check_name)
 
 
 def _apply_rank_guard_tier2(
@@ -499,6 +509,18 @@ def _node_category(node: dict) -> str | None:
     return node.get("category")
 
 
+def _node_name(node: dict) -> str | None:
+    """The confirmed Kestrel node's canonical display name, or None when absent/blank.
+
+    Used by the biomapper rank guard: the biomapper wrapper echoes the raw query as
+    ``resolved_name`` when it has no canonical name, so the guard must compare the
+    requested rank against the CONFIRMED node's name (e.g. the genus ``"Ruminococcus"``)
+    instead — otherwise a species→genus collapse is never detected.
+    """
+    name = node.get("name")
+    return name if isinstance(name, str) and name.strip() else None
+
+
 def _biomapper_candidate_curies(biomapper_result: dict, hint: str | None) -> list[str]:
     """Ordered CURIE candidates: primary_curie first, then xrefs by per-class namespace_preference.
 
@@ -530,13 +552,15 @@ def _biomapper_candidate_curies(biomapper_result: dict, hint: str | None) -> lis
 
 async def reconcile_to_kestrel(
     biomapper_result: dict, hint: str | None
-) -> tuple[str, str | None] | None:
-    """Confirm a Biomapper result against the Kestrel KG; return (confirmed_curie, kestrel_category).
+) -> tuple[str, str | None, str | None] | None:
+    """Confirm a Biomapper result against the Kestrel KG; return
+    (confirmed_curie, kestrel_category, confirmed_node_name).
 
     Walks the candidate CURIEs (primary first, then namespace-preferred xrefs), accepting the first
     that ``get_nodes`` confirms. For gene/protein, the confirmed node must carry the HGNC human
     marker (defense-in-depth) or the candidate is skipped. Returns the node's canonical id +
-    Kestrel-native category, or None if nothing confirms (caller falls back to Kestrel tiers).
+    Kestrel-native category + display name (the rank guard needs the confirmed node's real name,
+    not the biomapper query echo), or None if nothing confirms (caller falls back to Kestrel tiers).
     """
     gated = (hint or "").lower() in _HGNC_GATED_CLASSES
     for candidate in _biomapper_candidate_curies(biomapper_result, hint):
@@ -552,7 +576,7 @@ async def reconcile_to_kestrel(
             # Confirmed in Kestrel but no HGNC marker → non-human ortholog; reject (defense-in-depth).
             logger.info("FALLBACK_EVENT node=entity_resolution reason=biomapper_non_human curie=%s", candidate)
             continue
-        return node.get("id") or candidate, _node_category(node)
+        return node.get("id") or candidate, _node_category(node), _node_name(node)
     return None
 
 
@@ -784,7 +808,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                         name,
                     )
                     return idx, None
-                curie, category = reconciled
+                curie, category, node_name = reconciled
                 resolution = EntityResolution(
                     raw_name=name,
                     curie=curie,
@@ -793,12 +817,17 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                     confidence=_tier_to_confidence(r.get("tier")),
                     method="biomapper",
                 )
-                # Axis-D rank guard (finding #6): a biomapper hit that collapses a species→genus
-                # (or any finer→coarser taxon) must abstain exactly like the Tier-1/2 paths rather
-                # than feeding the coarse CURIE straight into triage via the pre-resolver. Mirror the
-                # Tier-1 guard (abstain-only; no alternative candidates in scope here). On no collapse
-                # (the common non-taxa case) this is a pass-through → byte-identical resolution.
-                return idx, _apply_rank_guard(name, resolution)
+                # Axis-D rank guard (finding #6 / Greptile P1): a biomapper hit that collapses a
+                # species→genus (or any finer→coarser taxon) must abstain exactly like the Tier-1/2
+                # paths rather than feeding the coarse CURIE straight into triage via the pre-resolver.
+                # The biomapper wrapper returns the raw query verbatim as ``resolved_name`` when it has
+                # no canonical display name, so we feed the CONFIRMED KESTREL NODE name (already fetched
+                # during reconciliation — no new query) into the guard; fall back to the surfaced
+                # resolved_name only when the node name is genuinely unavailable. On no collapse (the
+                # common non-taxa case) this is a pass-through → byte-identical resolution.
+                return idx, _apply_rank_guard(
+                    name, resolution, resolved_name=node_name or resolution.resolved_name
+                )
 
             prepass = await asyncio.gather(*[_biomapper_one(i, e) for (i, e) in targets])
             for idx, res in prepass:

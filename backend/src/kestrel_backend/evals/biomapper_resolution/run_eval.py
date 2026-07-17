@@ -34,7 +34,7 @@ _RUNS_DIR = Path(__file__).parent / "runs"
 _DEGRADED_HIT_RATE = 0.3
 
 ResolveFn = Callable[..., Awaitable[dict | None]]
-ReconcileFn = Callable[..., Awaitable[tuple[str, str | None] | None]]
+ReconcileFn = Callable[..., Awaitable[tuple[str, str | None, str | None] | None]]
 
 
 def load_gold(path: Path = _GOLD_PATH) -> list[dict[str, Any]]:
