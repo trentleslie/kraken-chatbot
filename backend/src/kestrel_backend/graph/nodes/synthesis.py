@@ -15,7 +15,9 @@ ground-before-synthesis reorg).
 """
 
 import logging
+import re
 import time
+from dataclasses import dataclass
 from typing import Any
 from ..state import (
     DiscoveryState, EntityResolution, NoveltyScore, Finding,
@@ -58,10 +60,34 @@ Direct evidence from the knowledge graph:
 - Well-characterized entity relationships
 
 ### 3. Novel Predictions (Tier 3)
-Speculative associations requiring validation:
-- Each prediction MUST include the structural logic chain
-- Cite the ~18% validation gap: approximately 18% of computational predictions progress to clinical investigation
-- Prioritize by supporting evidence strength
+
+Speculative associations requiring validation. Author **one prediction block per Tier-3 hypothesis**
+below, and anchor each block on that hypothesis's exact title (use it as the block's heading, e.g.
+`#### <hypothesis title>`, so it can be matched programmatically). Open the section with a single
+**calibration preamble** (do not repeat it per prediction):
+
+> _Calibration: ~18% of computational predictions progress to clinical investigation. Evidence in
+> this analysis is graded — Discovery-1 signals rest on n≈13–15 (suggestive), Discovery-2 includes a
+> null result over 956 draws (solid), and Arivale-derived signals carry wellness-cohort selection
+> caveats. Treat "direction confidence" as an evidence-strength tier, never a probability._
+
+Each prediction block MUST contain these labeled lines (keep them compact):
+
+- **Prediction:** the claim.
+- **Direction:** LEAVE THIS TO THE SYSTEM. A deterministic ↑/↓/indeterminate value is computed from
+  signed module weights and will be **stamped** into your block after you finish — do not invent the
+  arrow. If a "Direction hint" is provided for this hypothesis below, narrate the mechanism consistent
+  with it; if none is provided, omit the line and do not guess a direction.
+- **Falsifier:** the single concrete, measurable observation that would KILL this prediction. It MUST
+  name a measurable observable and a threshold or direction (e.g. "if module eigengene correlation with
+  the trait is ≥ 0 in an independent cohort", "if metabolite X does not decrease by >20% in cases"),
+  and MUST include a null-result example. A restatement of the validation step is NOT a falsifier — a
+  falsifier states what result would refute you, not what experiment to run. (Worked example: the
+  Prevotella-null was strong evidence precisely because its falsifier was prespecified.)
+- **Logic:** the structural reasoning chain (cite [Literature] where grounded abstracts support it).
+- **Validation:** the concrete experiment/analysis to test it (distinct from the Falsifier).
+
+Prioritize blocks by supporting-evidence strength.
 
 ### 4. Biological Themes
 Emergent patterns from pathway enrichment:
@@ -86,7 +112,9 @@ Prioritized next steps:
 ## Critical Rules
 
 1. LEAD WITH NOVEL FINDINGS - Don't bury interesting predictions
-2. Every Tier 3 must have: logic chain + validation step + ~18% calibration note
+2. Every Tier 3 block must carry the labeled lines from §3: Prediction, Direction (system-stamped —
+   do not invent), Falsifier (measurable observable + threshold + null example, NOT a validation
+   restatement), Logic, Validation; the ~18% calibration note renders once as the section preamble
 3. Clearly distinguish KG facts (Tier 1) from inferences (Tier 3)
 4. De-emphasize hub-flagged associations - they may be spurious
 5. Highlight FDR-significant entities if present
@@ -636,17 +664,23 @@ def format_hub_warnings(hub_flags: list[str]) -> str:
 def format_bridges(
     bridges: list[Bridge],
     grounding_labels: dict[tuple[str, ...], str] | None = None,
+    specificity_by_bridge: dict[tuple[str, ...], Any] | None = None,
 ) -> str:
     """Format cross-type bridges discovered during integration analysis.
 
     ``grounding_labels`` maps a bridge's ``tuple(entities)`` to its evidence-provenance chain
     label (from the bridge_grounding node, via ``grounded_bridges``). When present, the label is
     rendered per bridge so the researcher sees what kind of evidence backs each leg.
+
+    ``specificity_by_bridge`` (Axis C, R3) maps ``tuple(entities)`` to a ``BridgeSpecificity``.
+    When present, a ``**Bridge specificity:**`` line is rendered and ``generic`` (high-degree
+    intermediate) bridges are visibly down-weighted. Absent entry -> no line (never fabricated).
     """
     if not bridges:
         return ""
 
     labels = grounding_labels or {}
+    specificity = specificity_by_bridge or {}
 
     # Initialise `lines` BEFORE the _render closure that appends to it: the closure captures it by
     # reference, so defining the list first keeps the dependency obvious and avoids an UnboundLocalError
@@ -673,6 +707,9 @@ def format_bridges(
         label = labels.get(tuple(b.entities))
         if label:
             lines.append(f"  - **Evidence provenance**: {label}")
+        spec_line = render_bridge_specificity(specificity.get(tuple(b.entities)))
+        if spec_line:
+            lines.append(f"  - {spec_line}")
 
     # Separate by tier
     tier2 = [b for b in bridges if b.tier == 2]
@@ -701,6 +738,514 @@ def grounding_labels_from_state(state: DiscoveryState) -> dict[tuple[str, ...], 
         if grounding is not None and getattr(grounding, "label", ""):
             labels[tuple(gb.entities)] = grounding.label
     return labels
+
+
+# =============================================================================
+# Axis E: Tier-3 direction / falsifier contract
+#
+# Two upstream seams are consumed defensively (they ship in axes A and C):
+#   - state["module_spine"]:  dict[group_key -> ModuleSpine] — axis A's signed weights.
+#       ModuleSpine.members: dict[canonical_name -> MemberWeight(kme, kim)];
+#       ModuleSpine.direction: ModuleDirection(eigengene_trait_correlation).
+#   - state["specificity_by_bridge"]: dict[tuple(entities) -> BridgeSpecificity] — axis C.
+#       BridgeSpecificity(score, label, intermediate_curies, intermediate_degrees, generic_intermediates).
+# Both are read via _seam_get so E works whether they arrive as pydantic models, SimpleNamespaces,
+# or plain dicts, and degrades to omission/`indeterminate` when a seam is absent (never fabricates).
+# =============================================================================
+
+
+def _seam_get(obj: Any, key: str, default: Any = None) -> Any:
+    """Attribute/key access that works across pydantic models, namespaces, and dicts.
+
+    The axis-A/C seams are produced by other axes and may reach synthesis as any of those shapes;
+    reading them defensively keeps E's degradation contract (absent seam -> omit) honest.
+    """
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _normalize_name(name: str | None) -> str:
+    """Canonicalize an entity name for the axis-A join (mirror axis A's strip().lower() key)."""
+    return (name or "").strip().lower()
+
+
+def _sign(x: float | None) -> int:
+    """Return -1/0/+1; 0 for None or exactly zero (an unusable sign)."""
+    if x is None:
+        return 0
+    if x > 0:
+        return 1
+    if x < 0:
+        return -1
+    return 0
+
+
+@dataclass(frozen=True)
+class DirectionResult:
+    """Deterministic direction verdict for one Tier-3 hypothesis (Axis E, R2/R5).
+
+    - ``direction``: ``"up"`` | ``"down"`` | ``"indeterminate"``.
+    - ``confidence``: capped evidence-strength tier (``"high"``/``"moderate"``/``"low"``) for a
+      determinate direction; ``None`` when indeterminate. Never a probability.
+    - ``computable``: a resolvable *signed* axis-A record existed (kME present AND a module→outcome
+      direction present) — the honest, LLM-independent coverage signal. True even when signs conflict.
+    - ``seam_present``: ``module_spine`` was present on state at all. When False the Direction line is
+      *omitted* (kept dark) rather than printed as ``indeterminate`` on every prediction.
+    """
+
+    direction: str
+    confidence: str | None
+    computable: bool
+    seam_present: bool
+
+
+_DIRECTION_ARROW = {"up": "↑", "down": "↓"}
+
+
+def _direction_records(
+    hypothesis: Hypothesis, state: DiscoveryState
+) -> list[tuple[float | None, float | None, float | None]] | None:
+    """Join a hypothesis to axis-A signed records: list of ``(kme, kim, eigengene_trait_corr)``.
+
+    Returns ``None`` when the ``module_spine`` seam is entirely absent (distinct from an empty list,
+    which means "seam present but this hypothesis matched no weighted member"). Join chain:
+    ``supporting_entities`` (CURIE) -> ``resolved_entities`` (CURIE -> canonical/raw name) ->
+    ``module_spine[*].members`` (keyed by canonical name), aggregating across every module the
+    member appears in.
+    """
+    module_spine = state.get("module_spine")
+    if not module_spine:
+        return None
+
+    resolved = state.get("resolved_entities", []) or []
+    name_by_curie: dict[str, str] = {}
+    for e in resolved:
+        curie = getattr(e, "curie", None)
+        if not curie:
+            continue
+        # raw_name is the upload/panel name that axis A canonicalizes as the member key; fall back
+        # to resolved_name only when raw_name is missing.
+        name_by_curie[curie] = getattr(e, "raw_name", None) or getattr(e, "resolved_name", None) or ""
+
+    target_names: set[str] = set()
+    for curie in getattr(hypothesis, "supporting_entities", []) or []:
+        nm = name_by_curie.get(curie)
+        if nm:
+            target_names.add(_normalize_name(nm))
+    if not target_names:
+        return []
+
+    records: list[tuple[float | None, float | None, float | None]] = []
+    for _group_key, spine in module_spine.items():
+        members = _seam_get(spine, "members", {}) or {}
+        direction = _seam_get(spine, "direction", None)
+        corr = _seam_get(direction, "eigengene_trait_correlation", None) if direction is not None else None
+        for mname, mw in members.items():
+            if _normalize_name(mname) in target_names:
+                records.append((_seam_get(mw, "kme", None), _seam_get(mw, "kim", None), corr))
+    return records
+
+
+def _confidence_tier(
+    max_abs_kme: float, kim_ok: bool, derivation_n: int | None, cfg: Any
+) -> str:
+    """Coarse evidence-strength tier for a determinate direction, with two conservative caps."""
+    if max_abs_kme >= cfg.direction_high_abs_kme:
+        tier = "high"
+    elif max_abs_kme >= cfg.direction_moderate_abs_kme:
+        tier = "moderate"
+    else:
+        tier = "low"
+    # kIM floor: a weakly-connected member cannot anchor top confidence (low-n kME caveat).
+    if tier == "high" and not kim_ok:
+        tier = "moderate"
+    # Small-n cap: small-sample |kME| inflation cannot reach the top tier.
+    if tier == "high" and derivation_n is not None and derivation_n < cfg.direction_small_n_cap:
+        tier = "moderate"
+    return tier
+
+
+def compute_tier3_direction(
+    hypothesis: Hypothesis,
+    state: DiscoveryState,
+    cfg: Any,
+    derivation_n: int | None = None,
+) -> DirectionResult:
+    """Deterministically compute a Tier-3 hypothesis's direction from axis-A signed weights (R2/R5).
+
+    ``sign = sign(kME) x sign(eigengene->trait correlation)`` per contributing (member, module)
+    record; a single coherent sign -> ``up``/``down``; conflicting signs -> ``indeterminate`` (never
+    a silently-picked sign); no signed record -> ``indeterminate``; seam absent -> ``indeterminate``
+    with ``seam_present=False`` so the caller omits the line entirely.
+    """
+    records = _direction_records(hypothesis, state)
+    if records is None:
+        return DirectionResult("indeterminate", None, computable=False, seam_present=False)
+
+    signs: set[int] = set()
+    abs_kmes: list[float] = []
+    kim_ok = True
+    for kme, kim, corr in records:
+        s_kme = _sign(kme)
+        if s_kme == 0:
+            continue  # no usable kME magnitude/sign
+        s_corr = _sign(corr)
+        if s_corr == 0:
+            continue  # no module->outcome direction -> this record is not signable
+        signs.add(s_kme * s_corr)
+        abs_kmes.append(abs(kme))
+        if kim is not None and cfg.direction_kim_floor > 0 and kim < cfg.direction_kim_floor:
+            kim_ok = False
+
+    if not signs:
+        # Seam present, but no record could be signed (missing kME or missing module direction).
+        return DirectionResult("indeterminate", None, computable=False, seam_present=True)
+    if len(signs) > 1:
+        # Genuine sign conflict across the hypothesis's members: honest indeterminate, still computable.
+        return DirectionResult("indeterminate", None, computable=True, seam_present=True)
+
+    sign = next(iter(signs))
+    direction = "up" if sign > 0 else "down"
+    confidence = _confidence_tier(max(abs_kmes), kim_ok, derivation_n, cfg)
+    return DirectionResult(direction, confidence, computable=True, seam_present=True)
+
+
+def render_direction_value(result: DirectionResult) -> str | None:
+    """Render the ``**Direction:**`` line value, or ``None`` when the line must be omitted.
+
+    Omission (``None``) is reserved for a wholly-absent axis-A seam; ``indeterminate`` is a
+    first-class rendered value meaning "seam present, this prediction's sign is absent/conflicting".
+    """
+    if not result.seam_present:
+        return None
+    if result.direction == "indeterminate":
+        return "indeterminate"
+    return f"{_DIRECTION_ARROW[result.direction]} (confidence: {result.confidence})"
+
+
+def tier3_direction_map(state: DiscoveryState, cfg: Any) -> dict[str, DirectionResult]:
+    """Compute ``{hypothesis.title -> DirectionResult}`` for every Tier-3 hypothesis in state.
+
+    The title is the anchor the LLM is instructed to author each prediction block under (Unit 3),
+    and the key the post-LLM stamp (Unit 4) matches on. Later titles win on a collision.
+    """
+    out: dict[str, DirectionResult] = {}
+    for h in state.get("hypotheses", []) or []:
+        if getattr(h, "tier", None) != 3:
+            continue
+        out[h.title] = compute_tier3_direction(h, state, cfg)
+    return out
+
+
+def specificity_by_bridge_from_state(
+    state: DiscoveryState,
+) -> dict[tuple[str, ...], Any]:
+    """Build a ``{tuple(entities) -> BridgeSpecificity}`` map from axis C's state side-map (R3).
+
+    Mirrors ``grounding_labels_from_state``: specificity lives in a side-map keyed by the bridge's
+    entity tuple, NOT on the frozen ``Bridge`` (which E commits not to extend). Keys may arrive as
+    lists or tuples; both normalize to a tuple. Absent seam -> empty map (specificity line omitted).
+    """
+    raw = state.get("specificity_by_bridge") or {}
+    out: dict[tuple[str, ...], Any] = {}
+    try:
+        for key, spec in raw.items():
+            out[tuple(key)] = spec
+    except (AttributeError, TypeError):
+        logger.warning("specificity_by_bridge is not a mapping; ignoring", exc_info=True)
+        return {}
+    return out
+
+
+def render_bridge_specificity(spec: Any) -> str | None:
+    """Render the ``**Bridge specificity:**`` line for one bridge, or ``None`` to omit it (R3).
+
+    ``generic`` bridges are structurally down-weighted and name their ``generic_intermediates`` —
+    framed as *genericity* (a high-degree pass-through node connects to everything), NOT as low
+    mechanism confidence (prior work: per-bridge confidence is not tractable). Absent label -> omit.
+    """
+    if spec is None:
+        return None
+    label = _seam_get(spec, "label", None)
+    if not label:
+        return None
+    if label == "generic":
+        generic = _seam_get(spec, "generic_intermediates", []) or []
+        if generic:
+            joined = ", ".join(f"`{g}`" for g in generic)
+            return (
+                f"**Bridge specificity**: generic — routes through high-degree intermediate(s) "
+                f"{joined}; structurally generic (a hub connects to nearly everything), down-weight"
+            )
+        return "**Bridge specificity**: generic — structurally generic (high-degree intermediate), down-weight"
+    return f"**Bridge specificity**: {label}"
+
+
+# --- Post-LLM Direction stamp (Unit 4) ------------------------------------------------
+
+# Match h1–h6 so a prediction block anchored on ``#### <title>`` (h4, per SYNTHESIS_PROMPT) still
+# bounds the *previous* block's scan. If only h1–h3 counted, a later, non-stampable ``####`` block
+# would not be seen as a boundary and the prior hypothesis's deterministic Direction could be written
+# into it.
+_HEADING_RE = re.compile(r"^#{1,6}\s")
+
+
+def _is_direction_line(line: str) -> bool:
+    """True if ``line`` is a ``**Direction:**`` line, tolerant of bullet/bold/italic variants."""
+    s = re.sub(r"^[-*]\s+", "", line.strip()).replace("**", "").replace("__", "")
+    return s.lower().startswith("direction:")
+
+
+def _line_prefix(line: str) -> str:
+    """The leading indentation + optional bullet marker, preserved when rewriting a line."""
+    m = re.match(r"^(\s*(?:[-*]\s+)?)", line)
+    return m.group(1) if m else ""
+
+
+def _find_anchor_index(lines: list[str], title: str) -> int | None:
+    """Index of the report line that anchors a Tier-3 block for ``title``.
+
+    Prefers the prediction *heading* (``#### <title>``, per SYNTHESIS_PROMPT) the LLM is instructed to
+    author each block under, so an incidental bold mention in the executive summary (e.g.
+    ``**title** is the lead signal``) never becomes the stamp anchor ahead of the real block. Falls
+    back, in order, to a bold ``**title**``/leading-bold occurrence, then the first line that contains
+    the title at all.
+    """
+    heading: int | None = None
+    bold: int | None = None
+    fallback: int | None = None
+    for i, ln in enumerate(lines):
+        if title not in ln:
+            continue
+        if fallback is None:
+            fallback = i
+        stripped = ln.lstrip()
+        if stripped.startswith("#"):
+            if heading is None:
+                heading = i
+        elif (f"**{title}**" in ln or stripped.startswith("**")) and bold is None:
+            bold = i
+    if heading is not None:
+        return heading
+    if bold is not None:
+        return bold
+    return fallback
+
+
+def stamp_directions(report: str, direction_map: dict[str, DirectionResult]) -> str:
+    """Overwrite/insert the authoritative ``**Direction:**`` value in each Tier-3 block (R2, Unit 4).
+
+    This is what makes the direction value synthesis-owned rather than an LLM prompt-hope: whatever
+    arrow the LLM wrote (or omitted) is replaced by the deterministic value. Blocks whose axis-A seam
+    is absent get no line (``render_direction_value`` -> ``None``). Title anchors that cannot be found
+    are logged and skipped; other blocks are still stamped. Callers wrap this best-effort so a stamp
+    failure never blanks the report.
+    """
+    if not report or not direction_map:
+        return report
+    stampable = {
+        title: val
+        for title, res in direction_map.items()
+        if title and (val := render_direction_value(res)) is not None
+    }
+    if not stampable:
+        return report
+
+    lines = report.split("\n")
+    anchors: dict[str, int] = {}
+    for title in stampable:
+        idx = _find_anchor_index(lines, title)
+        if idx is None:
+            logger.warning(
+                "synthesis direction stamp: no block anchor found for Tier-3 hypothesis %r", title
+            )
+            continue
+        anchors[title] = idx
+    if not anchors:
+        return report
+
+    anchor_set = set(anchors.values())
+
+    def _block_end(anchor: int) -> int:
+        for j in range(anchor + 1, len(lines)):
+            if j in anchor_set or _HEADING_RE.match(lines[j]):
+                return j
+        return len(lines)
+
+    ops: list[tuple[str, int, str]] = []  # (kind, index, text)
+    for title, anchor in anchors.items():
+        value = stampable[title]
+        end = _block_end(anchor)
+        replaced = False
+        for j in range(anchor + 1, end):
+            if _is_direction_line(lines[j]):
+                ops.append(("replace", j, f"{_line_prefix(lines[j])}**Direction:** {value}"))
+                replaced = True
+                break
+        if not replaced:
+            ops.append(("insert", anchor + 1, f"**Direction:** {value}"))
+
+    # Apply bottom-up so earlier indices stay valid across insertions.
+    for kind, idx, text in sorted(ops, key=lambda o: o[1], reverse=True):
+        if kind == "replace":
+            lines[idx] = text
+        else:
+            lines.insert(idx, text)
+    return "\n".join(lines)
+
+
+# --- Fallback-path Tier-3 direction section (R6) --------------------------------------
+
+
+def format_fallback_tier3_directions(state: DiscoveryState, cfg: Any) -> str:
+    """Render a deterministic Tier-3 direction section for the fallback report (R6).
+
+    The fallback path has no LLM to author per-hypothesis prediction blocks, so it would otherwise
+    silently drop Direction entirely (the historical fallback-omission regression class). This renders
+    ``**Direction:**`` per Tier-3 hypothesis directly from state via the same helper. Seam-gated:
+    empty when ``module_spine`` is absent. Falsifiers are LLM-authored and stay absent here (R6:
+    ``falsifier_rendered`` is honestly 0 on this path).
+    """
+    dmap = tier3_direction_map(state, cfg)
+    if not dmap:
+        return ""
+    rendered = [(t, v) for t, r in dmap.items() if (v := render_direction_value(r)) is not None]
+    if not rendered:
+        return ""
+    lines = [
+        "## Tier-3 Prediction Directions\n",
+        "*Deterministic direction (sign of kME × module→outcome correlation) per speculative "
+        "prediction. Direction confidence is an evidence-strength tier, not a probability; all "
+        "predictions require validation. (Falsifiers are authored during LLM synthesis and are "
+        "absent on this deterministic fallback path.)*\n",
+    ]
+    for title, value in rendered:
+        lines.append(f"### {title}")
+        lines.append(f"**Direction:** {value}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+# --- Tier-3 prediction telemetry (Unit 5) ---------------------------------------------
+
+_FALSIFIER_OBSERVABLE_RE = re.compile(
+    r"\d|>|<|≥|≤|increase|decreas|higher|lower|above|below|threshold|null|absent|"
+    r"no change|fails to|does not|reduc|elevat|correlat",
+    re.IGNORECASE,
+)
+
+
+def _is_falsifier_line(line: str) -> bool:
+    s = re.sub(r"^[-*]\s+", "", line.strip()).replace("**", "").replace("__", "")
+    return s.lower().startswith("falsifier:")
+
+
+def _falsifier_content(line: str) -> str:
+    s = re.sub(r"^[-*]\s+", "", line.strip()).replace("**", "").replace("__", "")
+    return s[len("falsifier:"):].strip() if s.lower().startswith("falsifier:") else ""
+
+
+def _count_direction_lines(report: str) -> int:
+    return sum(1 for ln in report.split("\n") if _is_direction_line(ln))
+
+
+def _count_wellformed_falsifiers(report: str) -> int:
+    """Count ``**Falsifier:**`` lines that name a measurable observable + threshold/direction.
+
+    A bare label, an empty line, or a mere restatement of the validation step (no observable, no
+    threshold word/number) is NOT counted. This is a COMPLIANCE (format) signal, explicitly not a
+    proof of genuine falsifiability.
+    """
+    count = 0
+    for ln in report.split("\n"):
+        if _is_falsifier_line(ln):
+            content = _falsifier_content(ln)
+            if len(content) >= 15 and _FALSIFIER_OBSERVABLE_RE.search(content):
+                count += 1
+    return count
+
+
+def _compute_tier3_stats(state: DiscoveryState, report: str, cfg: Any) -> dict[str, Any]:
+    """Split Tier-3 telemetry: a DETERMINISTIC coverage metric vs COMPLIANCE marker counts (R4).
+
+    ``direction_computable_pct`` is a pure function of state (resolvable signed axis-A records) and is
+    the honest measure of R2 — it is NOT affected by whether the LLM emitted any marker. The
+    ``*_rendered_pct`` are regexes over the report text, explicitly labeled compliance so they are
+    never read as "predictions are now falsifiable/directional".
+    """
+    tier3 = [h for h in state.get("hypotheses", []) or [] if getattr(h, "tier", None) == 3]
+    total = len(tier3)
+
+    computable = 0
+    indeterminate = 0
+    seam_present = False
+    for h in tier3:
+        res = compute_tier3_direction(h, state, cfg)
+        seam_present = seam_present or res.seam_present
+        if res.computable:
+            computable += 1
+        if res.seam_present and res.direction == "indeterminate":
+            indeterminate += 1
+
+    direction_rendered = _count_direction_lines(report)
+    falsifier_rendered = _count_wellformed_falsifiers(report)
+
+    def _pct(n: int) -> float:
+        return round(n / total * 100, 1) if total else 0.0
+
+    return {
+        "total_tier3": total,  # base rate (premise note) — makes the DIRECTION-not-hit-rate assumption checkable
+        "seam_present": seam_present,
+        # DETERMINISTIC (from state; LLM-independent):
+        "direction_computable": computable,
+        "direction_computable_pct": _pct(computable),
+        "indeterminate_direction": indeterminate,
+        # COMPLIANCE (regex over the report; marker emission, NOT proof of the property):
+        "direction_rendered": direction_rendered,
+        "direction_rendered_pct": _pct(direction_rendered),
+        "falsifier_rendered": falsifier_rendered,
+        "falsifier_rendered_pct": _pct(falsifier_rendered),
+        "metric_kind": {
+            "direction_computable_pct": "deterministic",
+            "direction_rendered_pct": "compliance",
+            "falsifier_rendered_pct": "compliance",
+        },
+    }
+
+
+def format_direction_hints(state: DiscoveryState, cfg: Any) -> str:
+    """Inject a per-Tier-3-hypothesis direction hint block (Axis E, Unit 3).
+
+    Emits ``{title -> ↑/↓/indeterminate (confidence)}`` for every Tier-3 hypothesis, so the LLM can
+    anchor each prediction block on the title and narrate a mechanism consistent with the computed
+    sign. Returns ``""`` when the axis-A seam is absent (seam-gating: no hints, and the prompt then
+    omits the Direction line) so a seam-less run does not read as ``indeterminate`` everywhere.
+    """
+    dmap = tier3_direction_map(state, cfg)
+    if not dmap:
+        return ""
+    rendered: list[tuple[str, str]] = []
+    for title, res in dmap.items():
+        val = render_direction_value(res)
+        if val is None:
+            continue  # seam absent -> omit hints entirely
+        rendered.append((title, val))
+    if not rendered:
+        return ""
+    lines = [
+        "## Tier-3 Direction Hints (system-computed — narrate, do not override)\n",
+        "_Each Tier-3 prediction has a deterministic direction computed from signed module weights "
+        "(kME x module→outcome correlation). Anchor your prediction block on the exact title and "
+        "narrate a mechanism consistent with the hint; the value itself is stamped into the report "
+        "automatically. 'indeterminate' means the sign is absent or conflicting — say so honestly._\n",
+    ]
+    for title, val in rendered:
+        lines.append(f"- **{title}** → Direction: {val}")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def format_gap_entities(gaps: list[GapEntity]) -> str:
@@ -1081,7 +1626,9 @@ def assemble_synthesis_context(state: DiscoveryState, stats_out: dict | None = N
     
     # Cross-type bridges
     bridges = state.get("bridges", [])
-    bridges_section = format_bridges(bridges, grounding_labels_from_state(state))
+    bridges_section = format_bridges(
+        bridges, grounding_labels_from_state(state), specificity_by_bridge_from_state(state)
+    )
     if bridges_section:
         sections.append(bridges_section)
     
@@ -1120,6 +1667,12 @@ def assemble_synthesis_context(state: DiscoveryState, stats_out: dict | None = N
     literature_section = format_literature_evidence(hypotheses)
     if literature_section:
         sections.append(literature_section)
+
+    # Tier-3 direction hints (Axis E): deterministic ↑/↓/indeterminate per Tier-3 hypothesis, so the
+    # LLM narrates a mechanism consistent with the sign. Seam-gated (empty when module_spine absent).
+    direction_hints = format_direction_hints(state, cfg)
+    if direction_hints:
+        sections.append(direction_hints)
 
     context = "\n".join(sections)
 
@@ -1207,7 +1760,9 @@ def fallback_report(state: DiscoveryState) -> str:
         report_lines.append(enrichment_section)
 
     # Cross-type bridges - Phase 4b
-    bridges_section = format_bridges(bridges, grounding_labels_from_state(state))
+    bridges_section = format_bridges(
+        bridges, grounding_labels_from_state(state), specificity_by_bridge_from_state(state)
+    )
     if bridges_section:
         report_lines.append(bridges_section)
 
@@ -1229,6 +1784,13 @@ def fallback_report(state: DiscoveryState) -> str:
     inference_section = format_inferred_associations(inferred_associations, analogues_found)
     if inference_section:
         report_lines.append(inference_section)
+
+    # Tier-3 deterministic directions (R6): the fallback path has no LLM, so it renders Direction per
+    # Tier-3 hypothesis directly from state (seam-gated). Keeps Direction from silently vanishing when
+    # synthesis degrades to the deterministic report.
+    fallback_directions = format_fallback_tier3_directions(state, cfg)
+    if fallback_directions:
+        report_lines.append(fallback_directions)
 
     # Analysis findings (summary from both branches) — capped per tier (dominant section)
     findings_section = format_findings_summary(
@@ -1377,6 +1939,22 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     # literature_grounding; read them from state.
     hypotheses = state.get("hypotheses", [])
 
+    # Axis E Unit 4: stamp the authoritative deterministic Tier-3 direction into the report — on BOTH
+    # the SDK and fallback paths, before the references table — overwriting any arrow the LLM wrote.
+    # Best-effort: a stamp failure must never blank the report (mirrors synthesis_context_stats).
+    cfg = get_pipeline_config().synthesis
+    try:
+        report = stamp_directions(report, tier3_direction_map(state, cfg))
+    except Exception:  # noqa: BLE001 — stamping is best-effort, never break the report
+        logger.warning("synthesis direction stamp failed; returning unstamped report", exc_info=True)
+
+    # Axis E Unit 5: Tier-3 prediction telemetry (deterministic coverage vs compliance markers).
+    tier3_stats: dict[str, Any] = {}
+    try:
+        tier3_stats = _compute_tier3_stats(state, report, cfg)
+    except Exception:  # noqa: BLE001 — telemetry is best-effort, never break the node
+        logger.warning("tier3_prediction_stats computation failed", exc_info=True)
+
     # R6: synthesis owns the references table now (grounding stopped appending it in Unit 3).
     # Append it AFTER the SDK/fallback convergence point so BOTH the LLM-success path and the
     # fallback_report path emit it — the fallback omission was the highest-risk silent regression.
@@ -1400,6 +1978,9 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     # Context-compression telemetry (plan 004) — single-writer plain field, last-write-wins.
     if context_stats:
         result["synthesis_context_stats"] = context_stats
+    # Tier-3 prediction telemetry (Axis E) — single-writer plain field, last-write-wins.
+    if tier3_stats:
+        result["tier3_prediction_stats"] = tier3_stats
     # errors uses an operator.add reducer; only emit on a degraded fallback (Unit 7).
     if fallback_marker:
         result["errors"] = [fallback_marker]

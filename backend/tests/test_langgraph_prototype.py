@@ -2420,12 +2420,15 @@ class TestSynthesisReportOnly:
     async def test_return_is_report_only(self):
         """Return dict carries no `hypotheses` or `bridges` keys (owned upstream now).
 
-        synthesis_context_stats (plan 004) is a legitimate synthesis-owned output and is present
-        whenever the context was assembled (it always is); hypotheses/bridges remain excluded.
+        synthesis_context_stats (plan 004) and tier3_prediction_stats (Axis E) are legitimate
+        synthesis-owned telemetry outputs, present whenever the node runs; hypotheses/bridges
+        remain excluded (produced/owned upstream).
         """
         with patch.object(synthesis, "HAS_SDK", False):
             result = await synthesis.run(self._grounded_state())
-        assert set(result.keys()) == {"synthesis_report", "model_usages", "synthesis_context_stats"}
+        assert set(result.keys()) == {
+            "synthesis_report", "model_usages", "synthesis_context_stats", "tier3_prediction_stats",
+        }
         assert "hypotheses" not in result
         assert "bridges" not in result
 

@@ -518,3 +518,8 @@ class DiscoveryState(TypedDict, total=False):
     # Context-compression telemetry emitted by synthesis (shown/total/elided per capped section +
     # budget utilization). Single-writer (synthesis only) → plain field, last-write-wins; no reducer.
     synthesis_context_stats: dict
+    # Tier-3 prediction telemetry emitted by synthesis (Axis E): a DETERMINISTIC coverage metric
+    # (direction_computable_pct, from state) kept explicitly separate from COMPLIANCE metrics
+    # (direction_rendered_pct / falsifier_rendered_pct, regex over the report). Single-writer
+    # (synthesis only) → plain field, last-write-wins; no reducer.
+    tier3_prediction_stats: dict
