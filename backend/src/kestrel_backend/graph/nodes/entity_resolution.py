@@ -29,6 +29,7 @@ from typing import Any
 from ...kestrel_client import call_kestrel_tool
 from ...biomapper_client import resolve_entity as biomapper_resolve, biolink_class_for
 from ...config import get_settings, resolve_biomapper_base_url
+from ..rank_utils import infer_requested_rank, is_rank_collapse
 from ..state import DiscoveryState, EntityResolution
 from ..sdk_utils import HAS_SDK, query_with_usage, ClaudeAgentOptions, chunk
 from ..pipeline_config import get_pipeline_config
@@ -145,6 +146,12 @@ async def resolve_via_api(
                 fallback = await resolve_via_api(entity, category=None)
                 if fallback is None:
                     return None
+                if fallback.curie is None:
+                    # The unconstrained retry itself abstained (e.g. the rank guard fired). Return it
+                    # verbatim so the "failed" sentinel + rank_collapsed marker survive — relabeling a
+                    # curie=None result as method="category-fallback" would strip the sentinel and the
+                    # entity would be silently dropped from every triage bucket.
+                    return fallback
                 return fallback.model_copy(update={
                     "confidence": _config.tier1_fallback_confidence,
                     "method": "category-fallback",
@@ -221,7 +228,7 @@ async def resolve_via_api(
             entity, curie, score, confidence, method
         )
 
-        return EntityResolution(
+        resolution = EntityResolution(
             raw_name=entity,
             curie=curie,
             resolved_name=name,
@@ -229,6 +236,8 @@ async def resolve_via_api(
             confidence=confidence,
             method=method,
         )
+        # Rank-collapse guard (Tier-1, abstain-only). Pass-through for non-taxa / no collapse.
+        return _apply_rank_guard(entity, resolution)
 
     except Exception as e:
         logger.warning("Tier 1 '%s': Exception - %s", entity, str(e))
@@ -282,6 +291,105 @@ def parse_resolution_result(entity: str, result_text: str) -> EntityResolution:
         confidence=0.0,
         method="failed",
     )
+
+
+# ============================ Rank-collapse guard (Axis D, Guard 1) ============================
+# Stops the pipeline from silently accepting a coarser (proper-ancestor) node when the label asked
+# for a finer taxonomic rank — the mechanism by which opposite-sign literature for a species and its
+# genus get averaged into one CURIE. Detection is name-derived (Kestrel node dicts carry no lineage
+# metadata); see rank_utils. Both helpers are pure and no-KG-fan-out. When the label yields no rank
+# (non-taxa, the common case) they are pass-throughs → resolution is byte-identical.
+
+
+def _rank_name(label: str | None) -> str | None:
+    """Lowercase rank name (e.g. 'species') for a label, or None when not taxa — for diagnostics."""
+    rank = infer_requested_rank(label)
+    return rank.name.lower() if rank is not None else None
+
+
+def _rank_abstention(entity: str, resolved_name: str | None) -> EntityResolution:
+    """The abstain result for a rank collapse: the existing ``method="failed"`` sentinel (triage
+    routes it to cold_start) plus the ``rank_collapsed`` diagnostic marker. The coarse CURIE is
+    dropped — never accepted."""
+    return EntityResolution(
+        raw_name=entity,
+        curie=None,
+        resolved_name=None,
+        category=None,
+        confidence=0.0,
+        method="failed",
+        requested_rank=_rank_name(entity),
+        resolved_rank=_rank_name(resolved_name),
+        rank_collapsed=True,
+    )
+
+
+def _apply_rank_guard(
+    entity: str, resolution: EntityResolution, *, resolved_name: str | None = None
+) -> EntityResolution:
+    """Tier-1 guard: abstain-only. Tier-1 (`resolve_via_api`, limit=1) has no alternative candidates
+    in scope, so a rank collapse goes straight to abstain (no extra search — reader-pool budget).
+    Returns the input unchanged when there is no collapse.
+
+    ``resolved_name`` overrides which name the collapse check compares against. Tier-1 leaves it
+    ``None`` → the guard uses ``resolution.resolved_name`` (unchanged behavior). The biomapper path
+    passes the CONFIRMED Kestrel node name, because ``resolution.resolved_name`` may echo the raw
+    query (the wrapper returns the query verbatim when it has no canonical name) — comparing the
+    query to itself never detects a species→genus collapse.
+    """
+    check_name = resolved_name if resolved_name is not None else resolution.resolved_name
+    if resolution.curie is None or check_name is None:
+        return resolution
+    if not is_rank_collapse(entity, check_name):
+        return resolution
+    logger.info(
+        "FALLBACK_EVENT node=entity_resolution reason=rank_collapse tier=1 entity=%s resolved=%s",
+        entity, check_name,
+    )
+    return _rank_abstention(entity, check_name)
+
+
+def _apply_rank_guard_tier2(
+    entity: str, resolution: EntityResolution, candidates: list[dict]
+) -> EntityResolution:
+    """Tier-2 guard: resolve-finer over the in-scope prefetched candidate set, else abstain.
+
+    Scans ``candidates`` for a node at the requested (finer) rank whose genus matches the label; the
+    first such candidate is preferred. If none exists, abstain via the ``method="failed"`` sentinel.
+    Returns the input unchanged when there is no collapse.
+    """
+    if resolution.curie is None or not is_rank_collapse(entity, resolution.resolved_name):
+        return resolution
+    requested = infer_requested_rank(entity)
+    entity_genus = entity.strip().split()[0].lower()
+    for cand in candidates:
+        cname = cand.get("name")
+        if not cname:
+            continue
+        # A finer candidate: at the requested rank, same genus, and not itself a collapse.
+        if (
+            infer_requested_rank(cname) == requested
+            and cname.strip().split()[0].lower() == entity_genus
+            and not is_rank_collapse(entity, cname)
+        ):
+            logger.info(
+                "FALLBACK_EVENT node=entity_resolution reason=rank_resolve_finer tier=2 "
+                "entity=%s finer=%s",
+                entity, cname,
+            )
+            return EntityResolution(
+                raw_name=entity,
+                curie=cand["curie"],
+                resolved_name=cname,
+                category=cand.get("category"),
+                confidence=resolution.confidence,
+                method=resolution.method,
+            )
+    logger.info(
+        "FALLBACK_EVENT node=entity_resolution reason=rank_collapse tier=2 entity=%s resolved=%s",
+        entity, resolution.resolved_name,
+    )
+    return _rank_abstention(entity, resolution.resolved_name)
 
 
 # Max candidates shown to the selector (bounds prompt size; membership is checked
@@ -401,6 +509,18 @@ def _node_category(node: dict) -> str | None:
     return node.get("category")
 
 
+def _node_name(node: dict) -> str | None:
+    """The confirmed Kestrel node's canonical display name, or None when absent/blank.
+
+    Used by the biomapper rank guard: the biomapper wrapper echoes the raw query as
+    ``resolved_name`` when it has no canonical name, so the guard must compare the
+    requested rank against the CONFIRMED node's name (e.g. the genus ``"Ruminococcus"``)
+    instead — otherwise a species→genus collapse is never detected.
+    """
+    name = node.get("name")
+    return name if isinstance(name, str) and name.strip() else None
+
+
 def _biomapper_candidate_curies(biomapper_result: dict, hint: str | None) -> list[str]:
     """Ordered CURIE candidates: primary_curie first, then xrefs by per-class namespace_preference.
 
@@ -432,13 +552,15 @@ def _biomapper_candidate_curies(biomapper_result: dict, hint: str | None) -> lis
 
 async def reconcile_to_kestrel(
     biomapper_result: dict, hint: str | None
-) -> tuple[str, str | None] | None:
-    """Confirm a Biomapper result against the Kestrel KG; return (confirmed_curie, kestrel_category).
+) -> tuple[str, str | None, str | None] | None:
+    """Confirm a Biomapper result against the Kestrel KG; return
+    (confirmed_curie, kestrel_category, confirmed_node_name).
 
     Walks the candidate CURIEs (primary first, then namespace-preferred xrefs), accepting the first
     that ``get_nodes`` confirms. For gene/protein, the confirmed node must carry the HGNC human
     marker (defense-in-depth) or the candidate is skipped. Returns the node's canonical id +
-    Kestrel-native category, or None if nothing confirms (caller falls back to Kestrel tiers).
+    Kestrel-native category + display name (the rank guard needs the confirmed node's real name,
+    not the biomapper query echo), or None if nothing confirms (caller falls back to Kestrel tiers).
     """
     gated = (hint or "").lower() in _HGNC_GATED_CLASSES
     for candidate in _biomapper_candidate_curies(biomapper_result, hint):
@@ -454,7 +576,7 @@ async def reconcile_to_kestrel(
             # Confirmed in Kestrel but no HGNC marker → non-human ortholog; reject (defense-in-depth).
             logger.info("FALLBACK_EVENT node=entity_resolution reason=biomapper_non_human curie=%s", candidate)
             continue
-        return node.get("id") or candidate, _node_category(node)
+        return node.get("id") or candidate, _node_category(node), _node_name(node)
     return None
 
 
@@ -578,14 +700,19 @@ async def resolve_single_entity(entity: str, is_retry: bool = False) -> tuple[En
         return (failed, usage_record)
 
     # Surface the CANDIDATE's own fields (never the model's emitted strings).
-    return (EntityResolution(
+    resolution = EntityResolution(
         raw_name=entity,
         curie=chosen["curie"],
         resolved_name=chosen["name"],
         category=chosen["category"],
         confidence=parsed.confidence,
         method=parsed.method,
-    ), usage_record)
+    )
+    # Rank-collapse guard (Tier-2): resolve-finer over the in-scope candidate set, else abstain.
+    # ``candidates`` is the full prefetched set (not just the shown cap) so a finer node just outside
+    # the prompt cap is still reachable. Pass-through for non-taxa / no collapse.
+    resolution = _apply_rank_guard_tier2(entity, resolution, candidates)
+    return (resolution, usage_record)
 
 
 
@@ -681,8 +808,8 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                         name,
                     )
                     return idx, None
-                curie, category = reconciled
-                return idx, EntityResolution(
+                curie, category, node_name = reconciled
+                resolution = EntityResolution(
                     raw_name=name,
                     curie=curie,
                     resolved_name=r.get("resolved_name") or name,
@@ -690,12 +817,30 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                     confidence=_tier_to_confidence(r.get("tier")),
                     method="biomapper",
                 )
+                # Axis-D rank guard (finding #6 / Greptile P1): a biomapper hit that collapses a
+                # species→genus (or any finer→coarser taxon) must abstain exactly like the Tier-1/2
+                # paths rather than feeding the coarse CURIE straight into triage via the pre-resolver.
+                # The biomapper wrapper returns the raw query verbatim as ``resolved_name`` when it has
+                # no canonical display name, so we feed the CONFIRMED KESTREL NODE name (already fetched
+                # during reconciliation — no new query) into the guard; fall back to the surfaced
+                # resolved_name only when the node name is genuinely unavailable. On no collapse (the
+                # common non-taxa case) this is a pass-through → byte-identical resolution.
+                return idx, _apply_rank_guard(
+                    name, resolution, resolved_name=node_name or resolution.resolved_name
+                )
 
             prepass = await asyncio.gather(*[_biomapper_one(i, e) for (i, e) in targets])
             for idx, res in prepass:
-                if res is not None:
-                    all_results[idx] = res
-                    biomapper_confirmed.add(idx)
+                # None → biomapper miss/timeout/unconfirmed: fall through to Tier-1 (Kestrel).
+                if res is None:
+                    continue
+                # A biomapper result (confirmed CURIE OR a rank-collapse abstention) is terminal for
+                # this index — record it and skip Tier-1, exactly like Tier-1's own terminal paths.
+                # Only a real CURIE counts toward biomapper_resolved; an abstention (curie=None,
+                # method="failed", rank_collapsed=True) is carried into triage → cold_start.
+                all_results[idx] = res
+                biomapper_confirmed.add(idx)
+                if res.curie is not None:
                     biomapper_resolved += 1
             logger.info(
                 "Biomapper pre-resolver confirmed %d/%d hinted entities",
@@ -726,9 +871,13 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             logger.debug("Tier 1 '%s': Exception - %s", entity, str(result))
             tier1_failed_indices.append(i)
         elif result is not None:
-            # Successfully resolved via API
             all_results[i] = result
-            tier1_resolved += 1
+            if result.curie:
+                # Successfully resolved via API
+                tier1_resolved += 1
+            # else: the rank guard abstained at Tier-1 (curie=None, method="failed"). Leave it as a
+            # terminal failure — do NOT route to Tier-1.5/Tier-2 (the plan's reader-pool budget: a
+            # Tier-1 collapse abstains straight away rather than launching a fresh finer search).
         else:
             # Returned None - needs Tier 1.5 or Tier 2
             tier1_failed_indices.append(i)
@@ -760,22 +909,37 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             alias_category = biolink_class_for(entity_type_hints.get(entity))
             for alias in entity_aliases:
                 alias_result = await resolve_via_api(alias, category=alias_category)
-                if alias_result is not None:
-                    # Use alias resolution but keep original raw_name
-                    all_results[idx] = EntityResolution(
-                        raw_name=entity,  # Keep original name
-                        curie=alias_result.curie,
-                        resolved_name=alias_result.resolved_name,
-                        category=alias_result.category,
-                        confidence=alias_result.confidence,
-                        method=f"alias:{alias}",  # Track that alias was used
+                if alias_result is None:
+                    continue
+                if alias_result.curie is None:
+                    # The rank guard abstained on this alias (species→genus collapse): a non-None
+                    # result carrying curie=None + rank_collapsed=True. This is NOT an alias hit —
+                    # relabeling it method="alias:<name>" would strip the "failed" sentinel, count it
+                    # as tier15_resolved, and block Tier 2 from ever resolving the original entity.
+                    # Preserve the rank_collapsed diagnostic (keyed on the original raw_name) and let
+                    # it fall through to Tier 2 exactly as a genuine miss would (resolved_via_alias
+                    # stays False → appended to tier2_needed_indices below).
+                    all_results[idx] = alias_result.model_copy(update={"raw_name": entity})
+                    logger.info(
+                        "Tier 1.5 '%s': alias '%s' rank-collapsed (abstain); falling through to Tier 2",
+                        entity, alias,
                     )
-                    tier15_resolved += 1
-                    resolved_via_alias = True
-                    logger.info("Tier 1.5 '%s': resolved via alias '%s' to %s",
-                               entity, alias, alias_result.curie)
-                    break
-            
+                    continue
+                # Use alias resolution but keep original raw_name
+                all_results[idx] = EntityResolution(
+                    raw_name=entity,  # Keep original name
+                    curie=alias_result.curie,
+                    resolved_name=alias_result.resolved_name,
+                    category=alias_result.category,
+                    confidence=alias_result.confidence,
+                    method=f"alias:{alias}",  # Track that alias was used
+                )
+                tier15_resolved += 1
+                resolved_via_alias = True
+                logger.info("Tier 1.5 '%s': resolved via alias '%s' to %s",
+                           entity, alias, alias_result.curie)
+                break
+
             if not resolved_via_alias:
                 tier2_needed_indices.append(idx)
         else:
@@ -868,8 +1032,14 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             tier2_resolved, len(tier2_needed_indices), tier2_duration
         )
     elif tier2_needed_indices:
-        # SDK not available - mark remaining as failed
+        # SDK not available - mark remaining as failed. Preserve an existing rank_collapse
+        # abstention (e.g. carried over from a Tier-1.5 alias collapse) instead of clobbering its
+        # diagnostic with a bare "failed" — both route to cold_start identically (curie=None), but
+        # the rank_collapsed marker/measurement hook would otherwise be silently lost.
         for idx in tier2_needed_indices:
+            existing = all_results[idx]
+            if existing is not None and existing.rank_collapsed:
+                continue
             all_results[idx] = EntityResolution(
                 raw_name=entities[idx],
                 curie=None,
@@ -918,9 +1088,20 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
         len(failed), rate
     )
 
+    # Guard-1 measurement hook (Axis D): count rank collapses the guard caught this run. Persisted
+    # by default alongside resolved_entities (not behind a flag). 0 on a run where the guard never
+    # fired — byte-identical semantics for non-taxa modules.
+    rank_collapse_sign_flips = sum(1 for r in final_results if r.rank_collapsed)
+    if rank_collapse_sign_flips:
+        logger.info(
+            "Rank guard: abstained %d entities on rank collapse (finer label → coarser node)",
+            rank_collapse_sign_flips,
+        )
+
     result = {
         "resolved_entities": final_results,
         "errors": errors,
+        "rank_collapse_sign_flips": rank_collapse_sign_flips,
     }
     if model_usages:
         result["model_usages"] = model_usages

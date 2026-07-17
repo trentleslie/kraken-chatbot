@@ -38,6 +38,21 @@ class EntityResolution(BaseModel):
         "failed",
         description='Resolution method: "exact"|"fuzzy"|"semantic"|"failed"|"biomapper"|"alias:<name>"',
     )
+    # === resolution-contract (Axis D, Guard 1): rank-collapse diagnostics ===
+    # Additive optionals — default to the inert values so legacy constructions (and equality
+    # between them) are unaffected. Populated only when the rank guard fires (Unit 2): the label's
+    # requested taxonomic rank was finer than the resolved node's, so the coarse CURIE was NOT
+    # accepted. ``rank_collapsed`` is diagnostic-only; routing to cold_start is achieved via the
+    # existing ``method="failed"`` sentinel, not a new triage control-flow.
+    requested_rank: str | None = Field(
+        None, description="Taxonomic rank the label requested (e.g. 'species'); None if not taxa"
+    )
+    resolved_rank: str | None = Field(
+        None, description="Taxonomic rank of the resolved node's name; None if not taxa"
+    )
+    rank_collapsed: bool = Field(
+        False, description="True when the guard detected a coarser (proper-ancestor) resolution"
+    )
 
 
 class NoveltyScore(BaseModel):
@@ -562,6 +577,10 @@ class DiscoveryState(TypedDict, total=False):
     # === Phase 2: Entity Resolution ===
     # Uses operator.add reducer for parallel batch writes
     resolved_entities: Annotated[list[EntityResolution], operator.add]
+    # Guard-1 measurement hook (Axis D): count of rank collapses the resolution guard caught this
+    # run (a coarser proper-ancestor resolution that was abstained/resolved-finer instead of
+    # silently accepted). Single-writer plain int (entity_resolution is serial). Persisted by default.
+    rank_collapse_sign_flips: int
 
     # === Phase 3: Triage & Classification ===
     # Uses operator.add reducer for parallel novelty scoring
@@ -608,6 +627,12 @@ class DiscoveryState(TypedDict, total=False):
 
     # === Phase 5: Output (Updated) ===
     synthesis_report: str
+    # Guard-2 measurement hooks (Axis D): sign-coherence at the synthesis group-fusion boundary.
+    # groups_sign_split = module groups that split in sign; groups_split = sign-coherent sub-programs
+    # produced. Single-writer plain ints (synthesis is terminal). Persisted by default; 0 when no
+    # ModuleSpine / no split → byte-identical for coherent modules.
+    groups_sign_split: int
+    groups_split: int
     # Note: NOT using operator.add - synthesis creates, literature_grounding updates
     hypotheses: list[Hypothesis]
 
