@@ -59,6 +59,12 @@ Direct evidence from the knowledge graph:
 - Disease associations with strong evidence (GWAS, curated databases)
 - Validated pathway memberships
 - Well-characterized entity relationships
+- Cross-type bridges between input entities. When the context's "Cross-Type Bridges" section marks a
+  bridge **Bridge specificity: generic** (it routes through a high-degree intermediate that connects
+  to nearly everything — e.g. "blood", "cancer"), say so explicitly and DOWN-WEIGHT it as weak
+  structural evidence — never present a generic bridge as a specific mechanistic link. Foreground the
+  bridges marked **specific**. Carry this specificity distinction into any bridge you cite here or in
+  a Tier-3 Logic chain.
 
 ### 3. Novel Predictions (Tier 3)
 
@@ -1041,23 +1047,26 @@ def stamp_directions(report: str, direction_map: dict[str, DirectionResult]) -> 
 
     This is what makes the direction value synthesis-owned rather than an LLM prompt-hope: whatever
     arrow the LLM wrote (or omitted) is replaced by the deterministic value. Blocks whose axis-A seam
-    is absent get no line (``render_direction_value`` -> ``None``). Title anchors that cannot be found
-    are logged and skipped; other blocks are still stamped. Callers wrap this best-effort so a stamp
-    failure never blanks the report.
+    is absent get NO line — and because the prompt has the LLM author a ``**Direction:** LEAVE THIS TO
+    THE SYSTEM.`` placeholder, "no line" means that placeholder is actively REMOVED here (it must never
+    leak into the report). Title anchors that cannot be found are logged and skipped; other blocks are
+    still stamped. Callers wrap this best-effort so a stamp failure never blanks the report.
     """
     if not report or not direction_map:
         return report
-    stampable = {
-        title: val
+    # Per Tier-3 title: the deterministic value to stamp, or None to OMIT the line (seam absent).
+    # Omission is not a no-op: the LLM placeholder line for that block must be deleted.
+    render_map = {
+        title: render_direction_value(res)
         for title, res in direction_map.items()
-        if title and (val := render_direction_value(res)) is not None
+        if title
     }
-    if not stampable:
+    if not render_map:
         return report
 
     lines = report.split("\n")
     anchors: dict[str, int] = {}
-    for title in stampable:
+    for title in render_map:
         idx = _find_anchor_index(lines, title)
         if idx is None:
             logger.warning(
@@ -1078,23 +1087,29 @@ def stamp_directions(report: str, direction_map: dict[str, DirectionResult]) -> 
 
     ops: list[tuple[str, int, str]] = []  # (kind, index, text)
     for title, anchor in anchors.items():
-        value = stampable[title]
+        value = render_map[title]
         end = _block_end(anchor)
-        replaced = False
-        for j in range(anchor + 1, end):
-            if _is_direction_line(lines[j]):
-                ops.append(("replace", j, f"{_line_prefix(lines[j])}**Direction:** {value}"))
-                replaced = True
-                break
-        if not replaced:
-            ops.append(("insert", anchor + 1, f"**Direction:** {value}"))
+        dir_idx = next(
+            (j for j in range(anchor + 1, end) if _is_direction_line(lines[j])), None
+        )
+        if value is not None:
+            if dir_idx is not None:
+                ops.append(("replace", dir_idx, f"{_line_prefix(lines[dir_idx])}**Direction:** {value}"))
+            else:
+                ops.append(("insert", anchor + 1, f"**Direction:** {value}"))
+        elif dir_idx is not None:
+            # Seam absent for this block -> omit: delete the LLM placeholder so it can never leak
+            # (e.g. "**Direction:** LEAVE THIS TO THE SYSTEM.").
+            ops.append(("delete", dir_idx, ""))
 
-    # Apply bottom-up so earlier indices stay valid across insertions.
+    # Apply bottom-up so earlier indices stay valid across insertions/deletions.
     for kind, idx, text in sorted(ops, key=lambda o: o[1], reverse=True):
         if kind == "replace":
             lines[idx] = text
-        else:
+        elif kind == "insert":
             lines.insert(idx, text)
+        else:  # delete
+            del lines[idx]
     return "\n".join(lines)
 
 

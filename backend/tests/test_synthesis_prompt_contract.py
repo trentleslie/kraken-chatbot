@@ -59,6 +59,15 @@ def test_prompt_marks_direction_as_stamped_not_invented():
     assert "do not invent" in SYNTHESIS_PROMPT
 
 
+def test_prompt_instructs_bridge_specificity_use():
+    # The Cross-Type Bridges context carries a "**Bridge specificity:**" signal (axis C); the prompt
+    # must tell the LLM to use it — down-weight generic bridges, foreground specific ones — else the
+    # signal reaches the context but never the report (observed at module scale).
+    assert "Bridge specificity: generic" in SYNTHESIS_PROMPT
+    assert "DOWN-WEIGHT" in SYNTHESIS_PROMPT
+    assert "specific" in SYNTHESIS_PROMPT
+
+
 def test_prompt_calibration_preamble_has_all_caveats():
     assert "~18%" in SYNTHESIS_PROMPT
     assert "n≈13–15" in SYNTHESIS_PROMPT  # Discovery-1 suggestive

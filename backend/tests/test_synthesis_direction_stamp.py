@@ -62,6 +62,22 @@ def test_seam_absent_inserts_no_line():
     assert out == report  # untouched
 
 
+def test_seam_absent_removes_llm_placeholder():
+    # The LLM authors a "**Direction:** LEAVE THIS TO THE SYSTEM." placeholder per the prompt; when the
+    # axis-A seam is absent the deterministic stamp must DELETE it, not let it leak into the report.
+    report = (
+        "#### MyPred\n"
+        "**Prediction:** X\n"
+        "**Direction:** LEAVE THIS TO THE SYSTEM.\n"
+        "**Falsifier:** Y\n"
+    )
+    out = stamp_directions(report, {"MyPred": _seam_absent()})
+    assert "LEAVE THIS TO THE SYSTEM" not in out
+    assert "Direction:" not in out
+    # the rest of the block is preserved
+    assert "**Prediction:** X" in out and "**Falsifier:** Y" in out
+
+
 def test_missing_anchor_still_stamps_other_blocks():
     report = "#### RealPred\n**Prediction:** X\n"
     out = stamp_directions(report, {"Ghost": _up(), "RealPred": _down("moderate")})
