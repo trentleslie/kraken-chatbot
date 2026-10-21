@@ -6,6 +6,8 @@ import {
   applyGroupFilter,
   distinctGroups,
   distinctNameCount,
+  effectiveGroupSelection,
+  groupKey,
   type StructuredAnalyte,
 } from "@/lib/analyteParse";
 
@@ -41,13 +43,13 @@ export function AnalyteReviewSummary({
   const perGroupCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const a of analytes) {
-      if (a.group) counts[a.group] = (counts[a.group] ?? 0) + 1;
+      if (a.group?.trim()) counts[groupKey(a.group)] = (counts[groupKey(a.group)] ?? 0) + 1;
     }
     return counts;
   }, [analytes]);
 
   const selectedAnalytes = useMemo(
-    () => applyGroupFilter(analytes, hasGroups ? selectedGroups : []),
+    () => applyGroupFilter(analytes, hasGroups ? effectiveGroupSelection(analytes, selectedGroups) : []),
     [analytes, selectedGroups, hasGroups],
   );
   const selectedCount = distinctNameCount(selectedAnalytes);
@@ -92,7 +94,7 @@ export function AnalyteReviewSummary({
                   data-testid={`group-filter-${g}`}
                 />
                 <span>
-                  {g} ({perGroupCounts[g] ?? 0})
+                  {g} ({perGroupCounts[groupKey(g)] ?? 0})
                 </span>
               </label>
             ))}
