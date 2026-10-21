@@ -19,7 +19,9 @@ import sys
 
 import httpx
 
-KESTREL_MCP_URL = os.getenv("KESTREL_MCP_URL", "https://kestrel.nathanpricelab.com/mcp")
+from .config import DEFAULT_KESTREL_MCP_URL
+
+KESTREL_MCP_URL = os.getenv("KESTREL_MCP_URL", DEFAULT_KESTREL_MCP_URL)
 KESTREL_API_KEY = os.getenv("KESTREL_API_KEY", "")
 
 

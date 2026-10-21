@@ -16,9 +16,11 @@ from typing import Any
 
 import httpx
 
+from .config import DEFAULT_KESTREL_MCP_URL
+
 logger = logging.getLogger(__name__)
 
-KESTREL_MCP_URL = os.getenv("KESTREL_MCP_URL", "https://kestrel.nathanpricelab.com/mcp")
+KESTREL_MCP_URL = os.getenv("KESTREL_MCP_URL", DEFAULT_KESTREL_MCP_URL)
 KESTREL_API_KEY = os.getenv("KESTREL_API_KEY", "")
 
 
