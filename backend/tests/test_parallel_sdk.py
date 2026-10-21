@@ -13,7 +13,7 @@ from claude_agent_sdk.types import McpSSEServerConfig
 # Kestrel MCP server config (SSE-based, no subprocess overhead)
 KESTREL_SSE_CONFIG: McpSSEServerConfig = {
     "type": "sse",
-    "url": "https://kestrel.nathanpricelab.com/mcp",
+    "url": "https://kestrel.krakenkg.com/mcp",
 }
 
 # Minimal system prompt for fast resolution

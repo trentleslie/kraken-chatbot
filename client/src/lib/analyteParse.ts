@@ -402,7 +402,7 @@ export function buildAnalytes(
     const kmeVal = kmeCell?.status === "value" ? kmeCell.value : undefined;
     const kimVal = kimCell?.status === "value" ? kimCell.value : undefined;
 
-    const dedupKey = `${name.toLowerCase()} ${group ?? ""}`;
+    const dedupKey = `${name.toLowerCase()}\u0000${group ?? ""}`;
     // Conflict detection (mirrors backend validate_and_normalize): a member enters the signed spine
     // only via a valid kME. Two rows for the same (name, group) that BOTH carry a valid kME but
     // disagree on (kME, kIM) are a mis-map/duplicate footgun the backend REJECTS. Detected here,

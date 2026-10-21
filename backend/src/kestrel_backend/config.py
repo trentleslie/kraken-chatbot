@@ -11,6 +11,10 @@ from dotenv import load_dotenv
 # Opus 5.5 needs Claude Code CLI >=2.1.280, i.e. claude-agent-sdk >=0.2.170.
 DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
 
+# Kestrel MCP endpoint; KESTREL_MCP_URL overrides. kestrel.nathanpricelab.com was retired
+# (DNS no longer resolves) in 2026.
+DEFAULT_KESTREL_MCP_URL = "https://kestrel.krakenkg.com/mcp"
+
 
 class Settings(BaseModel):
     """Application settings loaded from environment variables."""

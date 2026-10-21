@@ -2,9 +2,9 @@
 title: "Kestrel API Reference (KESTREL API v0.1.0)"
 type: reference
 date: 2026-05-29
-source: live OpenAPI spec — https://kestrel.nathanpricelab.com/api/openapi.json
-base_url: https://kestrel.nathanpricelab.com/api
-mcp_url: https://kestrel.nathanpricelab.com/mcp
+source: live OpenAPI spec — https://kestrel.krakenkg.com/api/openapi.json
+base_url: https://kestrel.krakenkg.com/api
+mcp_url: https://kestrel.krakenkg.com/mcp
 auth: "X-API-Key header (KESTREL_API_KEY)"
 note: "Captured from the live spec + live probing on 2026-05-29. Re-pull /api/openapi.json to refresh."
 ---
@@ -12,8 +12,8 @@ note: "Captured from the live spec + live probing on 2026-05-29. Re-pull /api/op
 # Kestrel API Reference
 
 Two interfaces to the same KG:
-- **REST** — `https://kestrel.nathanpricelab.com/api` (this doc; OpenAPI at `/api/openapi.json`, Swagger at `/api/docs`)
-- **MCP** — `https://kestrel.nathanpricelab.com/mcp` (JSON-RPC; what `kestrel_client.py` / the discovery pipeline call). Tool set mirrors the REST query endpoints (`one_hop_query`, `multi_hop_query`, `get_edges`, …).
+- **REST** — `https://kestrel.krakenkg.com/api` (this doc; OpenAPI at `/api/openapi.json`, Swagger at `/api/docs`)
+- **MCP** — `https://kestrel.krakenkg.com/mcp` (JSON-RPC; what `kestrel_client.py` / the discovery pipeline call). Tool set mirrors the REST query endpoints (`one_hop_query`, `multi_hop_query`, `get_edges`, …).
 
 **Auth:** `X-API-Key: $KESTREL_API_KEY` (in `backend/.env`).
 
