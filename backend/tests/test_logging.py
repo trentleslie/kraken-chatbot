@@ -231,3 +231,33 @@ def test_configure_logging_attaches_token_filter_to_uvicorn_loggers_once():
     for name in ("uvicorn.error", "uvicorn.access"):
         filters = [f for f in logging.getLogger(name).filters if isinstance(f, QueryTokenRedactionFilter)]
         assert len(filters) == 1
+
+
+def test_uvicorn_logger_output_is_redacted_end_to_end():
+    """Emit through uvicorn's own loggers (own handler, no propagation, as uvicorn configures
+    them) after configure_logging, and check what the handler actually writes."""
+    configure_logging(log_level="INFO", log_format="text")
+    stream = StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    restore = []
+    for name in ("uvicorn.error", "uvicorn.access"):
+        lg = logging.getLogger(name)
+        restore.append((lg, lg.handlers[:], lg.propagate, lg.level))
+        lg.handlers = [handler]
+        lg.propagate = False
+        lg.setLevel(logging.INFO)
+    try:
+        logging.getLogger("uvicorn.error").info(
+            '%s - "WebSocket %s" [accepted]', "1.2.3.4:0", "/ws/chat?token=fake-header.fake-payload.fake-sig"
+        )
+        logging.getLogger("uvicorn.access").info(
+            '%s - "%s %s HTTP/%s" %d', "1.2.3.4:0", "GET", "/ping?token=fake-access.fake-payload.sig", "1.1", 200
+        )
+    finally:
+        for lg, handlers, propagate, level in restore:
+            lg.handlers, lg.propagate = handlers, propagate
+            lg.setLevel(level)
+    out = stream.getvalue()
+    assert "fake-payload" not in out
+    assert out.count("token=***REDACTED***") == 2
