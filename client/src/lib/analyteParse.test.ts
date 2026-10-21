@@ -13,6 +13,9 @@ import {
   countInvalidDirections,
   buildModuleDirections,
   MAX_ROWS,
+  effectiveGroupSelection,
+  validatePanelFields,
+  ANALYTE_FIELD_MAX_LEN,
 } from "./analyteParse";
 
 describe("parseDelimitedText", () => {
@@ -423,5 +426,60 @@ describe("countInvalidDirections (Greptile P1 #2)", () => {
     const byGroup = { Brown: "0.4", Removed: "5" };
     expect(countInvalidDirections(byGroup)).toBe(1);
     expect(countInvalidDirections(byGroup, ["Brown"])).toBe(0);
+  });
+});
+
+describe("Greptile #106 fixes", () => {
+  it("rejects a row with more values than headers instead of dropping cells", () => {
+    const res = parseDelimitedText("analyte,module\nglucose,Brown,extra\n", "x.csv");
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toMatch(/Row 2 has more values/);
+  });
+
+  it("allows trailing empty cells beyond the headers", () => {
+    const res = parseDelimitedText("analyte,module\nglucose,Brown,\n", "x.csv");
+    expect(res.ok).toBe(true);
+  });
+
+  it("surfaces real parse errors such as an unclosed quote", () => {
+    const res = parseDelimitedText('analyte,module\n"glucose,Brown\n', "x.csv");
+    expect(res.ok).toBe(false);
+  });
+
+  it("still accepts a single-column file (undetectable delimiter is harmless)", () => {
+    const res = parseDelimitedText("analyte\nglucose\nIL6\n", "x.csv");
+    expect(res.ok).toBe(true);
+  });
+
+  it("groups match case-insensitively, like the server", () => {
+    const analytes = [
+      { name: "glucose", group: "Brown" },
+      { name: "IL6", group: "brown" },
+      { name: "KIF6", group: "Blue" },
+    ];
+    expect(distinctGroups(analytes)).toEqual(["Brown", "Blue"]);
+    expect(applyGroupFilter(analytes, ["Brown"]).map((a) => a.name)).toEqual(["glucose", "IL6"]);
+  });
+
+  it("selecting every group sends no filter, so ungrouped rows run", () => {
+    const analytes = [{ name: "glucose", group: "Brown" }, { name: "IL6" }];
+    const sel = effectiveGroupSelection(analytes, distinctGroups(analytes));
+    expect(sel).toEqual([]);
+    expect(applyGroupFilter(analytes, sel).map((a) => a.name)).toEqual(["glucose", "IL6"]);
+  });
+
+  it("a partial selection is sent as-is", () => {
+    const analytes = [
+      { name: "glucose", group: "Brown" },
+      { name: "IL6", group: "Blue" },
+    ];
+    expect(effectiveGroupSelection(analytes, ["Blue"])).toEqual(["Blue"]);
+  });
+
+  it("validatePanelFields mirrors the server's length and control-char checks", () => {
+    expect(validatePanelFields([{ name: "glucose", group: "Brown" }])).toBeNull();
+    expect(validatePanelFields([{ name: "x".repeat(ANALYTE_FIELD_MAX_LEN + 1) }])).toMatch(/longer than/);
+    expect(validatePanelFields([{ name: "glu\u0007cose" }])).toMatch(/control characters/);
   });
 });
