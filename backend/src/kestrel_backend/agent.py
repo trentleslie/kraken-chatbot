@@ -26,6 +26,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import McpStdioServerConfig
 from .config import get_settings
+from .pricing import cost_of_record
 from .bash_sandbox import bash_security_hook
 from .byok import agent_cli_path, build_agent_env
 
@@ -339,14 +340,15 @@ class TurnMetrics:
 
     @property
     def cost_usd(self) -> float:
-        """Estimate cost based on Claude Sonnet 4.5 pricing."""
-        # Sonnet 4.5 pricing: $3/1M input, $15/1M output
-        # Cache read: $0.30/1M, Cache creation: $3.75/1M
-        input_cost = self.input_tokens * 3.0 / 1_000_000
-        output_cost = self.output_tokens * 15.0 / 1_000_000
-        cache_read_cost = self.cache_read_tokens * 0.30 / 1_000_000
-        cache_create_cost = self.cache_creation_tokens * 3.75 / 1_000_000
-        return input_cost + output_cost + cache_read_cost + cache_create_cost
+        """Estimated cost from the per-model rate map (0.0 for an unknown model)."""
+        cost = cost_of_record(
+            model_name=self.model,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            cache_read_tokens=self.cache_read_tokens,
+            cache_creation_tokens=self.cache_creation_tokens,
+        )
+        return cost or 0.0
 
 
 @dataclass
@@ -371,10 +373,8 @@ def build_agent_options() -> ClaudeAgentOptions:
         "mcp_servers": {"kestrel": kestrel_config},
         "hooks": {"PreToolUse": [HookMatcher(matcher="Bash", hooks=[bash_security_hook])]},
         "max_buffer_size": 10 * 1024 * 1024,
+        "model": get_settings().model,
     }
-    settings = get_settings()
-    if settings.model:
-        options_kwargs["model"] = settings.model
     # env is MERGED over the inherited process environment by the SDK, so we
     # only override the credential(s) and leave PATH/etc. intact.
     env = build_agent_env()
@@ -403,7 +403,7 @@ async def run_agent_turn(user_message: str, session_id: str | None = None) -> As
         AgentEvent objects for each streaming event (text, tool_use, tool_result, etc.)
     """
     settings = get_settings()
-    metrics = TurnMetrics(model=settings.model or "default")
+    metrics = TurnMetrics(model=settings.model)
 
     # Start Langfuse trace for observability with session tracking
     langfuse = _get_langfuse()

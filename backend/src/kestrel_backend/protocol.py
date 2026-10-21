@@ -3,6 +3,8 @@
 from typing import Any, Literal
 from pydantic import BaseModel, Field
 
+from .config import DEFAULT_CLAUDE_MODEL
+
 
 # Outgoing messages (Server → Client)
 
@@ -96,7 +98,7 @@ class PipelineCompleteMessage(BaseModel):
     turn_id: str | None = None   # Database turn ID for feedback linkage
     trace_id: str | None = None  # Langfuse trace ID for feedback linkage
     # Token tracking fields for UI compatibility with TraceMessage
-    model: str = "claude-sonnet-4-20250514"  # Pipeline uses SDK default
+    model: str = DEFAULT_CLAUDE_MODEL
     input_tokens: int | None = None
     output_tokens: int | None = None
     cost_usd: float | None = None

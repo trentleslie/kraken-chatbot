@@ -2,6 +2,7 @@
 
 import pytest
 
+import kestrel_backend.config as config_mod
 from kestrel_backend.config import (
     Settings,
     biomapper_misconfig_reason,
@@ -122,3 +123,29 @@ class TestBiomapperMisconfigReason:
         reason = biomapper_misconfig_reason(enabled=True, api_key=None)
         assert reason is not None
         assert "supersecretvalue" not in reason
+
+
+class TestClaudeModel:
+    """CLAUDE_MODEL overrides the classic-agent model; unset/empty falls back to Opus 5.5."""
+
+    @pytest.mark.parametrize("value", [None, ""])
+    def test_unset_or_empty_uses_default(self, monkeypatch, value):
+        monkeypatch.setattr(config_mod, "load_dotenv", lambda *a, **k: False)
+        if value is None:
+            monkeypatch.delenv("CLAUDE_MODEL", raising=False)
+        else:
+            monkeypatch.setenv("CLAUDE_MODEL", value)
+        get_settings.cache_clear()
+        try:
+            assert get_settings().model == "claude-opus-5-5"
+        finally:
+            get_settings.cache_clear()
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setattr(config_mod, "load_dotenv", lambda *a, **k: False)
+        monkeypatch.setenv("CLAUDE_MODEL", "claude-sonnet-5")
+        get_settings.cache_clear()
+        try:
+            assert get_settings().model == "claude-sonnet-5"
+        finally:
+            get_settings.cache_clear()

@@ -71,6 +71,28 @@ class TestCreateAgentOptions:
             assert options is None
 
 
+class TestDefaultModel:
+    """The pipeline always pins an explicit model (never the SDK default)."""
+
+    def test_default_model_is_opus_5_5_unless_overridden(self):
+        import os
+        from kestrel_backend.config import DEFAULT_CLAUDE_MODEL
+
+        assert DEFAULT_CLAUDE_MODEL == "claude-opus-5-5"
+        if not os.getenv("KRAKEN_PIPELINE_MODEL"):
+            assert DEFAULT_MODEL_NAME == DEFAULT_CLAUDE_MODEL
+
+    @pytest.mark.skipif(not HAS_SDK, reason="SDK not installed")
+    def test_options_pin_model(self):
+        options = create_agent_options(system_prompt="p")
+        assert options.model == DEFAULT_MODEL_NAME
+
+    @pytest.mark.skipif(not HAS_SDK, reason="SDK not installed")
+    def test_per_call_model_wins(self):
+        options = create_agent_options(system_prompt="p", model="claude-haiku-4-5")
+        assert options.model == "claude-haiku-4-5"
+
+
 class TestChunk:
     """Test list chunking utility."""
 

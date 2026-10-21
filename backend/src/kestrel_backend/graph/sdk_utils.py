@@ -15,11 +15,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..byok import agent_cli_path, build_agent_env
+from ..config import DEFAULT_CLAUDE_MODEL
 
-# Optional pipeline-wide model override. When KRAKEN_PIPELINE_MODEL is set (e.g.
-# "claude-opus-4-8"), every SDK-backed node runs on that model AND the usage label /
-# cost estimate attribute to it. Unset -> SDK default model + the Sonnet label below.
-_PIPELINE_MODEL = os.getenv("KRAKEN_PIPELINE_MODEL")
+# Pipeline-wide model. Every SDK-backed node runs on this model AND the usage label /
+# cost estimate attribute to it. KRAKEN_PIPELINE_MODEL overrides the default. Always
+# pinned explicitly: the SDK default model shifts whenever the bundled CLI is bumped.
+_PIPELINE_MODEL = os.getenv("KRAKEN_PIPELINE_MODEL") or DEFAULT_CLAUDE_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -214,11 +215,8 @@ def create_agent_options(
     }
     if mcp_servers:
         kwargs["mcp_servers"] = mcp_servers
-    # Per-call model wins; otherwise the pipeline-wide override (KRAKEN_PIPELINE_MODEL);
-    # otherwise omit `model` so the SDK uses its default.
-    effective_model = model or _PIPELINE_MODEL
-    if effective_model:
-        kwargs["model"] = effective_model
+    # Per-call model wins; otherwise the pipeline-wide model.
+    kwargs["model"] = model or _PIPELINE_MODEL
 
     env = build_agent_env()
     if env:
@@ -228,6 +226,17 @@ def create_agent_options(
         kwargs["cli_path"] = cli
 
     return ClaudeAgentOptions(**kwargs)
+
+
+def _pin_model(options):
+    """Pin the pipeline model on options that were built without one.
+
+    Several nodes construct ClaudeAgentOptions directly instead of via
+    create_agent_options; without this they would silently run on the CLI default.
+    An explicit per-call model is left untouched."""
+    if options is not None and not getattr(options, "model", None):
+        options.model = _PIPELINE_MODEL
+    return options
 
 
 def _apply_byok_env(options):
@@ -250,10 +259,9 @@ def chunk(items: list, size: int) -> list[list]:
     return [items[i:i + size] for i in range(0, len(items), size)]
 
 
-# Default model name constant — all pipeline nodes use the same model. Follows the
-# KRAKEN_PIPELINE_MODEL override so the usage label + cost estimate match the model the
-# SDK is actually told to use (create_agent_options sets the same override).
-DEFAULT_MODEL_NAME = _PIPELINE_MODEL or "anthropic/claude-sonnet-4-20250514"
+# Default model name constant — all pipeline nodes use the same model, so the usage
+# label + cost estimate match the model the SDK is actually told to use.
+DEFAULT_MODEL_NAME = _PIPELINE_MODEL
 
 
 async def query_with_usage(
@@ -307,6 +315,11 @@ async def query_with_usage(
     # node span — no parent/trace-id threading. When Langfuse is disabled, this is a no-op
     # nullcontext yielding None. Creating it inside this coroutine (and inside any asyncio
     # task spawned from it, which copies the contextvars context) keeps nesting correct.
+    options = _pin_model(options)
+    # Attribute usage to the model the SDK is actually told to use (a node may pin its own).
+    if model_name == DEFAULT_MODEL_NAME and getattr(options, "model", None):
+        model_name = options.model
+
     langfuse = _get_langfuse()
     generation_cm = (
         langfuse.start_as_current_generation(

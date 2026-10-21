@@ -249,3 +249,38 @@ async def test_no_cross_task_key_bleed(monkeypatch):
 
     await asyncio.gather(run("sk-A"), run("sk-B"))
     assert set(seen) == {"sk-A", "sk-B"}     # each task kept its own key
+
+
+# ---------------------------------------------------------------------------
+# 4. query_with_usage() pins the pipeline model on options built without one
+# ---------------------------------------------------------------------------
+
+class _ModelOptions:
+    def __init__(self, model=None):
+        self.env = None
+        self.model = model
+
+
+@pytest.mark.asyncio
+async def test_query_with_usage_pins_model_when_unset(monkeypatch):
+    """Nodes that build ClaudeAgentOptions directly must not fall back to the CLI default."""
+    captured = {}
+    monkeypatch.setattr(sdk_utils, "query", _make_fake_query(captured))
+    monkeypatch.setattr(sdk_utils, "HAS_SDK", True)
+
+    await sdk_utils.query_with_usage(prompt="p", options=_ModelOptions(), node_name="n")
+
+    assert captured["options"].model == sdk_utils.DEFAULT_MODEL_NAME
+
+
+@pytest.mark.asyncio
+async def test_query_with_usage_keeps_explicit_model(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(sdk_utils, "query", _make_fake_query(captured))
+    monkeypatch.setattr(sdk_utils, "HAS_SDK", True)
+
+    await sdk_utils.query_with_usage(
+        prompt="p", options=_ModelOptions("claude-haiku-4-5"), node_name="n"
+    )
+
+    assert captured["options"].model == "claude-haiku-4-5"
