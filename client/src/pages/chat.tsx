@@ -75,11 +75,12 @@ export default function ChatPage() {
     }
   };
 
-  const handleSend = (query: string) => {
-    sendMessage(query);
+  const handleSend = (query: string): boolean => {
+    const sent = sendMessage(query);
     // sendMessage clears the hook's panel/selection after a successful send (one-shot);
-    // collapse the composer slot back to the drop zone.
-    setUploadStage({ step: "idle" });
+    // collapse the composer slot back to the drop zone. On a local refusal keep everything staged.
+    if (sent) setUploadStage({ step: "idle" });
+    return sent;
   };
 
   // The review summary shows once analytes are staged and mapping is done.

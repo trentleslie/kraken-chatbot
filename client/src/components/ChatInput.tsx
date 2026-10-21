@@ -4,7 +4,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Send } from "lucide-react";
 
 interface ChatInputProps {
-  onSend: (message: string) => void;
+  /** Return false when the send was refused, so the typed text is kept. */
+  onSend: (message: string) => boolean | void;
   disabled?: boolean;
   isConnected: boolean;
   // True when a structured analyte panel is staged for upload. Enables send with an empty
@@ -29,7 +30,7 @@ export function ChatInput({
     const trimmed = input.trim();
     // R17: allow a file-only submit (panel staged, no typed query).
     if ((!trimmed && !hasPanel) || disabled || !isConnected) return;
-    onSend(trimmed);
+    if (onSend(trimmed) === false) return; // refused locally: keep the question
     setInput("");
     onQueryEmptyChange?.(true);
     if (textareaRef.current) {

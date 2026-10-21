@@ -107,7 +107,26 @@ export function parseDelimitedText(text: string, fileName: string): ParseResult 
     seen.add(key);
   }
 
+  // Surface real parse errors (e.g. unbalanced quotes). Papaparse emits UndetectableDelimiter for
+  // harmless single-column files, so that one is not an error.
+  const parseError = parsed.errors.find((e) => e.code !== "UndetectableDelimiter");
+  if (parseError) {
+    const where = parseError.row !== undefined ? ` near row ${parseError.row + 1}` : "";
+    return { ok: false, error: `Could not parse the file${where}: ${parseError.message}.` };
+  }
+
   const dataRows = matrix.slice(1);
+  // A row with more non-empty cells than headers usually means a stray delimiter; dropping the
+  // extra cells would silently shift which values become analyte names or groups.
+  const wideRow = dataRows.findIndex((cells) =>
+    cells.slice(headers.length).some((c) => String(c ?? "").trim() !== ""),
+  );
+  if (wideRow !== -1) {
+    return {
+      ok: false,
+      error: `Row ${wideRow + 2} has more values than there are column headers (${headers.length}). Check for an unquoted comma or tab.`,
+    };
+  }
   if (dataRows.length === 0) {
     return { ok: false, error: "No data rows found (the file has only a header)." };
   }
@@ -416,16 +435,48 @@ export function buildAnalytes(
 }
 
 /** Distinct group values present in a built analyte list, in first-seen order. */
+/** Group identity used by the server's selection filter (analyte_ingest.py): trim + lowercase. */
+export function groupKey(group: string): string {
+  return group.trim().toLowerCase();
+}
+
+/** Distinct groups by server identity, labelled by their first-seen spelling. */
 export function distinctGroups(analytes: StructuredAnalyte[]): string[] {
   const groups: string[] = [];
   const seen = new Set<string>();
   for (const a of analytes) {
-    if (a.group && !seen.has(a.group)) {
-      seen.add(a.group);
+    if (!a.group || !a.group.trim()) continue;
+    const key = groupKey(a.group);
+    if (!seen.has(key)) {
+      seen.add(key);
       groups.push(a.group);
     }
   }
   return groups;
+}
+
+/** Row count per group, keyed by groupKey. A Map, so labels like "constructor" are safe keys. */
+export function groupCounts(analytes: StructuredAnalyte[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const a of analytes) {
+    if (!a.group || !a.group.trim()) continue;
+    const key = groupKey(a.group);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/**
+ * The selection to send to the server. Selecting every group means "run all rows", so it is sent
+ * as an empty selection; otherwise the server would also drop rows with a blank group cell.
+ */
+export function effectiveGroupSelection(
+  analytes: StructuredAnalyte[],
+  selectedGroups: string[],
+): string[] {
+  const selected = new Set(selectedGroups.map(groupKey));
+  const all = distinctGroups(analytes);
+  return all.every((g) => selected.has(groupKey(g))) ? [] : selectedGroups;
 }
 
 /**
@@ -437,8 +488,8 @@ export function applyGroupFilter(
   selectedGroups: string[],
 ): StructuredAnalyte[] {
   if (selectedGroups.length === 0) return analytes;
-  const sel = new Set(selectedGroups);
-  return analytes.filter((a) => a.group !== undefined && sel.has(a.group));
+  const sel = new Set(selectedGroups.map(groupKey));
+  return analytes.filter((a) => a.group !== undefined && sel.has(groupKey(a.group)));
 }
 
 /** Distinct-name count of a (possibly group-filtered) set — the R18 soft-warn basis. */
@@ -455,4 +506,51 @@ const FORMULA_PREFIXES = ["=", "+", "-", "@"];
 export function isFormulaInjection(value: string | undefined): boolean {
   if (!value) return false;
   return FORMULA_PREFIXES.includes(value.trimStart().charAt(0));
+}
+
+/** Per-field limit enforced by the server (ANALYTE_FIELD_MAX_LEN). */
+export const ANALYTE_FIELD_MAX_LEN = 512;
+// C0/C1 control characters (Unicode category Cc), matching the server's check.
+const CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/;
+
+/**
+ * Mirror of the server's per-field validation (analyte_ingest.py), so a panel it would reject is
+ * caught before sending and the staged upload is kept. Returns an error message, or null if valid.
+ */
+export function validatePanelFields(analytes: StructuredAnalyte[]): string | null {
+  for (let i = 0; i < analytes.length; i++) {
+    const a = analytes[i];
+    for (const [label, raw] of [["name", a.name], ["group", a.group], ["type", a.type]] as const) {
+      const val = raw?.trim();
+      if (!val) continue;
+      // Count code points like Python's len(), not UTF-16 units (astral chars would count as 2).
+      if (Array.from(val).length > ANALYTE_FIELD_MAX_LEN) {
+        return `Analyte ${label} at row ${i + 1} is longer than ${ANALYTE_FIELD_MAX_LEN} characters.`;
+      }
+      if (CONTROL_CHARS.test(val)) {
+        return `Analyte ${label} at row ${i + 1} contains control characters.`;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Mirror of the server's trait_label checks on module directions (analyte_ingest.py), so a
+ * direction it would reject is caught before the upload is sent and cleared.
+ */
+export function validateDirectionFields(
+  directions: { trait_label?: string }[],
+): string | null {
+  for (let i = 0; i < directions.length; i++) {
+    const label = directions[i].trait_label?.trim();
+    if (!label) return `Module direction ${i + 1} has a blank trait label.`;
+    if (Array.from(label).length > ANALYTE_FIELD_MAX_LEN) {
+      return `Module direction ${i + 1} trait label is longer than ${ANALYTE_FIELD_MAX_LEN} characters.`;
+    }
+    if (CONTROL_CHARS.test(label)) {
+      return `Module direction ${i + 1} trait label contains control characters.`;
+    }
+  }
+  return null;
 }

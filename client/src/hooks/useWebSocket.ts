@@ -15,7 +15,13 @@ import type {
   StructuredAnalyte,
   ModuleDirectionInput,
 } from "@/types/messages";
-import { applyGroupFilter, distinctNameCount } from "@/lib/analyteParse";
+import {
+  applyGroupFilter,
+  distinctNameCount,
+  effectiveGroupSelection,
+  validateDirectionFields,
+  validatePanelFields,
+} from "@/lib/analyteParse";
 
 const WS_URL = import.meta.env.VITE_WS_URL || "";
 
@@ -634,7 +640,8 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
   );
 
   const sendMessage = useCallback(
-    (content: string) => {
+    // Returns true once the message is sent, false if it was refused locally (nothing cleared).
+    (content: string): boolean => {
       // A staged panel is only "active" in pipeline mode — the backend ignores structured_analytes
       // in classic mode. Gating on mode (matching ChatInput's `isPipeline && hasPanel`) means a
       // classic send neither attaches nor clears the upload, so switching to classic and typing a
@@ -642,18 +649,19 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
       const hasPanel = agentMode === "pipeline" && structuredAnalytes.length > 0;
 
       // Allow a file-only submit (panel present, no typed query); block a truly-empty send.
-      if (!content.trim() && !hasPanel) return;
+      if (!content.trim() && !hasPanel) return false;
 
       if (demoModeRef.current) {
         runDemoScenario(content);
-        return;
+        return true;
       }
 
-      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return false;
 
       // Build the outgoing frame once, so we can enforce the backend's hard caps HERE and keep the
       // panel staged when it's too large — otherwise the send is rejected server-side after the
       // one-shot clear has already discarded the mapped upload.
+      const groupSelection = effectiveGroupSelection(structuredAnalytes, selectedGroups);
       const serialized = JSON.stringify({
         type: "user_message",
         content,
@@ -661,15 +669,24 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
         biomapper_env: biomapperEnv,
         // Send the FULL parsed panel + the selection; the backend forms the run set.
         structured_analytes: hasPanel ? structuredAnalytes : undefined,
-        selected_groups: hasPanel ? selectedGroups : undefined,
+        selected_groups: hasPanel ? groupSelection : undefined,
         // Only meaningful with a panel; omit when empty ("no direction supplied").
         module_directions:
           hasPanel && moduleDirections.length > 0 ? moduleDirections : undefined,
       });
 
       if (hasPanel) {
-        const runCount = distinctNameCount(applyGroupFilter(structuredAnalytes, selectedGroups));
+        const runCount = distinctNameCount(applyGroupFilter(structuredAnalytes, groupSelection));
         const frameBytes = new Blob([serialized]).size;
+        const fieldError =
+          validatePanelFields(structuredAnalytes) ?? validateDirectionFields(moduleDirections);
+        if (fieldError) {
+          setMessages((prev) => [
+            ...prev,
+            { id: generateId(), type: "error" as const, message: fieldError, timestamp: Date.now() },
+          ]);
+          return false; // Keep the panel and the typed question: nothing sent.
+        }
         if (runCount > ANALYTE_RUN_CEILING || frameBytes > MAX_WS_MESSAGE_BYTES) {
           setMessages((prev) => [
             ...prev,
@@ -683,7 +700,7 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
               timestamp: Date.now(),
             },
           ]);
-          return; // Keep the panel staged: nothing sent, nothing cleared.
+          return false; // Keep the panel staged: nothing sent, nothing cleared.
         }
       }
 
@@ -710,6 +727,7 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
         setSelectedGroups([]);
         setModuleDirections([]);
       }
+      return true;
     },
     [runDemoScenario, agentMode, biomapperEnv, structuredAnalytes, selectedGroups, moduleDirections],
   );
