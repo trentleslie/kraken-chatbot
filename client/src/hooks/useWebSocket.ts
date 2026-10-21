@@ -19,6 +19,7 @@ import {
   applyGroupFilter,
   distinctNameCount,
   effectiveGroupSelection,
+  validateDirectionFields,
   validatePanelFields,
 } from "@/lib/analyteParse";
 
@@ -677,7 +678,8 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
       if (hasPanel) {
         const runCount = distinctNameCount(applyGroupFilter(structuredAnalytes, groupSelection));
         const frameBytes = new Blob([serialized]).size;
-        const fieldError = validatePanelFields(structuredAnalytes);
+        const fieldError =
+          validatePanelFields(structuredAnalytes) ?? validateDirectionFields(moduleDirections);
         if (fieldError) {
           setMessages((prev) => [
             ...prev,

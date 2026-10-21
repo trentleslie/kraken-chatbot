@@ -15,6 +15,7 @@ import {
   MAX_ROWS,
   effectiveGroupSelection,
   groupCounts,
+  validateDirectionFields,
   validatePanelFields,
   ANALYTE_FIELD_MAX_LEN,
 } from "./analyteParse";
@@ -499,5 +500,13 @@ describe("Greptile #106 fixes", () => {
     const astral = "\u{1F9EC}"; // one code point, two UTF-16 units
     expect(validatePanelFields([{ name: astral.repeat(ANALYTE_FIELD_MAX_LEN) }])).toBeNull();
     expect(validatePanelFields([{ name: astral.repeat(ANALYTE_FIELD_MAX_LEN + 1) }])).toMatch(/longer than/);
+  });
+
+  it("validateDirectionFields mirrors the server's trait_label checks", () => {
+    const ok = { group: "Brown", eigengene_trait_correlation: 0.4, trait_label: "frailty" };
+    expect(validateDirectionFields([ok])).toBeNull();
+    expect(validateDirectionFields([{ ...ok, trait_label: "  " }])).toMatch(/blank/);
+    expect(validateDirectionFields([{ ...ok, trait_label: "t".repeat(ANALYTE_FIELD_MAX_LEN + 1) }])).toMatch(/longer than/);
+    expect(validateDirectionFields([{ ...ok, trait_label: "fra\u0000ilty" }])).toMatch(/control characters/);
   });
 });

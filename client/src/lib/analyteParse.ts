@@ -534,3 +534,23 @@ export function validatePanelFields(analytes: StructuredAnalyte[]): string | nul
   }
   return null;
 }
+
+/**
+ * Mirror of the server's trait_label checks on module directions (analyte_ingest.py), so a
+ * direction it would reject is caught before the upload is sent and cleared.
+ */
+export function validateDirectionFields(
+  directions: { trait_label?: string }[],
+): string | null {
+  for (let i = 0; i < directions.length; i++) {
+    const label = directions[i].trait_label?.trim();
+    if (!label) return `Module direction ${i + 1} has a blank trait label.`;
+    if (Array.from(label).length > ANALYTE_FIELD_MAX_LEN) {
+      return `Module direction ${i + 1} trait label is longer than ${ANALYTE_FIELD_MAX_LEN} characters.`;
+    }
+    if (CONTROL_CHARS.test(label)) {
+      return `Module direction ${i + 1} trait label contains control characters.`;
+    }
+  }
+  return null;
+}
