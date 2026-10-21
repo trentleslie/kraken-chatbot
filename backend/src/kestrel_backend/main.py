@@ -69,6 +69,7 @@ from .protocol import (
 )
 from .graph.node_detail_extractors import extract_node_details
 from .graph.state import DiscoveryState
+from .graph.sdk_utils import DEFAULT_MODEL_NAME as PIPELINE_MODEL_NAME
 
 
 def _get_concat_fields() -> set[str]:
@@ -728,7 +729,7 @@ async def handle_pipeline_mode(
             "hypotheses_count": len(hypotheses),
             "entities_resolved": len(resolved_entities),
             "duration_ms": duration_ms,
-            "model": "claude-sonnet-4-20250514",
+            "model": PIPELINE_MODEL_NAME,
         }
         if trace:
             # trace.trace_id is the trace identifier (trace.id is the span id) — the
@@ -1003,7 +1004,7 @@ async def websocket_chat(websocket: WebSocket):
             # Create conversation on first message
             if connection_id not in conversation_ids:
                 user_id = user_info.get("user_id") if user_info else None
-                conv_id = await create_conversation(connection_id, _settings.model or "default", user_id)
+                conv_id = await create_conversation(connection_id, _settings.model, user_id)
                 if conv_id:
                     conversation_ids[connection_id] = conv_id
                     # Send conversation_id to frontend for copy link functionality

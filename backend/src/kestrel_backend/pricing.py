@@ -8,7 +8,7 @@ the published pricing, and unknown models return ``None`` (logged) rather than a
 guessed number.
 
 Source: the ``claude-api`` skill reference (Anthropic published pricing).
-Cache-read ≈ 0.1× input; cache-write (5-minute TTL) ≈ 1.25× input.
+Cache-read ≈ 0.1× input (Opus 5.5: 0.05×); cache-write (5-minute TTL) ≈ 1.25× input.
 """
 
 import logging
@@ -17,7 +17,7 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 # Last time the rates below were checked against published Anthropic pricing.
-LAST_VERIFIED = "2026-06-22"
+LAST_VERIFIED = "2026-10-21"
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,8 @@ class Rate:
 
 # Keyed by a canonical family token (see _family_of). Rates per 1M tokens.
 _RATES: dict[str, Rate] = {
+    # Opus 5.5 (the default model): $4 / $20 in/out, cache read $0.20.
+    "opus-5-5": Rate(4.0, 20.0, 0.20, 5.00),
     # Opus 4.5–4.8: $5 / $25 in/out.
     "opus-4-8": Rate(5.0, 25.0, 0.50, 6.25),
     "opus-4-7": Rate(5.0, 25.0, 0.50, 6.25),

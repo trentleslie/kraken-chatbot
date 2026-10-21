@@ -7,6 +7,7 @@ They provide safe data processing capabilities without code execution.
 import anthropic
 from claude_agent_sdk import tool, create_sdk_mcp_server
 from .byok import current_api_key
+from .config import get_settings
 
 
 # Anthropic client for the analyze tool (None = ambient-env key, i.e. no BYOK active)
@@ -49,8 +50,11 @@ async def analyze_results(args):
     try:
         client = _get_anthropic_client()
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=2000,
+            model=get_settings().model,
+            # Opus 5.5 always thinks and thinking counts against max_tokens, so leave
+            # headroom; low effort keeps this summarization helper cheap.
+            max_tokens=16000,
+            output_config={"effort": "low"},
             messages=[
                 {
                     "role": "user",
@@ -64,7 +68,9 @@ Provide a clear, structured analysis. Use markdown formatting. Include relevant 
             ]
         )
 
-        result_text = response.content[0].text if response.content else "No analysis generated."
+        # Thinking blocks precede the answer, so collect only the text blocks.
+        result_text = "".join(b.text for b in response.content if b.type == "text")
+        result_text = result_text or "No analysis generated."
         return {"content": [{"type": "text", "text": result_text}]}
 
     except Exception as e:

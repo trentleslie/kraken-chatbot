@@ -6,6 +6,12 @@ from pydantic import BaseModel, model_validator
 from dotenv import load_dotenv
 
 
+# Default Claude model for both the classic agent and the discovery pipeline.
+# Overridable via CLAUDE_MODEL (classic) and KRAKEN_PIPELINE_MODEL (pipeline).
+# Opus 5.5 needs Claude Code CLI >=2.1.280, i.e. claude-agent-sdk >=0.2.170.
+DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
+
+
 class Settings(BaseModel):
     """Application settings loaded from environment variables."""
 
@@ -19,8 +25,8 @@ class Settings(BaseModel):
     # Rate limiting
     rate_limit_per_minute: int = 10
 
-    # Claude model (None = use SDK default)
-    model: str | None = None
+    # Claude model for the classic agent
+    model: str = DEFAULT_CLAUDE_MODEL
 
     # Clerk authentication
     clerk_auth_enabled: bool = False
@@ -145,7 +151,7 @@ def get_settings() -> Settings:
         port=int(os.getenv("PORT", "8000")),
         allowed_origins=origins,
         rate_limit_per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "10")),
-        model=os.getenv("CLAUDE_MODEL"),  # None = use SDK default
+        model=os.getenv("CLAUDE_MODEL") or DEFAULT_CLAUDE_MODEL,
         clerk_auth_enabled=clerk_auth_enabled,
         clerk_secret_key=clerk_secret_key,
         clerk_jwks_url=os.getenv("CLERK_JWKS_URL"),
