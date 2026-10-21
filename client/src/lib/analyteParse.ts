@@ -455,6 +455,17 @@ export function distinctGroups(analytes: StructuredAnalyte[]): string[] {
   return groups;
 }
 
+/** Row count per group, keyed by groupKey. A Map, so labels like "constructor" are safe keys. */
+export function groupCounts(analytes: StructuredAnalyte[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const a of analytes) {
+    if (!a.group || !a.group.trim()) continue;
+    const key = groupKey(a.group);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
 /**
  * The selection to send to the server. Selecting every group means "run all rows", so it is sent
  * as an empty selection; otherwise the server would also drop rows with a blank group cell.
@@ -512,7 +523,8 @@ export function validatePanelFields(analytes: StructuredAnalyte[]): string | nul
     for (const [label, raw] of [["name", a.name], ["group", a.group], ["type", a.type]] as const) {
       const val = raw?.trim();
       if (!val) continue;
-      if (val.length > ANALYTE_FIELD_MAX_LEN) {
+      // Count code points like Python's len(), not UTF-16 units (astral chars would count as 2).
+      if (Array.from(val).length > ANALYTE_FIELD_MAX_LEN) {
         return `Analyte ${label} at row ${i + 1} is longer than ${ANALYTE_FIELD_MAX_LEN} characters.`;
       }
       if (CONTROL_CHARS.test(val)) {
