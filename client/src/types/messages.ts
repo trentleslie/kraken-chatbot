@@ -146,8 +146,9 @@ export type ChatMessage =
   | PipelineNodeDetailMessage
   | PipelineCompleteMessage;
 
-// BYOK: which key is powering the current turn ("byok" = user's key, "server" = operator key).
-export type KeySource = "byok" | "server";
+// BYOK: which key is powering the current turn ("byok" = user's key, "server" = operator key,
+// "sdk" = the server's Claude Code login, for trusted users when no operator key is set).
+export type KeySource = "byok" | "server" | "sdk";
 
 // BYOK: outgoing frame to register or clear the user's API key for this session.
 export type SetKeyRequest = {

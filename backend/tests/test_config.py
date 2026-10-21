@@ -149,3 +149,31 @@ class TestClaudeModel:
             assert get_settings().model == "claude-sonnet-5"
         finally:
             get_settings.cache_clear()
+
+
+class TestByokTrustedEnv:
+    """The trusted-domain BYOK bypass is configured from env (previously never wired)."""
+
+    def test_reads_trusted_domains_and_server_key(self, monkeypatch):
+        monkeypatch.setattr(config_mod, "load_dotenv", lambda *a, **k: False)
+        monkeypatch.setenv("BYOK_TRUSTED_EMAIL_DOMAINS", " PhenomeHealth.org , example.com ")
+        monkeypatch.setenv("SERVER_ANTHROPIC_API_KEY", "sk-server")
+        get_settings.cache_clear()
+        try:
+            s = get_settings()
+            assert s.byok_trusted_email_domains == ["phenomehealth.org", "example.com"]
+            assert s.server_anthropic_api_key == "sk-server"
+        finally:
+            get_settings.cache_clear()
+
+    def test_unset_means_no_trusted_domains_and_no_server_key(self, monkeypatch):
+        monkeypatch.setattr(config_mod, "load_dotenv", lambda *a, **k: False)
+        monkeypatch.delenv("BYOK_TRUSTED_EMAIL_DOMAINS", raising=False)
+        monkeypatch.setenv("SERVER_ANTHROPIC_API_KEY", "")
+        get_settings.cache_clear()
+        try:
+            s = get_settings()
+            assert s.byok_trusted_email_domains == []
+            assert s.server_anthropic_api_key is None
+        finally:
+            get_settings.cache_clear()

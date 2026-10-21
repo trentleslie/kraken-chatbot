@@ -55,9 +55,10 @@ class Settings(BaseModel):
     log_format: str = "text"  # "json" or "text"
     log_module_levels: dict[str, str] = {}  # Module-specific log levels
 
-    # BYOK: domains whose verified users ride the SERVER key; everyone else must BYOK.
+    # BYOK: domains whose verified users may skip BYOK; everyone else must bring a key.
+    # Trusted users ride the server key if set, else the server's Claude Code (SDK) login.
     byok_trusted_email_domains: list[str] = []
-    # The Anthropic key used only for the trusted server-key fallback.
+    # The Anthropic key used for the trusted fallback (optional; unset = SDK login).
     server_anthropic_api_key: str | None = None
     # LiteLLM proxy for per-session BYOK (see byok.py:build_agent_env). Empty = no proxy,
     # direct-to-Anthropic (legacy) behavior.
@@ -136,6 +137,12 @@ def get_settings() -> Settings:
     if clerk_domains_str:
         clerk_domains = [d.strip().lower() for d in clerk_domains_str.split(",") if d.strip()]
 
+    byok_trusted = [
+        d.strip().lower()
+        for d in os.getenv("BYOK_TRUSTED_EMAIL_DOMAINS", "").split(",")
+        if d.strip()
+    ]
+
     clerk_emails = []
     clerk_emails_str = os.getenv("ALLOWED_EMAILS", "")
     if clerk_emails_str:
@@ -173,6 +180,8 @@ def get_settings() -> Settings:
         analyte_panel_row_cap=int(os.getenv("ANALYTE_PANEL_ROW_CAP", "10000")),
         max_ws_message_bytes=int(os.getenv("MAX_WS_MESSAGE_BYTES", "5000000")),
         analyte_field_max_len=int(os.getenv("ANALYTE_FIELD_MAX_LEN", "512")),
+        byok_trusted_email_domains=byok_trusted,
+        server_anthropic_api_key=os.getenv("SERVER_ANTHROPIC_API_KEY") or None,
         kraken_llm_base_url=os.getenv("KRAKEN_LLM_BASE_URL", ""),
         litellm_master_key=os.getenv("LITELLM_MASTER_KEY", ""),
     )

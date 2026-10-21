@@ -4,10 +4,13 @@ These tools run in-process and don't require external services.
 They provide safe data processing capabilities without code execution.
 """
 
+import os
+
 import anthropic
 from claude_agent_sdk import tool, create_sdk_mcp_server
 from .byok import current_api_key
 from .config import get_settings
+from .graph.sdk_utils import create_agent_options, query_with_usage
 
 
 # Anthropic client for the analyze tool (None = ambient-env key, i.e. no BYOK active)
@@ -47,7 +50,24 @@ async def analyze_results(args):
     if len(data) > 50000:
         data = data[:50000] + "\n... [truncated]"
 
+    prompt = f"""Analyze the following biomedical knowledge graph data and {task}.
+
+Data:
+{data}
+
+Provide a clear, structured analysis. Use markdown formatting. Include relevant entity IDs."""
+
     try:
+        if current_api_key.get() is None and not os.getenv("ANTHROPIC_API_KEY"):
+            # SDK-login mode (trusted user, no API key anywhere): the Anthropic client
+            # can't use a Claude Code login, so run the analysis through the Agent SDK.
+            options = create_agent_options(
+                system_prompt="You are a biomedical data analyst.", allowed_tools=[], max_turns=1
+            )
+            result_text, _ = await query_with_usage(prompt, options, node_name="analyze_results")
+            result_text = result_text or "No analysis generated."
+            return {"content": [{"type": "text", "text": result_text}]}
+
         client = _get_anthropic_client()
         response = client.messages.create(
             model=get_settings().model,
@@ -55,17 +75,7 @@ async def analyze_results(args):
             # headroom; low effort keeps this summarization helper cheap.
             max_tokens=16000,
             output_config={"effort": "low"},
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"""Analyze the following biomedical knowledge graph data and {task}.
-
-Data:
-{data}
-
-Provide a clear, structured analysis. Use markdown formatting. Include relevant entity IDs."""
-                }
-            ]
+            messages=[{"role": "user", "content": prompt}],
         )
 
         # Thinking blocks precede the answer, so collect only the text blocks.

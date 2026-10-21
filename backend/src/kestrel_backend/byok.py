@@ -1,4 +1,5 @@
 """Per-session BYOK key resolution. No persistence, no os.environ mutation."""
+import os
 import shutil
 from contextvars import ContextVar
 from .config import get_settings
@@ -25,20 +26,30 @@ def is_trusted_email(verified_email: str | None) -> bool:
     return domain in trusted
 
 
-def resolve_effective_key(byok_key: str | None, verified_email: str | None) -> tuple[str, str]:
+def resolve_effective_key(
+    byok_key: str | None, verified_email: str | None
+) -> tuple[str | None, str]:
+    """Return (key, source). Precedence: user BYOK key > server key > SDK login.
+
+    The server key and SDK login are only for trusted users. Source "sdk" returns key None:
+    no key is injected, so the Agent SDK uses the server's Claude Code login. Untrusted users
+    without a key fail closed.
+    """
     if byok_key:
         return byok_key, "byok"
     if is_trusted_email(verified_email):
-        server_key = get_settings().server_anthropic_api_key
-        if not server_key:
-            raise NeedsKeyError("Trusted user but no server key configured.")
-        return server_key, "server"
+        # An ANTHROPIC_API_KEY inherited from the process env would win over the Claude Code
+        # login in the SDK child process, so report it as the server key, not "sdk".
+        server_key = get_settings().server_anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
+        if server_key:
+            return server_key, "server"
+        return None, "sdk"
     raise NeedsKeyError("No API key provided and user is not trusted.")
 
 
 def resolve_effective_key_and_provider(
     byok_key: str | None, verified_email: str | None
-) -> tuple[str, str, str]:
+) -> tuple[str | None, str, str]:
     """Wraps resolve_effective_key with the (currently fixed) provider.
 
     Precedence, trusted fallback, and fail-closed behavior are unchanged — this only adds
