@@ -23,10 +23,19 @@ def test_trusted_user_no_byok_uses_server_key():
 
 
 def test_trusted_user_no_server_key_falls_back_to_sdk_login(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     s = Settings(byok_trusted_email_domains=["phenomehealth.org"])
     monkeypatch.setattr(byok, "get_settings", lambda: s)
     key, source = byok.resolve_effective_key(None, "trent@phenomehealth.org")
     assert (key, source) == (None, "sdk")
+
+
+def test_inherited_env_key_reported_as_server_not_sdk(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ambient")
+    s = Settings(byok_trusted_email_domains=["phenomehealth.org"])
+    monkeypatch.setattr(byok, "get_settings", lambda: s)
+    key, source = byok.resolve_effective_key(None, "trent@phenomehealth.org")
+    assert (key, source) == ("sk-ambient", "server")
 
 
 def test_untrusted_no_byok_raises_even_without_server_key(monkeypatch):

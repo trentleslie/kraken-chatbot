@@ -1,4 +1,5 @@
 """Per-session BYOK key resolution. No persistence, no os.environ mutation."""
+import os
 import shutil
 from contextvars import ContextVar
 from .config import get_settings
@@ -37,7 +38,9 @@ def resolve_effective_key(
     if byok_key:
         return byok_key, "byok"
     if is_trusted_email(verified_email):
-        server_key = get_settings().server_anthropic_api_key
+        # An ANTHROPIC_API_KEY inherited from the process env would win over the Claude Code
+        # login in the SDK child process, so report it as the server key, not "sdk".
+        server_key = get_settings().server_anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
         if server_key:
             return server_key, "server"
         return None, "sdk"
