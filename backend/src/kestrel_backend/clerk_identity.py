@@ -25,7 +25,10 @@ def _cache_put(sub: str, email: str | None) -> str | None:
 
 
 async def get_verified_email(user_info: dict) -> str | None:
-    sub = user_info.get("sub")
+    # validate_ws_clerk_token returns the Clerk subject as "user_id"; accept "sub" too.
+    if user_info.get("auth_skipped"):
+        return None
+    sub = user_info.get("user_id") or user_info.get("sub")
     if not sub:
         return None
     cached = _email_cache.get(sub)

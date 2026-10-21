@@ -97,3 +97,34 @@ async def test_cache_expires_and_refetches_revoked_email(monkeypatch):
     state["payload"] = revoked
     clock["t"] += ci._CACHE_TTL_SECONDS + 1
     assert await ci.get_verified_email({"sub": "u"}) is None
+
+
+@pytest.mark.asyncio
+async def test_accepts_ws_validator_shape_user_id(monkeypatch):
+    """validate_ws_clerk_token returns {"user_id": sub, "payload": ...}, not {"sub": ...}."""
+    payload = {
+        "primary_email_address_id": "e1",
+        "email_addresses": [
+            {"id": "e1", "email_address": "trent@phenomehealth.org",
+             "verification": {"status": "verified"}},
+        ],
+    }
+    seen = {}
+
+    async def fake_get(url, headers):
+        seen["url"] = url
+        return _Resp(payload)
+
+    monkeypatch.setattr(ci, "_clerk_get", fake_get)
+    user_info = {"user_id": "user_abc", "payload": {"sub": "user_abc"}}
+    assert await ci.get_verified_email(user_info) == "trent@phenomehealth.org"
+    assert seen["url"].endswith("/users/user_abc")
+
+
+@pytest.mark.asyncio
+async def test_auth_skipped_stub_is_untrusted(monkeypatch):
+    async def fake_get(*a, **k):
+        raise AssertionError("must not call Clerk for the auth-disabled stub user")
+
+    monkeypatch.setattr(ci, "_clerk_get", fake_get)
+    assert await ci.get_verified_email({"user_id": "anonymous", "auth_skipped": True}) is None
