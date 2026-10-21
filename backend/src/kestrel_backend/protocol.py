@@ -1,7 +1,7 @@
 """WebSocket message protocol definitions matching the frontend types."""
 
 from typing import Any, Literal
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # Outgoing messages (Server → Client)
@@ -104,11 +104,41 @@ class PipelineCompleteMessage(BaseModel):
 
 # Incoming messages (Client → Server)
 
+class StructuredAnalyte(BaseModel):
+    """One analyte row from a client-parsed upload panel.
+
+    Sent as part of the structured analyte list on a pipeline ``user_message`` alongside the
+    free-text query. ``group`` is the mapped module/category (drives the R16 run-set filter);
+    ``type`` is the optional analyte type (``metabolite``|``protein``|``gene``, lowercase, to
+    match ``biolink_class_for``). Both optional; validation/normalization is centralized in
+    ``analyte_ingest.validate_and_normalize`` (R19), not on this doc-only model.
+    """
+    name: str = Field(..., description="Analyte name (verbatim from the mapped file column)")
+    group: str | None = Field(None, description="Mapped group/category value, if any")
+    type: str | None = Field(
+        None, description="Optional analyte type hint: metabolite|protein|gene"
+    )
+
+
 class UserMessageRequest(BaseModel):
-    """User sends a chat message."""
+    """User sends a chat message.
+
+    NOTE: documentation-only. The WS handler reads fields via ``data.get(...)`` and never
+    instantiates this model, so the file-upload OR-semantics guard (content OR analytes) lives
+    in ``main.py``, not in a (never-run) ``@model_validator`` here.
+    """
     type: Literal["user_message"] = "user_message"
     content: str
     agent_mode: str = "classic"  # "classic" or "pipeline"
+    # Analyte file-upload fields (mirror the biomapper_env thread). The full parsed panel plus
+    # the client's group selection travel with the message so the backend forms the run set and
+    # retains the full group map for future server-side per-group fan-out.
+    structured_analytes: list[StructuredAnalyte] | None = Field(
+        None, description="Full parsed analyte panel from a client-side file upload"
+    )
+    selected_groups: list[str] | None = Field(
+        None, description="Group values the user chose to run (None/empty = all groups)"
+    )
 
 
 # Type alias for all outgoing message types

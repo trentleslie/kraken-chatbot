@@ -5,6 +5,14 @@ export type AgentMode = "classic" | "pipeline";
 // Which biomapper2 API the discovery pipeline's entity resolution targets (prod/dev toggle).
 export type BiomapperEnv = "production" | "dev";
 
+// One analyte row from a client-parsed file upload (mirrors backend protocol.StructuredAnalyte).
+// The full parsed panel travels with a pipeline user_message alongside the free-text query.
+export type StructuredAnalyte = {
+  name: string;
+  group?: string;
+  type?: "metabolite" | "protein" | "gene";
+};
+
 export type UserMessage = {
   id: string;
   type: "user";

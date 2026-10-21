@@ -49,6 +49,24 @@ class Settings(BaseModel):
     log_format: str = "text"  # "json" or "text"
     log_module_levels: dict[str, str] = {}  # Module-specific log levels
 
+    # Analyte file-upload ingest guards (R19). These are stability guardrails independent of the
+    # client UI, enforced at every entry point (WS handler + runner/intake boundary) so LangGraph
+    # Studio and the assessment harnesses cannot bypass them.
+    #
+    # analyte_run_ceiling: hard cap on distinct-name analytes in the run set. Set conservatively
+    #   against the documented ~194-entity Triage/Kestrel MDB_READERS_FULL wall (see
+    #   docs/solutions/performance-issues/kestrel-lmdb-readers-full-unbounded-gather-2026-06-26.md
+    #   and docs/plans/2026-06-23-001-fix-triage-concurrency-scale-plan.md). Marked for
+    #   load-validation before raising.
+    # analyte_panel_row_cap: cap on the full parsed panel (pre-selection) rows accepted on the wire.
+    # max_ws_message_bytes: raw WS frame byte cap enforced BEFORE json.loads (DoS guard).
+    # analyte_field_max_len: per-field (name/group/type) character length cap; longer values are
+    #   fail-fast rejected before reaching DiscoveryState / Kestrel queries / synthesis prompts.
+    analyte_run_ceiling: int = 200
+    analyte_panel_row_cap: int = 10000
+    max_ws_message_bytes: int = 5_000_000
+    analyte_field_max_len: int = 512
+
     @model_validator(mode="after")
     def _enforce_biomapper_https(self) -> "Settings":
         """Never transmit the Biomapper API key over plaintext HTTP.
@@ -135,6 +153,10 @@ def get_settings() -> Settings:
         log_level=os.getenv("LOG_LEVEL", "INFO"),
         log_format=os.getenv("LOG_FORMAT", "text"),
         log_module_levels=module_levels,
+        analyte_run_ceiling=int(os.getenv("ANALYTE_RUN_CEILING", "200")),
+        analyte_panel_row_cap=int(os.getenv("ANALYTE_PANEL_ROW_CAP", "10000")),
+        max_ws_message_bytes=int(os.getenv("MAX_WS_MESSAGE_BYTES", "5000000")),
+        analyte_field_max_len=int(os.getenv("ANALYTE_FIELD_MAX_LEN", "512")),
     )
 
 

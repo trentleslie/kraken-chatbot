@@ -4,20 +4,35 @@ import { Textarea } from "@/components/ui/textarea";
 import { Send } from "lucide-react";
 
 interface ChatInputProps {
-  onSend: (message: string) => void;
+  /** Return false when the send was refused, so the typed text is kept. */
+  onSend: (message: string) => boolean | void;
   disabled?: boolean;
   isConnected: boolean;
+  // True when a structured analyte panel is staged for upload. Enables send with an empty
+  // textarea (R17 file-only submit).
+  hasPanel?: boolean;
+  // Reports whether the textarea currently holds a non-whitespace query. Lets the composer show
+  // the file-only degradation warning (R17) when a panel is staged with no typed context.
+  onQueryEmptyChange?: (empty: boolean) => void;
 }
 
-export function ChatInput({ onSend, disabled, isConnected }: ChatInputProps) {
+export function ChatInput({
+  onSend,
+  disabled,
+  isConnected,
+  hasPanel = false,
+  onQueryEmptyChange,
+}: ChatInputProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleSend = () => {
     const trimmed = input.trim();
-    if (!trimmed || disabled || !isConnected) return;
-    onSend(trimmed);
+    // R17: allow a file-only submit (panel staged, no typed query).
+    if ((!trimmed && !hasPanel) || disabled || !isConnected) return;
+    if (onSend(trimmed) === false) return; // refused locally: keep the question
     setInput("");
+    onQueryEmptyChange?.(true);
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
@@ -25,6 +40,7 @@ export function ChatInput({ onSend, disabled, isConnected }: ChatInputProps) {
 
   const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
+    onQueryEmptyChange?.(e.target.value.trim().length === 0);
     const el = e.target;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
@@ -37,7 +53,7 @@ export function ChatInput({ onSend, disabled, isConnected }: ChatInputProps) {
     }
   };
 
-  const canSend = input.trim().length > 0 && !disabled && isConnected;
+  const canSend = (input.trim().length > 0 || hasPanel) && !disabled && isConnected;
 
   return (
     <div

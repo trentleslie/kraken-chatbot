@@ -26,6 +26,19 @@ from .nodes import (
 )
 
 
+def route_after_intake(state: DiscoveryState) -> str:
+    """Short-circuit to END when intake rejected a structured upload (R19 gate #2).
+
+    The WS door rejects bad panels before the pipeline, so this only fires for direct
+    (Studio/assessment-harness) callers. Ending here surfaces the rejection on the ``errors``
+    channel instead of continuing to ``integration``, whose contract requires findings and would
+    otherwise raise an opaque error several nodes downstream.
+    """
+    if state.get("upload_rejected"):
+        return END
+    return "entity_resolution"
+
+
 def route_after_triage(state: DiscoveryState) -> list[str] | str:
     """
     Deterministic routing based on novelty classifications.
@@ -153,7 +166,13 @@ def build_discovery_graph() -> StateGraph:
 
     # Linear edges: intake -> entity_resolution -> triage
     workflow.set_entry_point("intake")
-    workflow.add_edge("intake", "entity_resolution")
+    # Normally intake -> entity_resolution, but a rejected structured upload (R19 gate #2 on a
+    # non-WS entry path) short-circuits to END so the rejection surfaces cleanly.
+    workflow.add_conditional_edges(
+        "intake",
+        route_after_intake,
+        {"entity_resolution": "entity_resolution", END: END},
+    )
     workflow.add_edge("entity_resolution", "triage")
 
     # Conditional routing after triage

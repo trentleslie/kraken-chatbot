@@ -65,3 +65,54 @@ class TestRunnerConfigThreading:
         _ = [e async for e in runner.stream_discovery("q")]
 
         assert captured["config"] is None
+
+
+class TestRunnerAnalyteThreading:
+    """The structured analyte panel + selection reach the graph's initial_state."""
+
+    async def test_run_discovery_injects_analytes(self, monkeypatch):
+        graph = MagicMock()
+        graph.ainvoke = AsyncMock(return_value={})
+        monkeypatch.setattr(runner, "build_discovery_graph", lambda: graph)
+
+        panel = [{"name": "glucose", "group": "Brown"}]
+        await runner.run_discovery(
+            "q", structured_analytes=panel, selected_groups=["Brown"]
+        )
+
+        initial_state = graph.ainvoke.call_args.args[0]
+        assert initial_state["structured_analytes"] == panel
+        assert initial_state["selected_groups"] == ["Brown"]
+
+    async def test_run_discovery_defaults_empty_lists(self, monkeypatch):
+        graph = MagicMock()
+        graph.ainvoke = AsyncMock(return_value={})
+        monkeypatch.setattr(runner, "build_discovery_graph", lambda: graph)
+
+        await runner.run_discovery("q")
+
+        initial_state = graph.ainvoke.call_args.args[0]
+        assert initial_state["structured_analytes"] == []
+        assert initial_state["selected_groups"] == []
+
+    async def test_stream_discovery_injects_analytes(self, monkeypatch):
+        captured = {}
+
+        def astream(initial_state, stream_mode="updates", config=None):
+            captured["initial_state"] = initial_state
+            return _astream_gen([])
+
+        graph = MagicMock()
+        graph.astream = astream
+        monkeypatch.setattr(runner, "build_discovery_graph", lambda: graph)
+
+        panel = [{"name": "IL6", "group": "Blue"}]
+        _ = [
+            e
+            async for e in runner.stream_discovery(
+                "q", structured_analytes=panel, selected_groups=["Blue"]
+            )
+        ]
+
+        assert captured["initial_state"]["structured_analytes"] == panel
+        assert captured["initial_state"]["selected_groups"] == ["Blue"]
