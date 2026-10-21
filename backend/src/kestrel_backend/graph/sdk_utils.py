@@ -228,6 +228,17 @@ def create_agent_options(
     return ClaudeAgentOptions(**kwargs)
 
 
+def _pin_model(options):
+    """Pin the pipeline model on options that were built without one.
+
+    Several nodes construct ClaudeAgentOptions directly instead of via
+    create_agent_options; without this they would silently run on the CLI default.
+    An explicit per-call model is left untouched."""
+    if options is not None and not getattr(options, "model", None):
+        options.model = _PIPELINE_MODEL
+    return options
+
+
 def _apply_byok_env(options):
     """Inject the per-request BYOK env (and cli_path) into options at the SDK boundary.
     No-op when no key is set (classic path / internal callers keep ambient env)."""
@@ -304,6 +315,11 @@ async def query_with_usage(
     # node span — no parent/trace-id threading. When Langfuse is disabled, this is a no-op
     # nullcontext yielding None. Creating it inside this coroutine (and inside any asyncio
     # task spawned from it, which copies the contextvars context) keeps nesting correct.
+    options = _pin_model(options)
+    # Attribute usage to the model the SDK is actually told to use (a node may pin its own).
+    if model_name == DEFAULT_MODEL_NAME and getattr(options, "model", None):
+        model_name = options.model
+
     langfuse = _get_langfuse()
     generation_cm = (
         langfuse.start_as_current_generation(
