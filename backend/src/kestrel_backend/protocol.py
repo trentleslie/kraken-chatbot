@@ -145,7 +145,7 @@ class ModuleDirection(BaseModel):
 class KeySourceMessage(BaseModel):
     """Server → Client: which key the current turn ran on."""
     type: Literal["key_source"] = "key_source"
-    source: Literal["byok", "server"]
+    source: Literal["byok", "server", "sdk"]
 
 
 class SetKeyRequest(BaseModel):

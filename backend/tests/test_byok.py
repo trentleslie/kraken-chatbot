@@ -22,6 +22,20 @@ def test_trusted_user_no_byok_uses_server_key():
     assert (key, source) == ("sk-server", "server")
 
 
+def test_trusted_user_no_server_key_falls_back_to_sdk_login(monkeypatch):
+    s = Settings(byok_trusted_email_domains=["phenomehealth.org"])
+    monkeypatch.setattr(byok, "get_settings", lambda: s)
+    key, source = byok.resolve_effective_key(None, "trent@phenomehealth.org")
+    assert (key, source) == (None, "sdk")
+
+
+def test_untrusted_no_byok_raises_even_without_server_key(monkeypatch):
+    s = Settings(byok_trusted_email_domains=["phenomehealth.org"])
+    monkeypatch.setattr(byok, "get_settings", lambda: s)
+    with pytest.raises(byok.NeedsKeyError):
+        byok.resolve_effective_key(None, "someone@gmail.com")
+
+
 def test_untrusted_no_byok_raises():
     with pytest.raises(byok.NeedsKeyError):
         byok.resolve_effective_key(None, "someone@gmail.com")

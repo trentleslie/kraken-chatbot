@@ -121,7 +121,11 @@ export default function ChatPage() {
         {/* BYOK: key-source badge — shown when the server has confirmed which key is in use. */}
         {keySource !== null && (
           <Badge variant={keySource === "byok" ? "default" : "secondary"} className="text-xs">
-            {keySource === "byok" ? "Using your key" : "Using server key"}
+            {keySource === "byok"
+              ? "Using your key"
+              : keySource === "sdk"
+                ? "Using Claude Code login"
+                : "Using server key"}
           </Badge>
         )}
       </div>
