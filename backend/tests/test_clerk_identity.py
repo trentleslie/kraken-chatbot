@@ -123,8 +123,12 @@ async def test_accepts_ws_validator_shape_user_id(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_auth_skipped_stub_is_untrusted(monkeypatch):
+    calls = []
+
     async def fake_get(*a, **k):
-        raise AssertionError("must not call Clerk for the auth-disabled stub user")
+        calls.append((a, k))
+        return _Resp({})
 
     monkeypatch.setattr(ci, "_clerk_get", fake_get)
     assert await ci.get_verified_email({"user_id": "anonymous", "auth_skipped": True}) is None
+    assert not calls  # get_verified_email swallows exceptions, so record calls instead
