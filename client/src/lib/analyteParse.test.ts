@@ -9,6 +9,7 @@ import {
   isFormulaInjection,
   MAX_ROWS,
   effectiveGroupSelection,
+  groupCounts,
   validatePanelFields,
   ANALYTE_FIELD_MAX_LEN,
 } from "./analyteParse";
@@ -258,5 +259,22 @@ describe("Greptile #106 fixes", () => {
     expect(validatePanelFields([{ name: "glucose", group: "Brown" }])).toBeNull();
     expect(validatePanelFields([{ name: "x".repeat(ANALYTE_FIELD_MAX_LEN + 1) }])).toMatch(/longer than/);
     expect(validatePanelFields([{ name: "glu\u0007cose" }])).toMatch(/control characters/);
+  });
+
+  it("groupCounts handles labels that collide with Object prototype keys", () => {
+    const counts = groupCounts([
+      { name: "a", group: "Constructor" },
+      { name: "b", group: "constructor" },
+      { name: "c", group: "toString" },
+    ]);
+    expect(counts.get("constructor")).toBe(2);
+    expect(counts.get("tostring")).toBe(1);
+    expect(counts.get("hasownproperty")).toBeUndefined();
+  });
+
+  it("validatePanelFields counts code points like Python len()", () => {
+    const astral = "\u{1F9EC}"; // one code point, two UTF-16 units
+    expect(validatePanelFields([{ name: astral.repeat(ANALYTE_FIELD_MAX_LEN) }])).toBeNull();
+    expect(validatePanelFields([{ name: astral.repeat(ANALYTE_FIELD_MAX_LEN + 1) }])).toMatch(/longer than/);
   });
 });
