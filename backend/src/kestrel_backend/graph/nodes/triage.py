@@ -30,6 +30,7 @@ from typing import Any
 
 from ...kestrel_client import call_kestrel_tool
 from ..pipeline_config import get_pipeline_config
+from .cold_start import MAX_COLD_START
 from ..state import DiscoveryState, NoveltyScore, EntityResolution
 from ..state_contracts import validate_state, TriageInput, TriageOutput
 
@@ -398,16 +399,23 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     # placed into cold_start (inversion, R6/R8) — routing keys on the boolean, not the classification,
     # which is preserved for synthesis/display. When centrality is off, no score is a hub, so this
     # reduces exactly to the original bucketing.
+    # cold_start analyzes at most MAX_COLD_START entities, so only that many hubs (largest |kME|
+    # first) are rerouted; the rest keep their edge-count route instead of getting no analysis.
+    hubs_by_kme = sorted(
+        (s for s in final_scores if s.is_intramodular_hub),
+        key=lambda s: abs(s.kme) if s.kme is not None else 0.0,
+        reverse=True,
+    )
+    rerouted = {s.curie for s in hubs_by_kme[:MAX_COLD_START]}
     well_characterized = [s.curie for s in final_scores
-                          if s.classification == "well_characterized" and not s.is_intramodular_hub]
+                          if s.classification == "well_characterized" and s.curie not in rerouted]
     moderate = [s.curie for s in final_scores
-                if s.classification == "moderate" and not s.is_intramodular_hub]
+                if s.classification == "moderate" and s.curie not in rerouted]
     sparse = [s.curie for s in final_scores
-              if s.classification == "sparse" and not s.is_intramodular_hub]
+              if s.classification == "sparse" and s.curie not in rerouted]
     cold_start = [s.curie for s in final_scores
-                  if s.classification == "cold_start" and not s.is_intramodular_hub]
-    hub_curies = [s.curie for s in final_scores if s.is_intramodular_hub]
-    cold_start.extend(hub_curies)  # inverted routing: all intramodular hubs → cold_start
+                  if s.classification == "cold_start" and s.curie not in rerouted]
+    cold_start.extend(s.curie for s in hubs_by_kme[:MAX_COLD_START])  # inverted routing
 
     # Add failed resolutions to cold_start bucket
     failed_names = [e.raw_name for e in resolved if e.method == "failed"]
@@ -459,8 +467,10 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             # entities edge-count would have sent to direct_kg (well_characterized/moderate) but are
             # now hub → cold_start
             "routing_shift_direct_to_cold": sum(
-                1 for s in final_scores if s.is_intramodular_hub
+                1 for s in final_scores if s.curie in rerouted
                 and s.classification in ("well_characterized", "moderate")),
+            # hubs beyond the cold_start cap that kept their edge-count route
+            "hubs_not_rerouted_n": len(kme_hub_set) - len(rerouted),
             # 0 under pure inversion; emitted for auditing (no mechanism moves cold→direct)
             "routing_shift_cold_to_direct": 0,
             "expected_hub_n": expected_hub_count(module_spine, cfg),

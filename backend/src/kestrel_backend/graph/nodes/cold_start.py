@@ -36,6 +36,9 @@ from ..state_contracts import validate_state, ColdStartInput, ColdStartOutput
 
 logger = logging.getLogger(__name__)
 
+# Max cold-start entities analyzed per run (triage reroutes at most this many intramodular hubs).
+MAX_COLD_START = 3
+
 _config = get_pipeline_config().cold_start
 
 # Semaphore to limit concurrent SDK calls
@@ -713,7 +716,6 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
 
     # Limit to top entities
     MAX_SPARSE = 5
-    MAX_COLD_START = 3
 
     selected_sparse = [curie for curie, _ in sparse_with_scores[:MAX_SPARSE]]
     selected_cold_start = [curie for curie, _ in cold_start_with_scores[:MAX_COLD_START]]

@@ -223,3 +223,17 @@ def test_helper_is_idempotent_on_weights():
     assert r1.module_members == r2.module_members
     assert r1.module_directions == r2.module_directions
     assert r1.errors == r2.errors == []
+
+
+def test_direction_cap_uses_full_panel_not_selection():
+    """65 weighted groups, each with a direction: selecting one group must not shrink the cap
+    below the 65 directions the client sends for the whole panel."""
+    n = 65
+    panel = [{"name": f"a{i}", "group": f"G{i}", "kme": 0.5} for i in range(n)]
+    directions = [
+        {"group": f"G{i}", "eigengene_trait_correlation": 0.3, "trait_label": "frailty"}
+        for i in range(n)
+    ]
+    result = validate_and_normalize(panel, ["G0"], _settings(), module_directions=directions)
+    assert result.errors == []
+    assert result.run_analytes == ["a0"]
