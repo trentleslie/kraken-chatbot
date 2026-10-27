@@ -301,11 +301,16 @@ export function countInvalidWeightCells(
 export function buildModuleDirections(
   correlationByGroup: Record<string, string>,
   traitLabel: string,
+  activeGroups?: string[],
 ): ModuleDirectionInput[] {
   const label = traitLabel.trim();
   if (!label) return [];
+  // Only send directions for groups that still exist in the current mapping; values typed for a
+  // group that disappeared after remapping are not validated by the Continue gate.
+  const active = activeGroups ? new Set(activeGroups) : null;
   const out: ModuleDirectionInput[] = [];
   for (const [group, raw] of Object.entries(correlationByGroup)) {
+    if (active && !active.has(group)) continue;
     const c = coerceFinite(raw);
     if (c.status !== "value") continue;
     // Clamp a within-epsilon rounded export back inside [-1, 1] (mirrors the backend) so the
@@ -380,7 +385,9 @@ export function buildAnalytes(
     return { analytes: [], rowsRead: rows.length, rowsKept: 0, weightConflicts: 0 };
   }
   const analytes: StructuredAnalyte[] = [];
-  const seen = new Set<string>();
+  // Retained analyte per (name, group) key, so a valid weight on a later duplicate row can fill
+  // in a first row whose kME cell was blank (the backend admits the first valid weight too).
+  const retained = new Map<string, StructuredAnalyte>();
   // First-seen VALID weight pair per (name, group) key, for conflict detection independent of the
   // display dedup below (mirrors the backend, which admits a member to the spine via a valid kME).
   const weightByKey = new Map<string, { kme: number; kim: number | undefined }>();
@@ -417,8 +424,15 @@ export function buildAnalytes(
       }
     }
 
-    if (seen.has(dedupKey)) continue; // (name, group) collapse
-    seen.add(dedupKey);
+    const kept = retained.get(dedupKey);
+    if (kept) {
+      // (name, group) collapse; adopt the first valid weight if the kept row had none.
+      if (kept.kme === undefined && kmeVal !== undefined) {
+        kept.kme = kmeVal;
+        if (kimVal !== undefined) kept.kim = kimVal;
+      }
+      continue;
+    }
 
     const analyte: StructuredAnalyte = { name };
     if (group) analyte.group = group;
@@ -429,6 +443,7 @@ export function buildAnalytes(
     if (kmeVal !== undefined) analyte.kme = kmeVal;
     if (kimVal !== undefined) analyte.kim = kimVal;
     analytes.push(analyte);
+    retained.set(dedupKey, analyte);
   }
 
   return { analytes, rowsRead, rowsKept: analytes.length, weightConflicts };

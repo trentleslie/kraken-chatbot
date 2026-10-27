@@ -2428,6 +2428,7 @@ class TestSynthesisReportOnly:
             result = await synthesis.run(self._grounded_state())
         assert set(result.keys()) == {
             "synthesis_report", "model_usages", "synthesis_context_stats", "tier3_prediction_stats",
+            "groups_sign_split", "groups_split",
         }
         assert "hypotheses" not in result
         assert "bridges" not in result

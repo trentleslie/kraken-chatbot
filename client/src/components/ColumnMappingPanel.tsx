@@ -127,7 +127,9 @@ export function ColumnMappingPanel({
 
   const handleConfirm = () => {
     if (!built) return;
-    const directions = buildModuleDirections(dirByGroup, traitLabel);
+    const directions = directionTableActive
+      ? buildModuleDirections(dirByGroup, traitLabel, groups)
+      : [];
     onConfirm(built.analytes, directions);
   };
 

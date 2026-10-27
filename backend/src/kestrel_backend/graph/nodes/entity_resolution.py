@@ -354,24 +354,21 @@ def _apply_rank_guard_tier2(
 ) -> EntityResolution:
     """Tier-2 guard: resolve-finer over the in-scope prefetched candidate set, else abstain.
 
-    Scans ``candidates`` for a node at the requested (finer) rank whose genus matches the label; the
-    first such candidate is preferred. If none exists, abstain via the ``method="failed"`` sentinel.
+    Scans ``candidates`` for a node whose name IS the requested taxon (same tokens, case-insensitive).
+    A sibling at the same rank and genus (``Ruminococcus flavefaciens`` for ``Ruminococcus gnavus``)
+    is a different organism and is never accepted. If none exists, abstain via the
+    ``method="failed"`` sentinel.
     Returns the input unchanged when there is no collapse.
     """
     if resolution.curie is None or not is_rank_collapse(entity, resolution.resolved_name):
         return resolution
-    requested = infer_requested_rank(entity)
-    entity_genus = entity.strip().split()[0].lower()
+    entity_tokens = entity.strip().lower().split()
     for cand in candidates:
         cname = cand.get("name")
         if not cname:
             continue
-        # A finer candidate: at the requested rank, same genus, and not itself a collapse.
-        if (
-            infer_requested_rank(cname) == requested
-            and cname.strip().split()[0].lower() == entity_genus
-            and not is_rank_collapse(entity, cname)
-        ):
+        # Only the requested taxon itself qualifies (identity match on the name tokens).
+        if cname.strip().lower().split() == entity_tokens:
             logger.info(
                 "FALLBACK_EVENT node=entity_resolution reason=rank_resolve_finer tier=2 "
                 "entity=%s finer=%s",
