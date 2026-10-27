@@ -1,6 +1,7 @@
 ---
 title: "Synthesis node context overflow silently falls back at module scale"
 date: 2026-06-22
+last_updated: 2026-10-27
 category: performance-issues
 module: discovery-pipeline/synthesis
 problem_type: performance_issue
@@ -28,6 +29,10 @@ tags:
 ---
 
 # Synthesis node context overflow silently falls back at module scale
+
+> **Update 2026-10-27, model changed.** The pipeline now defaults to `claude-opus-5-5` (#103), which has a **1M-token** input window, not sonnet-4's ~200K. The incident and the prevention rules below still stand. Two specifics are now dated:
+> - `SynthesisConfig.max_context_chars=350_000` (≈100K tokens) is still safe, but it now sits far below the window. It's a deliberate quality/cost bound, no longer an overflow guard. Revisit the sizing rather than assuming 200K.
+> - `synthesis.py` still has `_MODEL_WINDOW_TOKENS = 200_000`, which feeds the `window_pct` telemetry. On Opus 5.5 that overstates window usage about 5×. Derive it from the configured model instead of a constant.
 
 ## Problem
 
