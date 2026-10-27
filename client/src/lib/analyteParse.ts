@@ -426,10 +426,12 @@ export function buildAnalytes(
 
     const kept = retained.get(dedupKey);
     if (kept) {
-      // (name, group) collapse; adopt the first valid weight if the kept row had none.
+      // (name, group) collapse; adopt the first valid weight PAIR if the kept row had no kME.
+      // Replace both, so a kIM from the kME-less row never mixes with another row's kME.
       if (kept.kme === undefined && kmeVal !== undefined) {
         kept.kme = kmeVal;
         if (kimVal !== undefined) kept.kim = kimVal;
+        else delete kept.kim;
       }
       continue;
     }
