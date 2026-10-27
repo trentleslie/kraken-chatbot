@@ -193,3 +193,71 @@ def test_trace_message_with_correlation_id():
     trace_json = trace.model_dump_json()
     parsed = json.loads(trace_json)
     assert parsed["correlation_id"] == corr_id
+
+
+def _uvicorn_ws_record(path_with_query: str) -> logging.LogRecord:
+    """A record shaped like uvicorn's WebSocket connect line (args tuple, %s message)."""
+    return logging.LogRecord(
+        "uvicorn.error", logging.INFO, __file__, 0,
+        '%s - "WebSocket %s" [accepted]', ("1.2.3.4:0", path_with_query), None,
+    )
+
+
+def test_query_token_redaction_masks_ws_jwt():
+    from kestrel_backend.logging_config import QueryTokenRedactionFilter
+
+    record = _uvicorn_ws_record("/ws/chat?token=fake-header.fake-payload.fake-sig")
+    QueryTokenRedactionFilter().filter(record)
+    msg = record.getMessage()
+    assert "fake-payload" not in msg
+    assert "/ws/chat?token=***REDACTED***" in msg
+
+
+def test_query_token_redaction_keeps_other_params():
+    from kestrel_backend.logging_config import QueryTokenRedactionFilter
+
+    record = _uvicorn_ws_record("/ws/chat?mode=pipeline&token=abc.def.ghi&x=1")
+    QueryTokenRedactionFilter().filter(record)
+    assert record.getMessage().endswith(
+        '"WebSocket /ws/chat?mode=pipeline&token=***REDACTED***&x=1" [accepted]'
+    )
+
+
+def test_configure_logging_attaches_token_filter_to_uvicorn_loggers_once():
+    from kestrel_backend.logging_config import QueryTokenRedactionFilter
+
+    configure_logging(log_level="INFO", log_format="text")
+    configure_logging(log_level="INFO", log_format="text")  # idempotent
+    for name in ("uvicorn.error", "uvicorn.access"):
+        filters = [f for f in logging.getLogger(name).filters if isinstance(f, QueryTokenRedactionFilter)]
+        assert len(filters) == 1
+
+
+def test_uvicorn_logger_output_is_redacted_end_to_end():
+    """Emit through uvicorn's own loggers (own handler, no propagation, as uvicorn configures
+    them) after configure_logging, and check what the handler actually writes."""
+    configure_logging(log_level="INFO", log_format="text")
+    stream = StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    restore = []
+    for name in ("uvicorn.error", "uvicorn.access"):
+        lg = logging.getLogger(name)
+        restore.append((lg, lg.handlers[:], lg.propagate, lg.level))
+        lg.handlers = [handler]
+        lg.propagate = False
+        lg.setLevel(logging.INFO)
+    try:
+        logging.getLogger("uvicorn.error").info(
+            '%s - "WebSocket %s" [accepted]', "1.2.3.4:0", "/ws/chat?token=fake-header.fake-payload.fake-sig"
+        )
+        logging.getLogger("uvicorn.access").info(
+            '%s - "%s %s HTTP/%s" %d', "1.2.3.4:0", "GET", "/ping?token=fake-access.fake-payload.sig", "1.1", 200
+        )
+    finally:
+        for lg, handlers, propagate, level in restore:
+            lg.handlers, lg.propagate = handlers, propagate
+            lg.setLevel(level)
+    out = stream.getvalue()
+    assert "fake-payload" not in out
+    assert out.count("token=***REDACTED***") == 2
