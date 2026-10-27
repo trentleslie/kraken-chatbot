@@ -177,6 +177,9 @@ def validate_and_normalize(
     # key (lowercased name) -> canonical first-seen name, so cross-group membership accretes
     # under one stable key without an O(n) scan per row.
     key_to_canonical: dict[str, str] = {}
+    # Every group in the uploaded panel (before the selection filter): bounds module_directions,
+    # which the client sends for the whole panel regardless of which groups are selected.
+    panel_group_keys: set[str] = set()
 
     for idx, row in enumerate(structured_analytes):
         if not isinstance(row, dict):
@@ -204,6 +207,8 @@ def validate_and_normalize(
                 )
 
         panel.rows_read += 1
+        if group is not None:
+            panel_group_keys.add(group.strip().lower())
 
         # Group selection filter: keep the row only if it matches the selection (or no selection).
         if selection and (group is None or group.lower() not in selection):
@@ -275,11 +280,11 @@ def validate_and_normalize(
 
     # --- Module-direction validation (Axis A) ------------------------------------------------
     # Bound the count BEFORE per-item work so the Studio/harness gate (no WS byte cap) is bounded
-    # identically. Cap = distinct panel groups (or a small constant floor).
+    # identically. Cap = distinct groups in the full uploaded panel (or a small constant floor).
     if module_directions:
         if not isinstance(module_directions, list):
             return _reject("module_directions must be a list.")
-        direction_cap = max(len(panel.module_group_labels), _DIRECTIONS_MIN_CAP)
+        direction_cap = max(len(panel_group_keys), _DIRECTIONS_MIN_CAP)
         if len(module_directions) > direction_cap:
             return _reject(
                 f"module_directions has {len(module_directions)} rows, exceeding the "

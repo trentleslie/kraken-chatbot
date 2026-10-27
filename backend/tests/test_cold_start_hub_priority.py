@@ -47,3 +47,33 @@ def test_hub_curies_derived_from_novelty_scores():
     ]
     hub_curies = {s.curie for s in scores if s.is_intramodular_hub}
     assert hub_curies == {"HUB:1"}
+
+
+def test_unrerouted_zero_edge_hub_cannot_displace_rerouted_hubs():
+    """Greptile #113: h1-h3 (well characterized, top |kME|) are rerouted; h4 is a hub with zero
+    edges that kept its own cold_start route. Under cold_start's sort+cap, h4 must not take a
+    rerouted hub's slot (those have no other analysis path)."""
+    from kestrel_backend.graph.nodes.cold_start import (
+        MAX_COLD_START,
+        select_entities,
+        select_rerouted_hubs,
+    )
+
+    def hub(curie, kme, edges, cls):
+        return NoveltyScore(curie=curie, raw_name=curie, edge_count=edges, classification=cls,
+                            is_intramodular_hub=True, kme=kme)
+
+    scores = [
+        hub("h1", 0.99, 800, "well_characterized"),
+        hub("h2", 0.98, 800, "well_characterized"),
+        hub("h3", 0.97, 800, "well_characterized"),
+        hub("h4", 0.50, 0, "cold_start"),
+    ]
+    rerouted = select_rerouted_hubs(scores)
+    assert rerouted == ["h1", "h2", "h3"]
+
+    # triage's cold_start list: natural cold_start first, then reroutes. Use cold_start's real
+    # selection function (what run() calls), so this checks the final selection.
+    _, selected = select_entities([], ["h4"] + rerouted, scores, [])
+    assert len(selected) == MAX_COLD_START
+    assert set(selected) == {"h1", "h2", "h3"}

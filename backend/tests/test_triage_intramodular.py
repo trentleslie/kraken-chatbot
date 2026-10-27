@@ -203,3 +203,20 @@ async def test_measurement_failure_not_rescued_but_hub_reroutes(monkeypatch):
     assert "G:2" in out["cold_start_curies"]
     assert "G:2" not in out["moderate_curies"]
     assert any("edge-count failed" in e for e in out["errors"])  # visible marker preserved
+
+
+# --- Hubs beyond the cold_start cap keep their edge-count route --------------------------
+
+async def test_only_cap_many_hubs_rerouted_rest_keep_route(monkeypatch):
+    names = ["h1", "h2", "h3", "h4", "h5"]
+    ents = [_entity(f"G:{i}", n) for i, n in enumerate(names, 1)]
+    counts = {f"G:{i}": 800 for i in range(1, 6)}  # all well_characterized by edge count
+    kmes = {"h1": 0.99, "h2": 0.98, "h3": 0.97, "h4": 0.96, "h5": 0.95}
+    spine = _spine({"M": {n: (k, None) for n, k in kmes.items()}})
+    out = await _run(monkeypatch, ents, counts, spine=spine,
+                     intramodular_centrality_enabled=True, intramodular_hub_top_k_pct=100.0)
+    # all five are hubs, but only the top-3 |kME| (cold_start's cap) are rerouted to cold_start
+    assert all(s.is_intramodular_hub for s in out["novelty_scores"])
+    assert set(out["cold_start_curies"]) == {"G:1", "G:2", "G:3"}
+    assert set(out["well_characterized_curies"]) == {"G:4", "G:5"}
+

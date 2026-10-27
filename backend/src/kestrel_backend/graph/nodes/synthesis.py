@@ -828,20 +828,22 @@ def _direction_records(
         return None
 
     resolved = state.get("resolved_entities", []) or []
-    name_by_curie: dict[str, str] = {}
+    # Several uploaded names can resolve to one CURIE (a gene symbol and its full name); keep them
+    # all, so every one of their signed records joins (opposite signs then read as indeterminate).
+    names_by_curie: dict[str, set[str]] = {}
     for e in resolved:
         curie = getattr(e, "curie", None)
         if not curie:
             continue
         # raw_name is the upload/panel name that axis A canonicalizes as the member key; fall back
         # to resolved_name only when raw_name is missing.
-        name_by_curie[curie] = getattr(e, "raw_name", None) or getattr(e, "resolved_name", None) or ""
+        nm = getattr(e, "raw_name", None) or getattr(e, "resolved_name", None) or ""
+        if nm:
+            names_by_curie.setdefault(curie, set()).add(_normalize_name(nm))
 
     target_names: set[str] = set()
     for curie in getattr(hypothesis, "supporting_entities", []) or []:
-        nm = name_by_curie.get(curie)
-        if nm:
-            target_names.add(_normalize_name(nm))
+        target_names |= names_by_curie.get(curie, set())
     if not target_names:
         return []
 
