@@ -272,9 +272,16 @@ class PathwayEnrichmentOutput(_ContractBase):
 
 
 class IntegrationOutput(_ContractBase):
-    """Integration must produce bridges and gap_entities."""
+    """Integration must produce bridges and gap_entities.
+
+    ``specificity_by_bridge`` is the axis-C bridge-specificity side-map (tuple(entities) ->
+    BridgeSpecificity), emitted alongside bridges. Optional: it defaults to an empty dict so the
+    (default-off) producer and every early-return path still validate; it rides the existing
+    bridges output and needs no reducer (last-write-wins).
+    """
     bridges: list[Any]
     gap_entities: list[Any]
+    specificity_by_bridge: dict[Any, Any] | None = None
 
 
 class TemporalOutput(_ContractBase):

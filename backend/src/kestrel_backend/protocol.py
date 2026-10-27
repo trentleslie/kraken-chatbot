@@ -3,6 +3,8 @@
 from typing import Any, Literal
 from pydantic import BaseModel, Field
 
+from .config import DEFAULT_CLAUDE_MODEL
+
 
 # Outgoing messages (Server → Client)
 
@@ -96,7 +98,7 @@ class PipelineCompleteMessage(BaseModel):
     turn_id: str | None = None   # Database turn ID for feedback linkage
     trace_id: str | None = None  # Langfuse trace ID for feedback linkage
     # Token tracking fields for UI compatibility with TraceMessage
-    model: str = "claude-sonnet-4-20250514"  # Pipeline uses SDK default
+    model: str = DEFAULT_CLAUDE_MODEL
     input_tokens: int | None = None
     output_tokens: int | None = None
     cost_usd: float | None = None
@@ -118,6 +120,38 @@ class StructuredAnalyte(BaseModel):
     type: str | None = Field(
         None, description="Optional analyte type hint: metabolite|protein|gene"
     )
+    # Signed-weight data spine (Axis A): kME (module-eigengene correlation, [-1,1]) and kIM (raw
+    # intramodular connectivity kWithin, unbounded/non-negative) ride each row; validated in
+    # analyte_ingest.validate_and_normalize (kME reject-if-outside-[-1,1]; kIM reject-if-negative).
+    kme: float | None = Field(None, description="Signed module-eigengene correlation ([-1, 1])")
+    kim: float | None = Field(None, description="Raw intramodular connectivity kWithin (>= 0)")
+
+
+class ModuleDirection(BaseModel):
+    """One per-module eigengene→outcome direction row (Axis A).
+
+    Documentation-only, like ``StructuredAnalyte`` — the WS handler reads these via
+    ``data.get('module_directions')`` and validation is centralized in
+    ``analyte_ingest.validate_and_normalize``. Load-bearing for the sign-inversion metric
+    (member-vs-outcome = sign(kME) × sign(direction)).
+    """
+    group: str = Field(..., description="Group/module the direction applies to")
+    eigengene_trait_correlation: float = Field(
+        ..., description="Signed correlation of the module eigengene with the trait ([-1, 1])"
+    )
+    trait_label: str = Field(..., description="Human label of the outcome/trait")
+
+
+class KeySourceMessage(BaseModel):
+    """Server → Client: which key the current turn ran on."""
+    type: Literal["key_source"] = "key_source"
+    source: Literal["byok", "server", "sdk"]
+
+
+class SetKeyRequest(BaseModel):
+    """Client → Server: set/clear the per-connection BYOK key."""
+    type: Literal["set_key"] = "set_key"
+    key: str | None = None
 
 
 class UserMessageRequest(BaseModel):
@@ -138,6 +172,11 @@ class UserMessageRequest(BaseModel):
     )
     selected_groups: list[str] | None = Field(
         None, description="Group values the user chose to run (None/empty = all groups)"
+    )
+    # Optional per-module eigengene→outcome directions (Axis A). Validated + count-bounded in the
+    # shared R19 helper; absent for classic / no-direction runs.
+    module_directions: list[ModuleDirection] | None = Field(
+        None, description="Per-module eigengene→outcome direction rows for the signed-weight spine"
     )
 
 

@@ -2,6 +2,7 @@
 
 import pytest
 
+import kestrel_backend.config as config_mod
 from kestrel_backend.config import (
     Settings,
     biomapper_misconfig_reason,
@@ -122,3 +123,57 @@ class TestBiomapperMisconfigReason:
         reason = biomapper_misconfig_reason(enabled=True, api_key=None)
         assert reason is not None
         assert "supersecretvalue" not in reason
+
+
+class TestClaudeModel:
+    """CLAUDE_MODEL overrides the classic-agent model; unset/empty falls back to Opus 5.5."""
+
+    @pytest.mark.parametrize("value", [None, ""])
+    def test_unset_or_empty_uses_default(self, monkeypatch, value):
+        monkeypatch.setattr(config_mod, "load_dotenv", lambda *a, **k: False)
+        if value is None:
+            monkeypatch.delenv("CLAUDE_MODEL", raising=False)
+        else:
+            monkeypatch.setenv("CLAUDE_MODEL", value)
+        get_settings.cache_clear()
+        try:
+            assert get_settings().model == "claude-opus-5-5"
+        finally:
+            get_settings.cache_clear()
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setattr(config_mod, "load_dotenv", lambda *a, **k: False)
+        monkeypatch.setenv("CLAUDE_MODEL", "claude-sonnet-5")
+        get_settings.cache_clear()
+        try:
+            assert get_settings().model == "claude-sonnet-5"
+        finally:
+            get_settings.cache_clear()
+
+
+class TestByokTrustedEnv:
+    """The trusted-domain BYOK bypass is configured from env (previously never wired)."""
+
+    def test_reads_trusted_domains_and_server_key(self, monkeypatch):
+        monkeypatch.setattr(config_mod, "load_dotenv", lambda *a, **k: False)
+        monkeypatch.setenv("BYOK_TRUSTED_EMAIL_DOMAINS", " PhenomeHealth.org , example.com ")
+        monkeypatch.setenv("SERVER_ANTHROPIC_API_KEY", "sk-server")
+        get_settings.cache_clear()
+        try:
+            s = get_settings()
+            assert s.byok_trusted_email_domains == ["phenomehealth.org", "example.com"]
+            assert s.server_anthropic_api_key == "sk-server"
+        finally:
+            get_settings.cache_clear()
+
+    def test_unset_means_no_trusted_domains_and_no_server_key(self, monkeypatch):
+        monkeypatch.setattr(config_mod, "load_dotenv", lambda *a, **k: False)
+        monkeypatch.delenv("BYOK_TRUSTED_EMAIL_DOMAINS", raising=False)
+        monkeypatch.setenv("SERVER_ANTHROPIC_API_KEY", "")
+        get_settings.cache_clear()
+        try:
+            s = get_settings()
+            assert s.byok_trusted_email_domains == []
+            assert s.server_anthropic_api_key is None
+        finally:
+            get_settings.cache_clear()

@@ -36,6 +36,20 @@ from ..state_contracts import validate_state, ColdStartInput, ColdStartOutput
 
 logger = logging.getLogger(__name__)
 
+# Max cold-start entities analyzed per run (triage reroutes at most this many intramodular hubs).
+MAX_COLD_START = 3
+
+
+def select_rerouted_hubs(novelty_scores) -> list[str]:
+    """The intramodular hubs rerouted to cold_start: the top MAX_COLD_START by |kME|.
+
+    Single rule shared by triage (which reroutes exactly these) and cold_start (which gives exactly
+    these top priority), so a hub that kept its route can never take a rerouted hub's slot.
+    """
+    hubs = [s for s in novelty_scores if getattr(s, "is_intramodular_hub", False)]
+    hubs.sort(key=lambda s: abs(s.kme) if getattr(s, "kme", None) is not None else 0.0, reverse=True)
+    return [s.curie for s in hubs[:MAX_COLD_START]]
+
 _config = get_pipeline_config().cold_start
 
 # Semaphore to limit concurrent SDK calls
@@ -614,6 +628,47 @@ def score_entity_complexity(edge_count: int) -> float:
     return float(edge_count)
 
 
+# Axis B (Q6 / feasibility P0-1): a rerouted intramodular hub carries a HIGH edge count, so under the
+# plain ascending-edge-count priority it sorts last and is dropped by the MAX_COLD_START cap — giving
+# hubs LESS analysis, the opposite of the inversion's intent. A hub therefore gets a sentinel priority
+# strictly below the 0-edge cold_start entities (0.0), so it survives the cap and is analyzed first.
+HUB_PRIORITY = -1.0
+
+
+def _priority_score(curie: str, edge_count: int, hub_curies: set[str]) -> float:
+    """Cold_start selection priority (lower = higher priority). A rerouted intramodular hub
+    (``curie in hub_curies``) gets ``HUB_PRIORITY`` so it outranks even genuine 0-edge entities;
+    every other entity keeps the ascending-edge-count ordering of ``score_entity_complexity``."""
+    if curie in hub_curies:
+        return HUB_PRIORITY
+    return score_entity_complexity(edge_count)
+
+
+MAX_SPARSE = 5
+
+
+def select_entities(
+    sparse: list[str], cold_start: list[str], novelty_scores, resolved_entities
+) -> tuple[list[str], list[str]]:
+    """Pick the entities cold_start analyzes: top MAX_SPARSE sparse + top MAX_COLD_START cold-start.
+
+    Ascending edge count (lower = higher priority) bounds SDK overhead. Axis B: the hubs triage
+    rerouted (``select_rerouted_hubs``, the same rule triage uses) get top priority so the cap never
+    drops them (Q6); a hub that kept its own route competes on edge count like any other entity.
+    """
+    hub_curies = set(select_rerouted_hubs(novelty_scores))
+
+    def ranked(curies: list[str]) -> list[str]:
+        scored = []
+        for curie in curies:
+            _, _, edge_count = get_entity_info(curie, novelty_scores, resolved_entities)
+            scored.append((curie, _priority_score(curie, edge_count, hub_curies)))
+        scored.sort(key=lambda x: x[1])  # stable: ties keep input order
+        return [c for c, _ in scored]
+
+    return ranked(sparse)[:MAX_SPARSE], ranked(cold_start)[:MAX_COLD_START]
+
+
 def get_entity_info(
     curie_or_name: str,
     novelty_scores: list[NoveltyScore],
@@ -674,28 +729,9 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
     novelty_scores = state.get("novelty_scores", [])
     resolved_entities = state.get("resolved_entities", [])
 
-    # Prioritize entities: limit to top 5 sparse + top 3 cold-start by edge count
-    # This reduces SDK serialization overhead while focusing on most important entities
-    sparse_with_scores = []
-    for curie in sparse:
-        _, _, edge_count = get_entity_info(curie, novelty_scores, resolved_entities)
-        sparse_with_scores.append((curie, score_entity_complexity(edge_count)))
-
-    cold_start_with_scores = []
-    for curie in cold_start:
-        _, _, edge_count = get_entity_info(curie, novelty_scores, resolved_entities)
-        cold_start_with_scores.append((curie, score_entity_complexity(edge_count)))
-
-    # Sort by complexity score (lower = higher priority)
-    sparse_with_scores.sort(key=lambda x: x[1])
-    cold_start_with_scores.sort(key=lambda x: x[1])
-
-    # Limit to top entities
-    MAX_SPARSE = 5
-    MAX_COLD_START = 3
-
-    selected_sparse = [curie for curie, _ in sparse_with_scores[:MAX_SPARSE]]
-    selected_cold_start = [curie for curie, _ in cold_start_with_scores[:MAX_COLD_START]]
+    selected_sparse, selected_cold_start = select_entities(
+        sparse, cold_start, novelty_scores, resolved_entities
+    )
 
     skipped_count = (len(sparse) - len(selected_sparse)) + (len(cold_start) - len(selected_cold_start))
 

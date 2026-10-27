@@ -14,6 +14,9 @@ __pycache__/
 *.pyc
 .ruff_cache/
 
+# LiteLLM proxy master key (systemd EnvironmentFile) — never commit
+deploy/*.env
+
 # Assessment data — track queries and schema, ignore large cassettes and outputs
 backend/assessment_data/cassettes/
 backend/assessment_data/outputs/

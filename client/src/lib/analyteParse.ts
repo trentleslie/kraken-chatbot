@@ -19,19 +19,33 @@ export type AnalyteType = (typeof RECOGNIZED_TYPES)[number];
 export const MAX_FILE_BYTES = 10 * 1024 * 1024; // ~10 MB
 export const MAX_ROWS = 10_000;
 
-export type MappingTarget = "analyte" | "group" | "type";
+export type MappingTarget = "analyte" | "group" | "type" | "kme" | "kim";
 
 /** User's column→target assignment. Values are header names; undefined = unmapped. */
 export interface ColumnMapping {
   analyte?: string;
   group?: string;
   type?: string;
+  // Signed-weight data spine (Axis A): optional numeric columns. kME (module-eigengene
+  // correlation, [-1,1]) and kIM (raw intramodular connectivity kWithin, unbounded ≥ 0).
+  kme?: string;
+  kim?: string;
 }
 
 export interface StructuredAnalyte {
   name: string;
   group?: string;
   type?: AnalyteType;
+  // Numeric signed weights (Axis A); undefined = not supplied for this row.
+  kme?: number;
+  kim?: number;
+}
+
+/** One per-module eigengene→outcome direction sent alongside the panel (Axis A). */
+export interface ModuleDirectionInput {
+  group: string;
+  eigengene_trait_correlation: number;
+  trait_label: string;
 }
 
 export interface ParsedFile {
@@ -172,6 +186,19 @@ const ANALYTE_HEADER_PATTERNS = [
 ];
 const GROUP_HEADER_PATTERNS = [/^module$/i, /^group$/i, /^category$/i, /^cluster$/i];
 const TYPE_HEADER_PATTERNS = [/^analyte[_ ]?type$/i, /^omic$/i, /^omics$/i];
+// Signed-weight headers (Axis A) — unambiguous only (R6). kME = module-eigengene correlation;
+// kIM = raw intramodular connectivity (kWithin). Ambiguous headers like `value`/`weight` are
+// intentionally NOT matched.
+const KME_HEADER_PATTERNS = [
+  /^k[._ ]?me$/i,
+  /^signed[_ ]?kme$/i,
+  /^module[_ ]?membership$/i,
+];
+const KIM_HEADER_PATTERNS = [
+  /^k[._ ]?im$/i,
+  /^k[._ ]?within$/i,
+  /^intramodular[_ ]?connectivity$/i,
+];
 
 /**
  * Auto-suggest a column mapping from header names, restricted to UNAMBIGUOUS matches (R6).
@@ -187,9 +214,139 @@ export function suggestMapping(headers: string[]): ColumnMapping {
       mapping.group = header;
     } else if (!mapping.type && TYPE_HEADER_PATTERNS.some((p) => p.test(header))) {
       mapping.type = header;
+    } else if (!mapping.kme && KME_HEADER_PATTERNS.some((p) => p.test(header))) {
+      mapping.kme = header;
+    } else if (!mapping.kim && KIM_HEADER_PATTERNS.some((p) => p.test(header))) {
+      mapping.kim = header;
     }
   }
   return mapping;
+}
+
+/** Result of coercing one numeric weight cell (mirrors the backend three-way outcome). */
+export type WeightCell =
+  | { status: "absent" }
+  | { status: "value"; value: number }
+  | { status: "invalid" };
+
+function coerceFinite(raw: string | undefined): WeightCell {
+  if (raw === undefined) return { status: "absent" };
+  const s = raw.trim();
+  if (s === "") return { status: "absent" };
+  const n = Number(s);
+  if (!Number.isFinite(n)) return { status: "invalid" };
+  return { status: "value", value: n };
+}
+
+// kME / eigengene-trait correlations are bounded to [-1, 1], but a serialized WGCNA export can
+// round to e.g. 1.0000002. Mirror the backend (analyte_ingest.py `_KME_EPSILON`): tolerate
+// ±epsilon on the bound and clamp a within-epsilon value back inside, rather than rejecting a
+// rounded export the shared ingest gate would ACCEPT.
+export const KME_EPSILON = 1e-6;
+
+/** Clamp a correlation to [-1, 1] (used after the epsilon-tolerant bound check passes). */
+function clampCorrelation(v: number): number {
+  return Math.max(-1, Math.min(1, v));
+}
+
+/**
+ * Coerce a kME cell. kME is a correlation → valid only when finite AND within [-1, 1] up to
+ * ±KME_EPSILON (mirrors the backend's epsilon-tolerant-clamp rule). A within-epsilon value is
+ * clamped back inside so the payload sent to the backend is already in-bounds; only values beyond
+ * the epsilon are rejected. Blank = absent (member simply unweighted).
+ */
+export function parseKmeCell(raw: string | undefined): WeightCell {
+  const c = coerceFinite(raw);
+  if (c.status !== "value") return c;
+  if (c.value < -1 - KME_EPSILON || c.value > 1 + KME_EPSILON) return { status: "invalid" };
+  return { status: "value", value: clampCorrelation(c.value) };
+}
+
+/**
+ * Coerce a kIM cell. kIM is raw intramodular connectivity (kWithin): unbounded, non-negative — do
+ * NOT bound to [-1, 1]. Valid only when finite AND `>= 0`. Blank = absent.
+ */
+export function parseKimCell(raw: string | undefined): WeightCell {
+  const c = coerceFinite(raw);
+  if (c.status !== "value") return c;
+  if (c.value < 0) return { status: "invalid" };
+  return c;
+}
+
+/**
+ * Count mapped-but-invalid kME/kIM cells so the UI can badge them and BLOCK Continue (the client
+ * twin of "reject don't clip"): a mapped kME column that is nearly all invalid must not be
+ * indistinguishable from a clean no-kME run. Absent (blank) cells are not invalid.
+ */
+export function countInvalidWeightCells(
+  rows: Record<string, string>[],
+  mapping: ColumnMapping,
+): { kme: number; kim: number } {
+  let kme = 0;
+  let kim = 0;
+  for (const row of rows) {
+    // Only count rows with an analyte name (the panel's real rows).
+    if (mapping.analyte && !(row[mapping.analyte] ?? "").trim()) continue;
+    if (mapping.kme && parseKmeCell(row[mapping.kme]).status === "invalid") kme += 1;
+    if (mapping.kim && parseKimCell(row[mapping.kim]).status === "invalid") kim += 1;
+  }
+  return { kme, kim };
+}
+
+/**
+ * Build the outgoing per-module direction rows from a group→correlation map + one shared trait
+ * label (WGCNA runs study a single outcome). Blank/non-numeric correlations are skipped; an empty
+ * trait label or all-blank correlations yield [] ("no direction supplied", R3).
+ */
+export function buildModuleDirections(
+  correlationByGroup: Record<string, string>,
+  traitLabel: string,
+  activeGroups?: string[],
+): ModuleDirectionInput[] {
+  const label = traitLabel.trim();
+  if (!label) return [];
+  // Only send directions for groups that still exist in the current mapping; values typed for a
+  // group that disappeared after remapping are not validated by the Continue gate.
+  const active = activeGroups ? new Set(activeGroups) : null;
+  const out: ModuleDirectionInput[] = [];
+  for (const [group, raw] of Object.entries(correlationByGroup)) {
+    if (active && !active.has(group)) continue;
+    const c = coerceFinite(raw);
+    if (c.status !== "value") continue;
+    // Clamp a within-epsilon rounded export back inside [-1, 1] (mirrors the backend) so the
+    // payload is already in-bounds. A value beyond the epsilon is left as-is here; it is flagged
+    // by countInvalidDirections and the Continue gate blocks the upload before this is sent.
+    const corr =
+      c.value >= -1 - KME_EPSILON && c.value <= 1 + KME_EPSILON
+        ? clampCorrelation(c.value)
+        : c.value;
+    out.push({ group, eigengene_trait_correlation: corr, trait_label: label });
+  }
+  return out;
+}
+
+/**
+ * Count per-module direction correlations that are finite but OUTSIDE [-1, 1] (a correlation, same
+ * bound as kME). The backend REJECTS these; because the WS layer clears the staged upload the
+ * instant it sends, a server-side rejection loses the upload with no recovery. The Continue gate
+ * reads this count so an out-of-range direction is caught client-side instead. Blank / non-numeric
+ * entries are NOT counted (buildModuleDirections drops them; they are simply "no direction"). When
+ * `groups` is given, only those groups are considered so a stale value for a no-longer-shown group
+ * cannot invisibly block Continue.
+ */
+export function countInvalidDirections(
+  correlationByGroup: Record<string, string>,
+  groups?: string[],
+): number {
+  const keys = groups ?? Object.keys(correlationByGroup);
+  let n = 0;
+  for (const g of keys) {
+    const c = coerceFinite(correlationByGroup[g]);
+    // Epsilon-tolerant bound (mirrors backend): a within-epsilon rounded export is VALID (and gets
+    // clamped in buildModuleDirections); only values beyond the epsilon are counted as invalid.
+    if (c.status === "value" && (c.value < -1 - KME_EPSILON || c.value > 1 + KME_EPSILON)) n += 1;
+  }
+  return n;
 }
 
 function normalizeType(raw: string | undefined): AnalyteType | undefined {
@@ -205,6 +362,13 @@ export interface BuildResult {
   analytes: StructuredAnalyte[];
   rowsRead: number;
   rowsKept: number;
+  /**
+   * Count of (name, group) rows whose kME/kIM DISAGREE with an earlier row for the same key.
+   * The display dedup collapses these to the first value, so the backend — which receives the
+   * already-deduped panel — can never see the conflict its `validate_and_normalize` is designed to
+   * REJECT. Detected here so the UI can block Continue instead of silently coercing to row one.
+   */
+  weightConflicts: number;
 }
 
 /**
@@ -218,11 +382,17 @@ export function buildAnalytes(
   mapping: ColumnMapping,
 ): BuildResult {
   if (!mapping.analyte) {
-    return { analytes: [], rowsRead: rows.length, rowsKept: 0 };
+    return { analytes: [], rowsRead: rows.length, rowsKept: 0, weightConflicts: 0 };
   }
   const analytes: StructuredAnalyte[] = [];
-  const seen = new Set<string>();
+  // Retained analyte per (name, group) key, so a valid weight on a later duplicate row can fill
+  // in a first row whose kME cell was blank (the backend admits the first valid weight too).
+  const retained = new Map<string, StructuredAnalyte>();
+  // First-seen VALID weight pair per (name, group) key, for conflict detection independent of the
+  // display dedup below (mirrors the backend, which admits a member to the spine via a valid kME).
+  const weightByKey = new Map<string, { kme: number; kim: number | undefined }>();
   let rowsRead = 0;
+  let weightConflicts = 0;
 
   for (const row of rows) {
     const name = (row[mapping.analyte] ?? "").trim();
@@ -232,17 +402,53 @@ export function buildAnalytes(
     const group = mapping.group ? (row[mapping.group] ?? "").trim() || undefined : undefined;
     const type = mapping.type ? normalizeType(row[mapping.type]) : undefined;
 
-    const dedupKey = `${name.toLowerCase()} ${group ?? ""}`;
-    if (seen.has(dedupKey)) continue; // (name, group) collapse
-    seen.add(dedupKey);
+    // Parse signed weights once (used for both conflict detection and the display attach). Only a
+    // VALID (finite, in-range) cell yields a number; invalid/absent stays undefined.
+    const kmeCell = mapping.kme ? parseKmeCell(row[mapping.kme]) : undefined;
+    const kimCell = mapping.kim ? parseKimCell(row[mapping.kim]) : undefined;
+    const kmeVal = kmeCell?.status === "value" ? kmeCell.value : undefined;
+    const kimVal = kimCell?.status === "value" ? kimCell.value : undefined;
+
+    const dedupKey = `${name.toLowerCase()}\u0000${group ?? ""}`;
+    // Conflict detection (mirrors backend validate_and_normalize): a member enters the signed spine
+    // only via a valid kME. Two rows for the same (name, group) that BOTH carry a valid kME but
+    // disagree on (kME, kIM) are a mis-map/duplicate footgun the backend REJECTS. Detected here,
+    // BEFORE the display collapse, so a conflicting file cannot be silently coerced to the first
+    // value and slipped past the (now blind) server-side check.
+    if (kmeVal !== undefined) {
+      const prior = weightByKey.get(dedupKey);
+      if (prior === undefined) {
+        weightByKey.set(dedupKey, { kme: kmeVal, kim: kimVal });
+      } else if (prior.kme !== kmeVal || prior.kim !== kimVal) {
+        weightConflicts += 1;
+      }
+    }
+
+    const kept = retained.get(dedupKey);
+    if (kept) {
+      // (name, group) collapse; adopt the first valid weight PAIR if the kept row had no kME.
+      // Replace both, so a kIM from the kME-less row never mixes with another row's kME.
+      if (kept.kme === undefined && kmeVal !== undefined) {
+        kept.kme = kmeVal;
+        if (kimVal !== undefined) kept.kim = kimVal;
+        else delete kept.kim;
+      }
+      continue;
+    }
 
     const analyte: StructuredAnalyte = { name };
     if (group) analyte.group = group;
     if (type) analyte.type = type;
+    // Signed weights (Axis A): attach only VALID cells. An invalid (out-of-range / non-numeric)
+    // cell is left unset here — never silently coerced — and surfaced separately via
+    // countInvalidWeightCells so the UI badges it and blocks Continue.
+    if (kmeVal !== undefined) analyte.kme = kmeVal;
+    if (kimVal !== undefined) analyte.kim = kimVal;
     analytes.push(analyte);
+    retained.set(dedupKey, analyte);
   }
 
-  return { analytes, rowsRead, rowsKept: analytes.length };
+  return { analytes, rowsRead, rowsKept: analytes.length, weightConflicts };
 }
 
 /** Distinct group values present in a built analyte list, in first-seen order. */
@@ -341,6 +547,26 @@ export function validatePanelFields(analytes: StructuredAnalyte[]): string | nul
       if (CONTROL_CHARS.test(val)) {
         return `Analyte ${label} at row ${i + 1} contains control characters.`;
       }
+    }
+  }
+  return null;
+}
+
+/**
+ * Mirror of the server's trait_label checks on module directions (analyte_ingest.py), so a
+ * direction it would reject is caught before the upload is sent and cleared.
+ */
+export function validateDirectionFields(
+  directions: { trait_label?: string }[],
+): string | null {
+  for (let i = 0; i < directions.length; i++) {
+    const label = directions[i].trait_label?.trim();
+    if (!label) return `Module direction ${i + 1} has a blank trait label.`;
+    if (Array.from(label).length > ANALYTE_FIELD_MAX_LEN) {
+      return `Module direction ${i + 1} trait label is longer than ${ANALYTE_FIELD_MAX_LEN} characters.`;
+    }
+    if (CONTROL_CHARS.test(label)) {
+      return `Module direction ${i + 1} trait label contains control characters.`;
     }
   }
   return null;

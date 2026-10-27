@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertCircle } from "lucide-react";
 import { Header } from "@/components/Header";
 import { ChatArea } from "@/components/ChatArea";
@@ -9,7 +9,10 @@ import { PipelineProgress } from "@/components/PipelineProgress";
 import { AnalyteUpload } from "@/components/AnalyteUpload";
 import { ColumnMappingPanel } from "@/components/ColumnMappingPanel";
 import { AnalyteReviewSummary } from "@/components/AnalyteReviewSummary";
+import { ApiKeyGate } from "@/components/ApiKeyGate";
 import { useWebSocket } from "@/hooks/useWebSocket";
+import { useApiKey } from "@/hooks/useApiKey";
+import { Badge } from "@/components/ui/badge";
 import { distinctGroups, type ParsedFile } from "@/lib/analyteParse";
 import type { ErrorMessage } from "@/types/messages";
 
@@ -19,6 +22,9 @@ type UploadStage =
   | { step: "mapping"; parsed: ParsedFile; fileName: string };
 
 export default function ChatPage() {
+  // BYOK: key lives only in React state (never persisted).
+  const apiKey = useApiKey();
+
   const {
     messages,
     connectionStatus,
@@ -34,9 +40,14 @@ export default function ChatPage() {
     setStructuredAnalytes,
     selectedGroups,
     setSelectedGroups,
+    setModuleDirections,
     sendMessage,
     clearMessages,
-  } = useWebSocket();
+    needsKey,
+    keySource,
+    restoredQuery,
+    keyRejectedNonce,
+  } = useWebSocket({ apiKey: apiKey.key });
 
   const [uploadStage, setUploadStage] = useState<UploadStage>({ step: "idle" });
   const [queryEmpty, setQueryEmpty] = useState(true);
@@ -50,10 +61,20 @@ export default function ChatPage() {
     (m) => m.type === "error" && (m as ErrorMessage).code === "AUTH_ERROR"
   );
 
+  // BYOK: composer is additionally blocked when the server needs a key and none is set.
+  const keyGateBlocking = needsKey && apiKey.key === null;
+
+  // The provider rejected the user's own key: drop it so the key form reappears.
+  const { clearKey } = apiKey;
+  useEffect(() => {
+    if (keyRejectedNonce > 0) clearKey();
+  }, [keyRejectedNonce, clearKey]);
+
   const resetUpload = () => {
     setUploadStage({ step: "idle" });
     setStructuredAnalytes([]);
     setSelectedGroups([]);
+    setModuleDirections([]);
   };
 
   const handleSelectStarter = (query: string) => {
@@ -106,6 +127,16 @@ export default function ChatPage() {
             disabled={isAgentResponding}
           />
         )}
+        {/* BYOK: key-source badge — shown when the server has confirmed which key is in use. */}
+        {keySource !== null && (
+          <Badge variant={keySource === "byok" ? "default" : "secondary"} className="text-xs">
+            {keySource === "byok"
+              ? "Using your key"
+              : keySource === "sdk"
+                ? "Using Claude Code login"
+                : "Using server key"}
+          </Badge>
+        )}
       </div>
 
       <ChatArea
@@ -137,10 +168,11 @@ export default function ChatPage() {
               parsed={uploadStage.parsed}
               fileName={uploadStage.fileName}
               onCancel={() => setUploadStage({ step: "idle" })}
-              onConfirm={(analytes) => {
+              onConfirm={(analytes, moduleDirections) => {
                 setStructuredAnalytes(analytes);
                 // Default the group selection to all groups present.
                 setSelectedGroups(distinctGroups(analytes));
+                setModuleDirections(moduleDirections);
                 setUploadStage({ step: "idle" });
               }}
             />
@@ -157,12 +189,21 @@ export default function ChatPage() {
         </div>
       )}
 
+      {/* BYOK: key gate — blocks composer when server sends NEEDS_KEY and no key is set,
+          or shows a "clear key" control when a key is already loaded for this session. */}
+      {!hasAuthError && (
+        <div className="px-4 pb-2">
+          <ApiKeyGate apiKey={apiKey} needsKey={needsKey} />
+        </div>
+      )}
+
       <ChatInput
         onSend={handleSend}
-        disabled={isAgentResponding || hasAuthError}
+        disabled={isAgentResponding || hasAuthError || keyGateBlocking}
         isConnected={isConnected}
         hasPanel={isPipeline && hasPanel}
         onQueryEmptyChange={setQueryEmpty}
+        restoreValue={restoredQuery}
       />
     </div>
   );

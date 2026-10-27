@@ -6,6 +6,16 @@ from pydantic import BaseModel, model_validator
 from dotenv import load_dotenv
 
 
+# Default Claude model for both the classic agent and the discovery pipeline.
+# Overridable via CLAUDE_MODEL (classic) and KRAKEN_PIPELINE_MODEL (pipeline).
+# Opus 5.5 needs Claude Code CLI >=2.1.280, i.e. claude-agent-sdk >=0.2.170.
+DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
+
+# Kestrel MCP endpoint; KESTREL_MCP_URL overrides. kestrel.nathanpricelab.com was retired
+# (DNS no longer resolves) in 2026.
+DEFAULT_KESTREL_MCP_URL = "https://kestrel.krakenkg.com/mcp"
+
+
 class Settings(BaseModel):
     """Application settings loaded from environment variables."""
 
@@ -19,8 +29,8 @@ class Settings(BaseModel):
     # Rate limiting
     rate_limit_per_minute: int = 10
 
-    # Claude model (None = use SDK default)
-    model: str | None = None
+    # Claude model for the classic agent
+    model: str = DEFAULT_CLAUDE_MODEL
 
     # Clerk authentication
     clerk_auth_enabled: bool = False
@@ -48,6 +58,17 @@ class Settings(BaseModel):
     log_level: str = "INFO"
     log_format: str = "text"  # "json" or "text"
     log_module_levels: dict[str, str] = {}  # Module-specific log levels
+
+    # BYOK: domains whose verified users may skip BYOK; everyone else must bring a key.
+    # Trusted users ride the server key if set, else the server's Claude Code (SDK) login.
+    byok_trusted_email_domains: list[str] = []
+    # The Anthropic key used for the trusted fallback (optional; unset = SDK login).
+    server_anthropic_api_key: str | None = None
+    # LiteLLM proxy for per-session BYOK (see byok.py:build_agent_env). Empty = no proxy,
+    # direct-to-Anthropic (legacy) behavior.
+    kraken_llm_base_url: str = ""
+    # Proxy-auth key (Authorization: Bearer), stripped by the proxy before forwarding upstream.
+    litellm_master_key: str = ""
 
     # Analyte file-upload ingest guards (R19). These are stability guardrails independent of the
     # client UI, enforced at every entry point (WS handler + runner/intake boundary) so LangGraph
@@ -120,6 +141,12 @@ def get_settings() -> Settings:
     if clerk_domains_str:
         clerk_domains = [d.strip().lower() for d in clerk_domains_str.split(",") if d.strip()]
 
+    byok_trusted = [
+        d.strip().lower()
+        for d in os.getenv("BYOK_TRUSTED_EMAIL_DOMAINS", "").split(",")
+        if d.strip()
+    ]
+
     clerk_emails = []
     clerk_emails_str = os.getenv("ALLOWED_EMAILS", "")
     if clerk_emails_str:
@@ -135,7 +162,7 @@ def get_settings() -> Settings:
         port=int(os.getenv("PORT", "8000")),
         allowed_origins=origins,
         rate_limit_per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "10")),
-        model=os.getenv("CLAUDE_MODEL"),  # None = use SDK default
+        model=os.getenv("CLAUDE_MODEL") or DEFAULT_CLAUDE_MODEL,
         clerk_auth_enabled=clerk_auth_enabled,
         clerk_secret_key=clerk_secret_key,
         clerk_jwks_url=os.getenv("CLERK_JWKS_URL"),
@@ -157,6 +184,10 @@ def get_settings() -> Settings:
         analyte_panel_row_cap=int(os.getenv("ANALYTE_PANEL_ROW_CAP", "10000")),
         max_ws_message_bytes=int(os.getenv("MAX_WS_MESSAGE_BYTES", "5000000")),
         analyte_field_max_len=int(os.getenv("ANALYTE_FIELD_MAX_LEN", "512")),
+        byok_trusted_email_domains=byok_trusted,
+        server_anthropic_api_key=os.getenv("SERVER_ANTHROPIC_API_KEY") or None,
+        kraken_llm_base_url=os.getenv("KRAKEN_LLM_BASE_URL", ""),
+        litellm_master_key=os.getenv("LITELLM_MASTER_KEY", ""),
     )
 
 

@@ -20,6 +20,13 @@ from .agent import run_agent_turn
 from .logging_config import configure_logging, generate_correlation_id, correlation_id
 from .clerk_auth import get_current_user, validate_ws_clerk_token
 from .clerk_proxy import router as clerk_proxy_router, close_http_client
+from .byok import (
+    resolve_effective_key_and_provider,
+    current_api_key,
+    current_provider,
+    NeedsKeyError,
+)
+from .clerk_identity import get_verified_email
 
 # Configure logging early
 settings = get_settings()
@@ -57,10 +64,12 @@ from .protocol import (
     PipelineProgressMessage,
     PipelineNodeDetailMessage,
     PipelineCompleteMessage,
+    KeySourceMessage,
     NODE_STATUS_MESSAGES,
 )
 from .graph.node_detail_extractors import extract_node_details
 from .graph.state import DiscoveryState
+from .graph.sdk_utils import DEFAULT_MODEL_NAME as PIPELINE_MODEL_NAME
 
 
 def _get_concat_fields() -> set[str]:
@@ -102,6 +111,9 @@ conversation_ids: dict[str, UUID] = {}
 
 # Turn counter per WebSocket connection: {connection_id: int}
 turn_counters: dict[str, int] = defaultdict(int)
+
+# Per-connection BYOK key: {connection_id: key_str | None}
+connection_api_keys: dict[str, str | None] = {}
 
 # Maximum number of user/assistant exchanges to keep in history
 MAX_HISTORY_EXCHANGES = 10
@@ -263,6 +275,46 @@ def check_langfuse_health() -> tuple[bool, str | None]:
         return True, None
     except Exception as e:
         return False, f"Langfuse error: {str(e)}"
+
+
+def _probe_anthropic_key(key: str) -> tuple[bool, str | None]:
+    """Probe an Anthropic API key with a minimal 1-token request.
+
+    Returns:
+        (True, None) if the key is valid and accepted by Anthropic.
+        (False, "invalid_api_key") if Anthropic rejects the key (AuthenticationError).
+        (False, "validation_failed") for any other exception (network, timeout, etc.)
+
+    The key is NEVER logged — callers must not log it either.
+    """
+    import anthropic
+    try:
+        anthropic.Anthropic(api_key=key).messages.create(
+            model="claude-haiku-4-5",  # claude-3-5-haiku was retired 2026-02-19 (404 for every key)
+            max_tokens=1,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        return True, None
+    except anthropic.AuthenticationError:
+        return False, "invalid_api_key"
+    except Exception:
+        return False, "validation_failed"
+
+
+@app.post("/api/validate-key")
+async def validate_key(request: Request):
+    """Pre-flight endpoint: validate an Anthropic API key without storing it.
+
+    Body: {"key": "sk-..."}
+    Returns: {"valid": true} or {"valid": false, "reason": "..."}
+    The submitted key is never written to any log.
+    """
+    body = await request.json()
+    # _probe_anthropic_key makes a blocking (synchronous) Anthropic HTTP call.
+    # Run it in a worker thread so a slow/timing-out probe cannot stall the event
+    # loop and the active WebSocket chat streams sharing it.
+    ok, reason = await asyncio.to_thread(_probe_anthropic_key, body.get("key", ""))
+    return {"valid": ok} if ok else {"valid": False, "reason": reason}
 
 
 @app.get("/health")
@@ -507,6 +559,7 @@ async def handle_pipeline_mode(
     biomapper_env: str | None = None,
     structured_analytes: list[dict] | None = None,
     selected_groups: list[str] | None = None,
+    module_directions: list[dict] | None = None,
 ) -> None:
     """
     Handle discovery pipeline mode - LangGraph multi-node workflow.
@@ -589,6 +642,7 @@ async def handle_pipeline_mode(
             biomapper_env=biomapper_env,
             structured_analytes=structured_analytes,
             selected_groups=selected_groups,
+            module_directions=module_directions,
         ):
             if event["type"] != "node_update":
                 continue
@@ -675,7 +729,7 @@ async def handle_pipeline_mode(
             "hypotheses_count": len(hypotheses),
             "entities_resolved": len(resolved_entities),
             "duration_ms": duration_ms,
-            "model": "claude-sonnet-4-20250514",
+            "model": PIPELINE_MODEL_NAME,
         }
         if trace:
             # trace.trace_id is the trace identifier (trace.id is the span id) — the
@@ -843,6 +897,15 @@ async def websocket_chat(websocket: WebSocket):
                 )
                 continue
 
+            # BYOK: client can set/clear per-connection key before any chat turn.
+            if data.get("type") == "set_key":
+                connection_api_keys[connection_id] = data.get("key")
+                logger.debug(
+                    "BYOK set_key received",
+                    extra={"connection_id": connection_id, "has_key": data.get("key") is not None}
+                )
+                continue
+
             # Validate message type
             if data.get("type") != "user_message":
                 await websocket.send_text(
@@ -856,6 +919,9 @@ async def websocket_chat(websocket: WebSocket):
             # client's group selection arrive alongside the free-text query.
             structured_analytes_raw = data.get("structured_analytes")
             selected_groups = data.get("selected_groups")
+            # Optional per-module eigengene→outcome directions (Axis A). kME/kIM ride each
+            # structured_analytes row (no separate field); only the direction table is new.
+            module_directions_raw = data.get("module_directions")
 
             # Relaxed empty-content guard (R17): accept a file-only submit (panel present, no typed
             # query); reject only when BOTH are empty.
@@ -879,8 +945,18 @@ async def websocket_chat(websocket: WebSocket):
                         ErrorMessage(message="selected_groups must be a list").model_dump_json()
                     )
                     continue
+                if module_directions_raw is not None and not isinstance(module_directions_raw, list):
+                    await websocket.send_text(
+                        ErrorMessage(message="module_directions must be a list").model_dump_json()
+                    )
+                    continue
+                # The authoritative count-cap + per-row validation of directions lives in the shared
+                # helper (Unit 2), so gate #1 and intake gate #2 are bounded identically.
                 normalized = validate_and_normalize(
-                    structured_analytes_raw, selected_groups, _settings
+                    structured_analytes_raw,
+                    selected_groups,
+                    _settings,
+                    module_directions=module_directions_raw,
                 )
                 if normalized.errors:
                     await websocket.send_text(
@@ -926,10 +1002,9 @@ async def websocket_chat(websocket: WebSocket):
                 continue
 
             # Create conversation on first message
-            settings = get_settings()
             if connection_id not in conversation_ids:
                 user_id = user_info.get("user_id") if user_info else None
-                conv_id = await create_conversation(connection_id, settings.model or "default", user_id)
+                conv_id = await create_conversation(connection_id, _settings.model, user_id)
                 if conv_id:
                     conversation_ids[connection_id] = conv_id
                     # Send conversation_id to frontend for copy link functionality
@@ -942,6 +1017,34 @@ async def websocket_chat(websocket: WebSocket):
             # Optional prod/dev biomapper2 API toggle (mirrors biomapper-ui env routing).
             biomapper_env = data.get("biomapper_env")
 
+            # BYOK: unconditional per-turn key resolution (fail closed).
+            # An untrusted user with no key must NEVER reach synthesis — gate applies
+            # regardless of server configuration.
+            verified = await get_verified_email(user_info or {})
+            try:
+                key, provider, source = resolve_effective_key_and_provider(
+                    connection_api_keys.get(connection_id), verified)
+            except NeedsKeyError:
+                await websocket.send_text(ErrorMessage(
+                    message="Provide your Anthropic API key to run synthesis.",
+                    code="NEEDS_KEY").model_dump_json())
+                await websocket.send_text(DoneMessage().model_dump_json())
+                continue
+            # Pipeline nodes catch SDK failures and fall back, so a revoked BYOK key would yield a
+            # degraded report instead of an error. Probe the user's key up front (1 token) so a
+            # rejection reaches the client's key-recovery path. Classic mode surfaces AUTH_ERROR.
+            if agent_mode == "pipeline" and source == "byok":
+                ok, reason = await asyncio.to_thread(_probe_anthropic_key, key)
+                if not ok and reason == "invalid_api_key":
+                    await websocket.send_text(ErrorMessage(
+                        message="Your Anthropic API key was rejected. Enter a different key to continue.",
+                        code="BYOK_REJECTED").model_dump_json())
+                    await websocket.send_text(DoneMessage().model_dump_json())
+                    continue
+            await websocket.send_text(KeySourceMessage(source=source).model_dump_json())
+            tok = current_api_key.set(key)
+            prov_tok = current_provider.set(provider)
+
             try:
                 if agent_mode == "pipeline":
                     await handle_pipeline_mode(
@@ -951,6 +1054,7 @@ async def websocket_chat(websocket: WebSocket):
                         biomapper_env,
                         structured_analytes=normalized_analytes,
                         selected_groups=selected_groups,
+                        module_directions=module_directions_raw,
                     )
                 else:
                     await handle_classic_mode(websocket, content, connection_id)
@@ -959,6 +1063,9 @@ async def websocket_chat(websocket: WebSocket):
                     ErrorMessage(message=f"Agent error: {str(e)}").model_dump_json()
                 )
                 await websocket.send_text(DoneMessage().model_dump_json())
+            finally:
+                current_api_key.reset(tok)
+                current_provider.reset(prov_tok)
 
     except WebSocketDisconnect:
         # Clean up state for this connection
@@ -966,6 +1073,7 @@ async def websocket_chat(websocket: WebSocket):
         conversation_history.pop(connection_id, None)
         conversation_ids.pop(connection_id, None)
         turn_counters.pop(connection_id, None)
+        connection_api_keys.pop(connection_id, None)
     except Exception as e:
         logger.error(
             "WebSocket error",
@@ -976,6 +1084,7 @@ async def websocket_chat(websocket: WebSocket):
         conversation_history.pop(connection_id, None)
         conversation_ids.pop(connection_id, None)
         turn_counters.pop(connection_id, None)
+        connection_api_keys.pop(connection_id, None)
 
 
 if __name__ == "__main__":

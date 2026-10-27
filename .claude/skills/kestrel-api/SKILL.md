@@ -8,8 +8,8 @@ description: Use when calling the Kestrel biomedical knowledge graph (multi_hop_
 ## Overview
 
 Kestrel is the biomedical knowledge-graph backing the discovery pipeline, reached two ways (same schemas):
-- **MCP** `https://kestrel.nathanpricelab.com/mcp` — what `kestrel_client.py` / the pipeline call.
-- **REST** `https://kestrel.nathanpricelab.com/api` — OpenAPI at `/api/openapi.json`, Swagger at `/api/docs`.
+- **MCP** `https://kestrel.krakenkg.com/mcp` — what `kestrel_client.py` / the pipeline call.
+- **REST** `https://kestrel.krakenkg.com/api` — OpenAPI at `/api/openapi.json`, Swagger at `/api/docs`.
 
 Auth: `X-API-Key: $KESTREL_API_KEY`. Full endpoint catalog: **`docs/kestrel-api-reference.md`** (re-pull `/api/openapi.json` to refresh).
 

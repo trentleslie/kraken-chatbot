@@ -1,12 +1,57 @@
 """Structured JSON logging configuration with correlation ID support."""
 
 import logging
+import re
 import sys
 from contextvars import ContextVar
 from typing import Optional
 from uuid import uuid4
 
 from pythonjsonlogger.json import JsonFormatter
+
+
+_KEY_RE = re.compile(r"sk-(?:ant-)?[A-Za-z0-9_-]{16,}")
+# A token= query parameter (the WebSocket carries the Clerk session JWT as ?token=...).
+_TOKEN_QS_RE = re.compile(r"([?&]token=)[^&\s\"']+")
+
+
+class ApiKeyRedactionFilter(logging.Filter):
+    """Mask Anthropic and generic sk-... API keys in log records."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = _KEY_RE.sub("sk-***REDACTED***", record.msg)
+        if isinstance(record.args, dict):
+            record.args = {
+                k: (_KEY_RE.sub("sk-***REDACTED***", v) if isinstance(v, str) else v)
+                for k, v in record.args.items()
+            }
+        elif record.args:
+            record.args = tuple(
+                _KEY_RE.sub("sk-***REDACTED***", a) if isinstance(a, str) else a
+                for a in record.args
+            )
+        return True
+
+
+class QueryTokenRedactionFilter(logging.Filter):
+    """Mask ?token=... query values (Clerk session JWTs) in uvicorn's connection/access lines.
+
+    Uvicorn's loggers have their own handlers, so the root handler's filters never see them;
+    this is attached to those loggers directly.
+    """
+
+    @staticmethod
+    def _redact(value):
+        return _TOKEN_QS_RE.sub(r"\1***REDACTED***", value) if isinstance(value, str) else value
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = self._redact(record.msg)
+        if isinstance(record.args, dict):
+            record.args = {k: self._redact(v) for k, v in record.args.items()}
+        elif record.args:
+            record.args = tuple(self._redact(a) for a in record.args)
+        return True
 
 
 # ContextVar for correlation ID - propagates across async tasks
@@ -82,7 +127,16 @@ def configure_logging(
         )
 
     console_handler.setFormatter(formatter)
+    console_handler.addFilter(ApiKeyRedactionFilter())
+    console_handler.addFilter(QueryTokenRedactionFilter())
     root_logger.addHandler(console_handler)
+
+    # Uvicorn logs WebSocket connects ("WebSocket /ws/chat?token=...") and HTTP access lines
+    # through its own loggers/handlers; filter at the logger so the JWT never reaches them.
+    for name in ("uvicorn.error", "uvicorn.access"):
+        uv_logger = logging.getLogger(name)
+        if not any(isinstance(f, QueryTokenRedactionFilter) for f in uv_logger.filters):
+            uv_logger.addFilter(QueryTokenRedactionFilter())
 
     # Set module-specific log levels
     if module_levels:

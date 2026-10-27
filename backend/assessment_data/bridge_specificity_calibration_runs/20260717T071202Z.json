@@ -1,0 +1,72 @@
+{
+  "timestamp": "20260717T071202Z",
+  "query_sha": "e5d4db84bc7098e0",
+  "damping_w": 0.4,
+  "current_constants": {
+    "SPECIFIC_CUT": 0.2,
+    "MODERATE_CUT": 0.1,
+    "GENERIC_CUTOFF": 1000
+  },
+  "recommended_constants": {
+    "GENERIC_CUTOFF": 10000,
+    "SPECIFIC_CUT": 0.0271,
+    "MODERATE_CUT": 0.0251,
+    "basis": {
+      "p40_degree": 8246,
+      "p70_degree": 10000,
+      "p90_degree": 10000
+    }
+  },
+  "degrees": {
+    "UBERON:0000178": 10000,
+    "UBERON:0001987": 10000,
+    "MONDO:0004992": 10000,
+    "CHEBI:16797": 143,
+    "CHEBI:15377": 10000,
+    "CHEBI:16236": 7808,
+    "CHEBI:17234": 7471,
+    "CHEBI:29101": 5333,
+    "GO:0006954": 1270,
+    "GO:0005515": 10000,
+    "UBERON:0002107": 10000,
+    "UBERON:0000955": 10000,
+    "MONDO:0005148": 10000,
+    "HP:0000118": 115
+  },
+  "degree_distribution": {
+    "n_known": 14,
+    "min": 115,
+    "median": 10000.0,
+    "max": 10000
+  },
+  "one_mna_scaffold_score": {
+    "curies": [
+      "UBERON:0000178",
+      "UBERON:0001987",
+      "MONDO:0004992"
+    ],
+    "degrees": [
+      10000,
+      10000,
+      10000
+    ],
+    "label": "generic",
+    "score": 0.0251188643150958,
+    "generic_intermediates": [
+      "UBERON:0000178",
+      "UBERON:0001987",
+      "MONDO:0004992"
+    ]
+  },
+  "control_specific_score": {
+    "curies": [
+      "CHEBI:16797"
+    ],
+    "degrees": [
+      143
+    ],
+    "label": "moderate",
+    "score": 0.13736167721553033,
+    "generic_intermediates": []
+  }
+}

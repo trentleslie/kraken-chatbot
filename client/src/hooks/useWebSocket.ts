@@ -4,6 +4,8 @@ import type {
   ChatMessage,
   ConnectionStatus,
   IncomingMessage,
+  KeySource,
+  SetKeyRequest,
   ToolUseMessage,
   TraceMessage,
   SessionStats,
@@ -11,11 +13,13 @@ import type {
   BiomapperEnv,
   PipelineProgress,
   StructuredAnalyte,
+  ModuleDirectionInput,
 } from "@/types/messages";
 import {
   applyGroupFilter,
   distinctNameCount,
   effectiveGroupSelection,
+  validateDirectionFields,
   validatePanelFields,
 } from "@/lib/analyteParse";
 
@@ -231,7 +235,16 @@ const DEMO_PIPELINE_SCENARIO: IncomingMessage[] = [
 
 const DEMO_PIPELINE_DELAYS = [300, 400, 300, 600, 300, 400, 300, 800, 300, 600, 300, 700, 300, 500, 300, 800, 200, 100];
 
-export function useWebSocket() {
+interface UseWebSocketOptions {
+  /**
+   * The user's current BYOK API key (or null when not set).
+   * Passed as a prop so the hook can send `set_key` frames whenever it changes
+   * without reconstructing the WebSocket.
+   */
+  apiKey?: string | null;
+}
+
+export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("disconnected");
@@ -247,6 +260,51 @@ export function useWebSocket() {
   // after each successful send so a follow-up text message doesn't silently re-run the panel.
   const [structuredAnalytes, setStructuredAnalytes] = useState<StructuredAnalyte[]>([]);
   const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
+  // Optional per-module eigengene→outcome directions (Axis A signed-weight spine). Sent with the
+  // panel; one-shot cleared like the panel. Empty = "no direction supplied".
+  const [moduleDirections, setModuleDirections] = useState<ModuleDirectionInput[]>([]);
+
+  // BYOK state: set true when the server returns a NEEDS_KEY error, reset when a key is accepted.
+  const [needsKey, setNeedsKey] = useState(false);
+  // The key source reported by the server at the start of each turn.
+  const [keySource, setKeySource] = useState<KeySource | null>(null);
+  // Which key the CURRENT turn ran on (state above lags inside the socket handler closure).
+  const keySourceRef = useRef<KeySource | null>(null);
+  // The last outgoing turn, kept until the server accepts it (key_source) so a NEEDS_KEY
+  // refusal can restore the upload and question instead of losing them.
+  const pendingTurnRef = useRef<{
+    content: string;
+    analytes: StructuredAnalyte[];
+    groups: string[];
+    directions: ModuleDirectionInput[];
+  } | null>(null);
+  // Question text to put back in the composer after a NEEDS_KEY refusal (nonce re-triggers).
+  const [restoredQuery, setRestoredQuery] = useState<{ text: string; nonce: number } | null>(null);
+  // Current staged panel, readable from the socket handler without a stale closure.
+  const stagedAnalytesRef = useRef<StructuredAnalyte[]>([]);
+  // Bumped when the provider rejects the user's own key, so the page can clear it.
+  const [keyRejectedNonce, setKeyRejectedNonce] = useState(0);
+  useEffect(() => {
+    stagedAnalytesRef.current = structuredAnalytes;
+  }, [structuredAnalytes]);
+
+  // Put a refused turn back: the question (ChatInput only fills an empty box) and, unless a newer
+  // upload has been staged since, the panel, selection and directions.
+  const restorePendingTurn = () => {
+    const pending = pendingTurnRef.current;
+    pendingTurnRef.current = null;
+    if (!pending) return;
+    if (pending.analytes.length > 0 && stagedAnalytesRef.current.length === 0) {
+      setStructuredAnalytes(pending.analytes);
+      setSelectedGroups(pending.groups);
+      setModuleDirections(pending.directions);
+    }
+    if (pending.content) setRestoredQuery({ text: pending.content, nonce: Date.now() });
+  };
+
+  // Keep a ref to the latest apiKey so onopen and the key-change effect can
+  // always read the current value without capturing a stale closure.
+  const apiKeyRef = useRef<string | null>(apiKey);
 
   // Clerk auth: get a fresh session token for WebSocket connections.
   // When Clerk isn't configured (local dev / no publishable key) there's no
@@ -265,12 +323,22 @@ export function useWebSocket() {
     ? useAuth()
     : { getToken: NOOP_GET_TOKEN, isSignedIn: false };
 
+  // Sync the ref every render so closures that capture it always see the latest key.
+  apiKeyRef.current = apiKey;
+
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const demoModeRef = useRef(false);
   const demoTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  /** Send a set_key frame on the currently-open socket (no-op if socket isn't open). */
+  const sendSetKey = useCallback((ws: WebSocket, key: string | null) => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    const frame: SetKeyRequest = { type: "set_key", key };
+    ws.send(JSON.stringify(frame));
+  }, []);
 
   const addTraceToSession = useCallback((trace: TraceMessage) => {
     setSessionStats((prev) => ({
@@ -365,7 +433,64 @@ export function useWebSocket() {
         break;
       }
 
+      case "key_source":
+        // Server confirms which key is powering this turn.
+        setKeySource(data.source);
+        keySourceRef.current = data.source;
+        pendingTurnRef.current = null; // the server accepted this turn
+        // A key_source frame arriving means the server accepted the key — clear needsKey.
+        if (data.source === "byok") {
+          setNeedsKey(false);
+        }
+        break;
+
       case "error":
+        // NEEDS_KEY: server is telling us it can't proceed without a user-supplied key.
+        if (data.code === "NEEDS_KEY") {
+          setNeedsKey(true);
+          setIsAgentResponding(false);
+          setPipelineProgress(null);
+          // Put the refused turn back so it can be resent after entering a key.
+          restorePendingTurn();
+          // Surface the error message in the chat so the user understands what happened.
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: generateId(),
+              type: "error" as const,
+              message: data.message,
+              code: data.code,
+              timestamp: Date.now(),
+            },
+          ]);
+          break;
+        }
+        // An auth failure on a turn that ran on the user's own key means THEIR key was
+        // rejected, not that the server login expired: ask for a new key instead of locking
+        // the page behind the admin banner.
+        // BYOK_REJECTED comes from the server's pre-run probe (pipeline mode); a Classic AUTH_ERROR
+        // on a BYOK turn means the same thing.
+        if (
+          data.code === "BYOK_REJECTED" ||
+          (data.code === "AUTH_ERROR" && keySourceRef.current === "byok")
+        ) {
+          setNeedsKey(true);
+          setKeyRejectedNonce((n) => n + 1);
+          restorePendingTurn();
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: generateId(),
+              type: "error" as const,
+              message: "Your Anthropic API key was rejected. Enter a different key to continue.",
+              code: "BYOK_REJECTED",
+              timestamp: Date.now(),
+            },
+          ]);
+          setIsAgentResponding(false);
+          setPipelineProgress(null);
+          break;
+        }
         setMessages((prev) => [
           ...prev,
           {
@@ -498,6 +623,9 @@ export function useWebSocket() {
         setConnectionStatus("connected");
         reconnectAttemptRef.current = 0;
         demoModeRef.current = false;
+        // BYOK: send set_key FIRST, before any user_message, so the server knows
+        // which key to use. Reads the ref to get the current value at open time.
+        sendSetKey(ws, apiKeyRef.current);
       };
 
       ws.onmessage = (event) => {
@@ -542,7 +670,7 @@ export function useWebSocket() {
       setConnectionStatus("disconnected");
       scheduleReconnect();
     }
-  }, [handleIncomingMessage, scheduleReconnect, enterDemoMode, getToken, isSignedIn]);
+  }, [handleIncomingMessage, scheduleReconnect, enterDemoMode, getToken, isSignedIn, sendSetKey]);
 
   const runDemoScenario = useCallback(
     (userContent: string) => {
@@ -605,12 +733,16 @@ export function useWebSocket() {
         // Send the FULL parsed panel + the selection; the backend forms the run set.
         structured_analytes: hasPanel ? structuredAnalytes : undefined,
         selected_groups: hasPanel ? groupSelection : undefined,
+        // Only meaningful with a panel; omit when empty ("no direction supplied").
+        module_directions:
+          hasPanel && moduleDirections.length > 0 ? moduleDirections : undefined,
       });
 
       if (hasPanel) {
         const runCount = distinctNameCount(applyGroupFilter(structuredAnalytes, groupSelection));
         const frameBytes = new Blob([serialized]).size;
-        const fieldError = validatePanelFields(structuredAnalytes);
+        const fieldError =
+          validatePanelFields(structuredAnalytes) ?? validateDirectionFields(moduleDirections);
         if (fieldError) {
           setMessages((prev) => [
             ...prev,
@@ -650,16 +782,23 @@ export function useWebSocket() {
       setMessages((prev) => [...prev, userMessage]);
       setIsAgentResponding(true);
 
+      pendingTurnRef.current = {
+        content,
+        analytes: hasPanel ? structuredAnalytes : [],
+        groups: hasPanel ? selectedGroups : [],
+        directions: hasPanel ? moduleDirections : [],
+      };
       wsRef.current.send(serialized);
 
-      // One-shot upload: clear the panel + selection so the next turn is clean.
+      // One-shot upload: clear the panel + selection + directions so the next turn is clean.
       if (hasPanel) {
         setStructuredAnalytes([]);
         setSelectedGroups([]);
+        setModuleDirections([]);
       }
       return true;
     },
-    [runDemoScenario, agentMode, biomapperEnv, structuredAnalytes, selectedGroups],
+    [runDemoScenario, agentMode, biomapperEnv, structuredAnalytes, selectedGroups, moduleDirections],
   );
 
   const clearMessages = useCallback(() => {
@@ -688,6 +827,18 @@ export function useWebSocket() {
     };
   }, [connectWs]);
 
+  // BYOK: when the key changes mid-session, send an updated set_key frame so the
+  // server's in-memory slot is always in sync with what the user has set (or cleared).
+  useEffect(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    sendSetKey(wsRef.current, apiKey);
+    // When the user provides a key, clear needsKey optimistically (the server will
+    // confirm by sending key_source:"byok" at the start of the next turn).
+    if (apiKey !== null) {
+      setNeedsKey(false);
+    }
+  }, [apiKey, sendSetKey]);
+
   return {
     messages,
     connectionStatus,
@@ -703,7 +854,14 @@ export function useWebSocket() {
     setStructuredAnalytes,
     selectedGroups,
     setSelectedGroups,
+    moduleDirections,
+    restoredQuery,
+    keyRejectedNonce,
+    setModuleDirections,
     sendMessage,
     clearMessages,
+    // BYOK additions
+    needsKey,
+    keySource,
   };
 }

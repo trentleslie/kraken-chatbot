@@ -1,0 +1,46 @@
+{
+  "provenance": {
+    "source": "live Kestrel calibration run",
+    "query_sha": "e5d4db84bc7098e0",
+    "recorded_at": "20260717T071202Z",
+    "damping_w": 0.4,
+    "degree_query_limit": 10000,
+    "note": "1-MNA hypothesis: TNFRSF10A -> 1-MNA via blood, placenta, cancer. Intermediates are near-universal high-degree nodes; the bridge INVERTED. Degrees are one_hop_query preview results_count, saturated at degree_query_limit (10000) \u2014 so a value == the limit is a FLOOR on the true (larger) hub degree, not an exact count. This is immaterial to the generic retrodiction (limit >> GENERIC_CUTOFF)."
+  },
+  "one_mna_scaffold": {
+    "UBERON:0000178": {
+      "name": "blood",
+      "degree": 10000
+    },
+    "UBERON:0001987": {
+      "name": "placenta",
+      "degree": 10000
+    },
+    "MONDO:0004992": {
+      "name": "cancer",
+      "degree": 10000
+    }
+  },
+  "control_specific": {
+    "CHEBI:16797": {
+      "name": "1-methylnicotinamide",
+      "degree": 143
+    }
+  },
+  "recorded_intermediate_population": [
+    10000,
+    10000,
+    10000,
+    143,
+    10000,
+    7808,
+    7471,
+    5333,
+    1270,
+    10000,
+    10000,
+    10000,
+    10000,
+    115
+  ]
+}

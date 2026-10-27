@@ -11,6 +11,18 @@ export type StructuredAnalyte = {
   name: string;
   group?: string;
   type?: "metabolite" | "protein" | "gene";
+  // Signed-weight data spine (Axis A): kME (module-eigengene correlation, [-1,1]) and kIM (raw
+  // intramodular connectivity kWithin, ≥ 0) ride each row when the user maps those columns.
+  kme?: number;
+  kim?: number;
+};
+
+// One per-module eigengene→outcome direction sent alongside the panel (Axis A). Load-bearing for
+// the sign-inversion metric (member-vs-outcome = sign(kME) × sign(direction)).
+export type ModuleDirectionInput = {
+  group: string;
+  eigengene_trait_correlation: number;
+  trait_label: string;
 };
 
 export type UserMessage = {
@@ -134,6 +146,16 @@ export type ChatMessage =
   | PipelineNodeDetailMessage
   | PipelineCompleteMessage;
 
+// BYOK: which key is powering the current turn ("byok" = user's key, "server" = operator key,
+// "sdk" = the server's Claude Code login, for trusted users when no operator key is set).
+export type KeySource = "byok" | "server" | "sdk";
+
+// BYOK: outgoing frame to register or clear the user's API key for this session.
+export type SetKeyRequest = {
+  type: "set_key";
+  key: string | null;
+};
+
 export type IncomingMessage =
   | { type: "text"; content: string }
   | { type: "tool_use"; tool: string; args: Record<string, unknown> }
@@ -154,6 +176,11 @@ export type IncomingMessage =
       duration_ms?: number;
       tool_calls_count?: number;
       model?: string;
+    }
+  | {
+      // BYOK: server sends this at the start of each turn to indicate which key is in use.
+      type: "key_source";
+      source: KeySource;
     }
   | {
       type: "pipeline_progress";
