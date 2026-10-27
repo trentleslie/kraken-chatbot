@@ -34,6 +34,13 @@ export function ChatInput({
     if (!restoreValue) return;
     setInput((current) => (current.trim() ? current : restoreValue.text));
     onQueryEmptyChange?.(false);
+    // Grow the box to fit the restored text (same rule and cap as typing, after it renders).
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    });
   }, [restoreValue]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSend = () => {

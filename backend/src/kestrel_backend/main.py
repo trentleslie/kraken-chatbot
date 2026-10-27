@@ -1030,6 +1030,17 @@ async def websocket_chat(websocket: WebSocket):
                     code="NEEDS_KEY").model_dump_json())
                 await websocket.send_text(DoneMessage().model_dump_json())
                 continue
+            # Pipeline nodes catch SDK failures and fall back, so a revoked BYOK key would yield a
+            # degraded report instead of an error. Probe the user's key up front (1 token) so a
+            # rejection reaches the client's key-recovery path. Classic mode surfaces AUTH_ERROR.
+            if agent_mode == "pipeline" and source == "byok":
+                ok, reason = await asyncio.to_thread(_probe_anthropic_key, key)
+                if not ok and reason == "invalid_api_key":
+                    await websocket.send_text(ErrorMessage(
+                        message="Your Anthropic API key was rejected. Enter a different key to continue.",
+                        code="BYOK_REJECTED").model_dump_json())
+                    await websocket.send_text(DoneMessage().model_dump_json())
+                    continue
             await websocket.send_text(KeySourceMessage(source=source).model_dump_json())
             tok = current_api_key.set(key)
             prov_tok = current_provider.set(provider)

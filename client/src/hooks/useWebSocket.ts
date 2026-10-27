@@ -280,8 +280,27 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
   } | null>(null);
   // Question text to put back in the composer after a NEEDS_KEY refusal (nonce re-triggers).
   const [restoredQuery, setRestoredQuery] = useState<{ text: string; nonce: number } | null>(null);
+  // Current staged panel, readable from the socket handler without a stale closure.
+  const stagedAnalytesRef = useRef<StructuredAnalyte[]>([]);
   // Bumped when the provider rejects the user's own key, so the page can clear it.
   const [keyRejectedNonce, setKeyRejectedNonce] = useState(0);
+  useEffect(() => {
+    stagedAnalytesRef.current = structuredAnalytes;
+  }, [structuredAnalytes]);
+
+  // Put a refused turn back: the question (ChatInput only fills an empty box) and, unless a newer
+  // upload has been staged since, the panel, selection and directions.
+  const restorePendingTurn = () => {
+    const pending = pendingTurnRef.current;
+    pendingTurnRef.current = null;
+    if (!pending) return;
+    if (pending.analytes.length > 0 && stagedAnalytesRef.current.length === 0) {
+      setStructuredAnalytes(pending.analytes);
+      setSelectedGroups(pending.groups);
+      setModuleDirections(pending.directions);
+    }
+    if (pending.content) setRestoredQuery({ text: pending.content, nonce: Date.now() });
+  };
 
   // Keep a ref to the latest apiKey so onopen and the key-change effect can
   // always read the current value without capturing a stale closure.
@@ -432,16 +451,7 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
           setIsAgentResponding(false);
           setPipelineProgress(null);
           // Put the refused turn back so it can be resent after entering a key.
-          const pending = pendingTurnRef.current;
-          pendingTurnRef.current = null;
-          if (pending) {
-            if (pending.analytes.length > 0) {
-              setStructuredAnalytes(pending.analytes);
-              setSelectedGroups(pending.groups);
-              setModuleDirections(pending.directions);
-            }
-            if (pending.content) setRestoredQuery({ text: pending.content, nonce: Date.now() });
-          }
+          restorePendingTurn();
           // Surface the error message in the chat so the user understands what happened.
           setMessages((prev) => [
             ...prev,
@@ -458,9 +468,15 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
         // An auth failure on a turn that ran on the user's own key means THEIR key was
         // rejected, not that the server login expired: ask for a new key instead of locking
         // the page behind the admin banner.
-        if (data.code === "AUTH_ERROR" && keySourceRef.current === "byok") {
+        // BYOK_REJECTED comes from the server's pre-run probe (pipeline mode); a Classic AUTH_ERROR
+        // on a BYOK turn means the same thing.
+        if (
+          data.code === "BYOK_REJECTED" ||
+          (data.code === "AUTH_ERROR" && keySourceRef.current === "byok")
+        ) {
           setNeedsKey(true);
           setKeyRejectedNonce((n) => n + 1);
+          restorePendingTurn();
           setMessages((prev) => [
             ...prev,
             {
