@@ -1533,7 +1533,12 @@ def compute_sign_splits(state: DiscoveryState) -> tuple[dict[str, SplitResult], 
     Inert (empty) when no ModuleSpine or no entity_groups are present → byte-identical rendering.
     """
     zero = {"groups_sign_split": 0, "groups_split": 0}
-    group_kme = _spine_group_member_kme(state.get("module_spine"))
+    # module_spine is keyed by the canonical group key (strip + lower, see intake/analyte_ingest),
+    # while entity_groups carries verbatim labels ("Brown"); join on the canonical key.
+    group_kme = {
+        str(g).strip().lower(): kme
+        for g, kme in _spine_group_member_kme(state.get("module_spine")).items()
+    }
     entity_groups = state.get("entity_groups", {}) or {}
     if not group_kme or not entity_groups:
         return {}, dict(zero)
@@ -1544,18 +1549,25 @@ def compute_sign_splits(state: DiscoveryState) -> tuple[dict[str, SplitResult], 
     floor = float(getattr(cfg, "sign_coherence_floor", 0.0))
     minority_tol = float(getattr(cfg, "sign_coherence_minority_tol", 0.0))
 
-    # group value -> member analyte names (from the run-set membership map)
+    # canonical group key -> member analyte names (from the run-set membership map); case
+    # variants of one group ("Brown"/"brown") combine, reported under the first-seen label.
     groups: dict[str, list[str]] = {}
+    labels: dict[str, str] = {}
     for name, group_values in entity_groups.items():
         for g in group_values:
-            groups.setdefault(g, []).append(name)
+            key = str(g).strip().lower()
+            labels.setdefault(key, g)
+            members = groups.setdefault(key, [])
+            if name not in members:
+                members.append(name)
 
     splits: dict[str, SplitResult] = {}
     subprograms = 0
-    for group, names in groups.items():
+    for key, names in groups.items():
+        group = labels[key]
         # Module-centric lookup: use THIS group's own per-member kME (a member may carry a
         # different sign in another module), not a flattened map.
-        member_kme = group_kme.get(group, {})
+        member_kme = group_kme.get(key, {})
         members_kme = {n: member_kme[n] for n in names if n in member_kme}
         if not members_kme:
             continue

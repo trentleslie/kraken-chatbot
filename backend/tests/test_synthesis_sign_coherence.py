@@ -200,3 +200,24 @@ class TestRunPersistsHooks:
         result = await synthesis.run(dict(base, direct_findings=[self._FINDING]))
         assert result["groups_sign_split"] == 0
         assert result["groups_split"] == 0
+
+
+def test_split_detected_when_labels_are_capitalized():
+    """Real shape: intake keys module_spine by the canonical group key ("brown") while
+    entity_groups keeps the verbatim label ("Brown"). The check must still run."""
+    state = {
+        "entity_groups": {"glucose": ["Brown"], "leucine": ["Brown"], "glycine": ["brown"]},
+        "module_spine": {
+            "brown": ModuleSpine(
+                group="Brown",
+                members={
+                    "glucose": MemberWeight(name="glucose", kme=0.9),
+                    "leucine": MemberWeight(name="leucine", kme=0.8),
+                    "glycine": MemberWeight(name="glycine", kme=-0.85),
+                },
+            )
+        },
+    }
+    splits, counts = compute_sign_splits(state)
+    assert list(splits) == ["Brown"]  # reported under the first-seen display label
+    assert counts["groups_sign_split"] == 1

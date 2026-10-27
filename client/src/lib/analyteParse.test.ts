@@ -510,3 +510,47 @@ describe("Greptile #106 fixes", () => {
     expect(validateDirectionFields([{ ...ok, trait_label: "fra\u0000ilty" }])).toMatch(/control characters/);
   });
 });
+
+describe("Greptile #110 fixes", () => {
+  it("a later duplicate row's valid kME fills a first row with a blank kME", () => {
+    const res = buildAnalytes(
+      [
+        { analyte: "glucose", module: "Brown", kME: "" },
+        { analyte: "glucose", module: "Brown", kME: "0.7" },
+      ],
+      { analyte: "analyte", group: "module", kme: "kME" },
+    );
+    expect(res.analytes).toHaveLength(1);
+    expect(res.analytes[0].kme).toBe(0.7);
+    expect(res.weightConflicts).toBe(0);
+  });
+
+  it("the first valid kME still wins over a later conflicting one", () => {
+    const res = buildAnalytes(
+      [
+        { analyte: "glucose", module: "Brown", kME: "0.5" },
+        { analyte: "glucose", module: "Brown", kME: "0.7" },
+      ],
+      { analyte: "analyte", group: "module", kme: "kME" },
+    );
+    expect(res.analytes[0].kme).toBe(0.5);
+    expect(res.weightConflicts).toBe(1);
+  });
+
+  it("buildModuleDirections drops groups that are no longer active", () => {
+    const dirs = buildModuleDirections({ Brown: "5", Blue: "0.4" }, "frailty", ["Blue"]);
+    expect(dirs).toEqual([{ group: "Blue", eigengene_trait_correlation: 0.4, trait_label: "frailty" }]);
+  });
+
+  it("adopting a later row's kME replaces the weight pair (no mixed kIM)", () => {
+    const res = buildAnalytes(
+      [
+        { analyte: "glucose", module: "Brown", kME: "", kIM: "0" },
+        { analyte: "glucose", module: "Brown", kME: "0.7", kIM: "" },
+      ],
+      { analyte: "analyte", group: "module", kme: "kME", kim: "kIM" },
+    );
+    expect(res.analytes[0].kme).toBe(0.7);
+    expect(res.analytes[0].kim).toBeUndefined();
+  });
+});

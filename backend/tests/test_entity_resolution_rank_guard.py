@@ -82,6 +82,26 @@ class TestTier2Guard:
         assert out.method == "failed"
         assert out.rank_collapsed is True
 
+    def test_sibling_species_in_same_genus_is_never_accepted(self):
+        """Ruminococcus flavefaciens is a different organism; with no exact match, abstain."""
+        chosen = _res("Ruminococcus gnavus", "NCBITaxon:1263", "Ruminococcus")
+        candidates = [
+            {"curie": "NCBITaxon:1263", "name": "Ruminococcus", "category": "biolink:OrganismTaxon", "score": 2.0},
+            {"curie": "NCBITaxon:1265", "name": "Ruminococcus flavefaciens", "category": "biolink:OrganismTaxon", "score": 1.9},
+        ]
+        out = _apply_rank_guard_tier2("Ruminococcus gnavus", chosen, candidates)
+        assert out.curie is None
+        assert out.method == "failed"
+
+    def test_exact_species_wins_over_higher_scored_sibling(self):
+        chosen = _res("Ruminococcus gnavus", "NCBITaxon:1263", "Ruminococcus")
+        candidates = [
+            {"curie": "NCBITaxon:1265", "name": "Ruminococcus flavefaciens", "category": "biolink:OrganismTaxon", "score": 1.9},
+            {"curie": "NCBITaxon:33038", "name": "ruminococcus  gnavus", "category": "biolink:OrganismTaxon", "score": 1.5},
+        ]
+        out = _apply_rank_guard_tier2("Ruminococcus gnavus", chosen, candidates)
+        assert out.curie == "NCBITaxon:33038"
+
     def test_no_collapse_is_untouched(self):
         chosen = _res("Ruminococcus gnavus", "NCBITaxon:33038", "Ruminococcus gnavus")
         candidates = [{"curie": "NCBITaxon:33038", "name": "Ruminococcus gnavus", "category": None, "score": 2.0}]
