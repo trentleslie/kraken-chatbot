@@ -31,6 +31,11 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
+    // Local dev: the Python backend serves /api (e.g. /api/validate-key for BYOK). In prod nginx
+    // routes /api; here Vite proxies it. Override with VITE_API_PROXY_TARGET.
+    proxy: {
+      "/api": process.env.VITE_API_PROXY_TARGET || "http://127.0.0.1:8000",
+    },
     fs: {
       strict: true,
       deny: ["**/.*"],

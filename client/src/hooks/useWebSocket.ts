@@ -268,6 +268,20 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
   const [needsKey, setNeedsKey] = useState(false);
   // The key source reported by the server at the start of each turn.
   const [keySource, setKeySource] = useState<KeySource | null>(null);
+  // Which key the CURRENT turn ran on (state above lags inside the socket handler closure).
+  const keySourceRef = useRef<KeySource | null>(null);
+  // The last outgoing turn, kept until the server accepts it (key_source) so a NEEDS_KEY
+  // refusal can restore the upload and question instead of losing them.
+  const pendingTurnRef = useRef<{
+    content: string;
+    analytes: StructuredAnalyte[];
+    groups: string[];
+    directions: ModuleDirectionInput[];
+  } | null>(null);
+  // Question text to put back in the composer after a NEEDS_KEY refusal (nonce re-triggers).
+  const [restoredQuery, setRestoredQuery] = useState<{ text: string; nonce: number } | null>(null);
+  // Bumped when the provider rejects the user's own key, so the page can clear it.
+  const [keyRejectedNonce, setKeyRejectedNonce] = useState(0);
 
   // Keep a ref to the latest apiKey so onopen and the key-change effect can
   // always read the current value without capturing a stale closure.
@@ -403,6 +417,8 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
       case "key_source":
         // Server confirms which key is powering this turn.
         setKeySource(data.source);
+        keySourceRef.current = data.source;
+        pendingTurnRef.current = null; // the server accepted this turn
         // A key_source frame arriving means the server accepted the key — clear needsKey.
         if (data.source === "byok") {
           setNeedsKey(false);
@@ -415,6 +431,17 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
           setNeedsKey(true);
           setIsAgentResponding(false);
           setPipelineProgress(null);
+          // Put the refused turn back so it can be resent after entering a key.
+          const pending = pendingTurnRef.current;
+          pendingTurnRef.current = null;
+          if (pending) {
+            if (pending.analytes.length > 0) {
+              setStructuredAnalytes(pending.analytes);
+              setSelectedGroups(pending.groups);
+              setModuleDirections(pending.directions);
+            }
+            if (pending.content) setRestoredQuery({ text: pending.content, nonce: Date.now() });
+          }
           // Surface the error message in the chat so the user understands what happened.
           setMessages((prev) => [
             ...prev,
@@ -426,6 +453,26 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
               timestamp: Date.now(),
             },
           ]);
+          break;
+        }
+        // An auth failure on a turn that ran on the user's own key means THEIR key was
+        // rejected, not that the server login expired: ask for a new key instead of locking
+        // the page behind the admin banner.
+        if (data.code === "AUTH_ERROR" && keySourceRef.current === "byok") {
+          setNeedsKey(true);
+          setKeyRejectedNonce((n) => n + 1);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: generateId(),
+              type: "error" as const,
+              message: "Your Anthropic API key was rejected. Enter a different key to continue.",
+              code: "BYOK_REJECTED",
+              timestamp: Date.now(),
+            },
+          ]);
+          setIsAgentResponding(false);
+          setPipelineProgress(null);
           break;
         }
         setMessages((prev) => [
@@ -719,6 +766,12 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
       setMessages((prev) => [...prev, userMessage]);
       setIsAgentResponding(true);
 
+      pendingTurnRef.current = {
+        content,
+        analytes: hasPanel ? structuredAnalytes : [],
+        groups: hasPanel ? selectedGroups : [],
+        directions: hasPanel ? moduleDirections : [],
+      };
       wsRef.current.send(serialized);
 
       // One-shot upload: clear the panel + selection + directions so the next turn is clean.
@@ -786,6 +839,8 @@ export function useWebSocket({ apiKey = null }: UseWebSocketOptions = {}) {
     selectedGroups,
     setSelectedGroups,
     moduleDirections,
+    restoredQuery,
+    keyRejectedNonce,
     setModuleDirections,
     sendMessage,
     clearMessages,

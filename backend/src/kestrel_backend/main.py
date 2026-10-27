@@ -290,7 +290,7 @@ def _probe_anthropic_key(key: str) -> tuple[bool, str | None]:
     import anthropic
     try:
         anthropic.Anthropic(api_key=key).messages.create(
-            model="claude-3-5-haiku-latest",
+            model="claude-haiku-4-5",  # claude-3-5-haiku was retired 2026-02-19 (404 for every key)
             max_tokens=1,
             messages=[{"role": "user", "content": "hi"}],
         )
