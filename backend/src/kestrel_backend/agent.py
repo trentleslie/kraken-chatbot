@@ -25,7 +25,7 @@ from claude_agent_sdk import (
     HookMatcher,
 )
 from claude_agent_sdk.types import McpStdioServerConfig
-from .config import get_settings
+from .config import DEFAULT_KESTREL_MCP_URL, get_settings
 from .pricing import cost_of_record
 from .bash_sandbox import bash_security_hook
 from .byok import agent_cli_path, build_agent_env
@@ -94,7 +94,7 @@ def _get_kestrel_mcp_config() -> McpStdioServerConfig:
     # Pass environment variables to the proxy
     env = {
         "KESTREL_API_KEY": os.getenv("KESTREL_API_KEY", ""),
-        "KESTREL_MCP_URL": os.getenv("KESTREL_MCP_URL", "https://kestrel.nathanpricelab.com/mcp"),
+        "KESTREL_MCP_URL": os.getenv("KESTREL_MCP_URL", DEFAULT_KESTREL_MCP_URL),
     }
 
     return McpStdioServerConfig(

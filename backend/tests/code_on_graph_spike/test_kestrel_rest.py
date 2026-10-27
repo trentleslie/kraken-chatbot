@@ -6,7 +6,7 @@ from tests.code_on_graph_spike.kestrel_rest import (
     KestrelREST, parse_paths, path_contains_all, any_path_recovers, is_grounded,
 )
 
-BASE = "https://kestrel.nathanpricelab.com/api"
+BASE = "https://kestrel.krakenkg.com/api"
 
 
 # --- pure parser / matching (no network) ---

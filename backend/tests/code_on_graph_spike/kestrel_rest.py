@@ -25,7 +25,7 @@ import httpx
 
 from kestrel_backend.graph.nodes.entity_resolution import _canonical_curie
 
-KESTREL_API_URL = os.getenv("KESTREL_API_URL", "https://kestrel.nathanpricelab.com/api")
+KESTREL_API_URL = os.getenv("KESTREL_API_URL", "https://kestrel.krakenkg.com/api")
 KESTREL_API_KEY = os.getenv("KESTREL_API_KEY", "")
 
 # Transport failures that are worth retrying (vs. a genuine empty/None result).
