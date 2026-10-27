@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertCircle } from "lucide-react";
 import { Header } from "@/components/Header";
 import { ChatArea } from "@/components/ChatArea";
@@ -45,6 +45,8 @@ export default function ChatPage() {
     clearMessages,
     needsKey,
     keySource,
+    restoredQuery,
+    keyRejectedNonce,
   } = useWebSocket({ apiKey: apiKey.key });
 
   const [uploadStage, setUploadStage] = useState<UploadStage>({ step: "idle" });
@@ -61,6 +63,12 @@ export default function ChatPage() {
 
   // BYOK: composer is additionally blocked when the server needs a key and none is set.
   const keyGateBlocking = needsKey && apiKey.key === null;
+
+  // The provider rejected the user's own key: drop it so the key form reappears.
+  const { clearKey } = apiKey;
+  useEffect(() => {
+    if (keyRejectedNonce > 0) clearKey();
+  }, [keyRejectedNonce, clearKey]);
 
   const resetUpload = () => {
     setUploadStage({ step: "idle" });
@@ -195,6 +203,7 @@ export default function ChatPage() {
         isConnected={isConnected}
         hasPanel={isPipeline && hasPanel}
         onQueryEmptyChange={setQueryEmpty}
+        restoreValue={restoredQuery}
       />
     </div>
   );
