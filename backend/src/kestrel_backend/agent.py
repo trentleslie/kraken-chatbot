@@ -1,5 +1,5 @@
 """Claude Agent SDK integration with security hardening for public-facing deployment."""
-AGENT_VERSION = "1.5.1"  # Add discovery mode checklist for consistent framework application
+AGENT_VERSION = "1.6.0"  # Allow every Kestrel MCP tool; drop phantom tool names from prompt
 
 import json
 import os
@@ -53,27 +53,15 @@ def _get_langfuse():
     return _langfuse
 
 
-# Tools whitelist - these tools are allowed
-# Tool names follow MCP naming convention: mcp__<server>__<tool>
+# Every tool the Kestrel MCP server exposes is allowed. "mcp__kestrel" is the
+# server-level permission rule (matches all mcp__kestrel__* tools), so new
+# upstream tools (multi_hop_query, get_metagraph, get_valid_* ...) are usable
+# without editing a per-tool list here.
+KESTREL_SERVER_RULE = "mcp__kestrel"
+KESTREL_TOOL_PREFIX = f"{KESTREL_SERVER_RULE}__"
+
+# Non-Kestrel tools allowed by name
 ALLOWED_TOOLS = frozenset([
-    # Kestrel knowledge graph tools (via stdio proxy)
-    "mcp__kestrel__one_hop_query",
-    "mcp__kestrel__text_search",
-    "mcp__kestrel__vector_search",
-    "mcp__kestrel__similar_nodes",
-    "mcp__kestrel__hybrid_search",
-    "mcp__kestrel__get_nodes",
-    "mcp__kestrel__get_edges",
-    "mcp__kestrel__get_valid_categories",
-    "mcp__kestrel__get_valid_predicates",
-    "mcp__kestrel__get_valid_prefixes",
-    "mcp__kestrel__health_check",
-    # Multi-hop graph reasoning tools
-    "mcp__kestrel__guilt_by_association",
-    "mcp__kestrel__missing_edge_prediction",
-    "mcp__kestrel__pathway_enrichment",
-    "mcp__kestrel__novelty_score",
-    "mcp__kestrel__gap_analysis",
     # Development/testing tools (sandboxed)
     "Bash",
     "Read",  # Non-destructive file inspection
@@ -83,6 +71,11 @@ ALLOWED_TOOLS = frozenset([
     # Tool discovery
     "ToolSearch",  # Enable discovery of deferred/dynamic tools
 ])
+
+
+def is_tool_allowed(tool_name: str) -> bool:
+    """True for any Kestrel MCP tool or a whitelisted built-in tool."""
+    return tool_name.startswith(KESTREL_TOOL_PREFIX) or tool_name in ALLOWED_TOOLS
 
 
 def _get_kestrel_mcp_config() -> McpStdioServerConfig:
@@ -248,6 +241,10 @@ In retrieval mode, you'll mostly report Tier 1-2 evidence. In discovery mode, Ti
 
 ### Graph Navigation
 - **one_hop_query**: Core graph exploration — finds connected nodes from a starting entity. Supports filtering by direction, predicate, and category. Returns edges with provenance (sources, publications).
+- **multi_hop_query**: Find multi-hop paths from one start entity (singly-pinned) or between two entities (doubly-pinned). Use for mechanistic chains (e.g., Drug→Gene→Pathway→Disease).
+- **subgraph_query** / **query_graph_query**: Retrieve a subgraph connecting a set of entities, or run a structured query graph.
+- **kg_enrichment**: Graph-based enrichment across a set of entities.
+- **get_traversal_options**: Discover which categories/predicates are reachable from a node before querying.
 - **similar_nodes**: Find entities semantically similar to a given node by CURIE.
 
 ### Detail Retrieval
@@ -258,15 +255,18 @@ In retrieval mode, you'll mostly report Tier 1-2 evidence. In discovery mode, Ti
 - **get_valid_categories**: List all valid biolink categories (e.g., biolink:Disease, biolink:Gene).
 - **get_valid_predicates**: List all valid relationship types (e.g., biolink:treats, biolink:causes).
 - **get_valid_prefixes**: List all valid CURIE prefixes with examples.
+- **get_valid_taxa**, **get_valid_qualifiers**, **get_valid_knowledge_levels**, **get_valid_agent_types**: List valid values for these edge filters.
+- **get_valid_primary_knowledge_sources**, **get_valid_aggregator_knowledge_sources**, **get_valid_provided_by**: List valid provenance sources for filtering.
+- **get_metagraph**: Summary of which category→predicate→category edge types exist in the graph, plus the KG build/version.
 - **health_check**: Check if the Kestrel API is running.
 
-### Multi-Hop Graph Reasoning Tools (Discovery Mode)
-These tools implement advanced graph reasoning for discovery and hypothesis generation:
-- **guilt_by_association**: Find structurally similar entities via shared neighbors
-- **missing_edge_prediction**: Predict novel associations (2-hop reachable, no direct edge)
-- **pathway_enrichment**: Find shared biological themes across entity sets
-- **novelty_score**: Triage entities by characterization level (well-characterized/moderate/sparse)
-- **gap_analysis**: Find "expected but missing" entities sharing neighbors with input set
+### Graph Reasoning Techniques (Discovery Mode)
+These are analysis techniques you perform by combining the Kestrel tools above. They are NOT separate tools; do not try to call them by name.
+- **Novelty scoring**: Triage entities by characterization level (well-characterized/moderate/sparse) using edge counts from `one_hop_query`.
+- **Pathway enrichment**: Find shared biological themes across an entity set with `kg_enrichment` (or `subgraph_query` / shared `one_hop_query` neighbors).
+- **Guilt by association**: Find structurally similar entities via shared neighbors (`one_hop_query`) and `similar_nodes`.
+- **Missing edge prediction**: Find entities reachable in 2 hops with no direct edge, using `multi_hop_query` and checking for a direct edge with `one_hop_query`.
+- **Gap analysis**: Find "expected but missing" entities that share many neighbors with the input set but are absent from it.
 
 ### Local Processing
 - **Bash**: Run shell commands for data processing. Use for parsing large result sets with python, jq, grep, awk, etc. ALLOWED commands: jq, python, python3, grep, awk, sed, sort, uniq, wc, head, tail, cat, ls, find, echo, printf, date. Network and destructive commands are blocked.
@@ -277,11 +277,11 @@ When a user provides a list of analytes, metabolites, proteins, genes, or other 
 
 ### Step 1: Resolve and Triage
 - Use `hybrid_search` to resolve entity names to CURIEs
-- Apply the **novelty_score** tool to classify each entity
+- Apply **novelty scoring** to classify each entity
 - State your analytical strategy based on the triage results
 
 ### Step 2: Find Shared Themes
-- Apply the **pathway_enrichment** tool across the full entity list
+- Apply **pathway enrichment** across the full entity list
 - Identify biological themes connecting multiple entities
 - Group findings by category and note the type of evidence each represents
 
@@ -291,12 +291,12 @@ When a user provides a list of analytes, metabolites, proteins, genes, or other 
 
 ### Step 4: Structural Inference for Sparse Entities
 For entities classified as sparse or moderate:
-- Apply **guilt_by_association** to find structurally similar well-characterized entities
-- Apply **missing_edge_prediction** with relevant target categories (e.g., biolink:Disease, biolink:BiologicalProcess)
+- Apply **guilt by association** to find structurally similar well-characterized entities
+- Apply **missing edge prediction** with relevant target categories (e.g., biolink:Disease, biolink:BiologicalProcess)
 - **Clearly label all inferences as Tier 3 evidence**
 
 ### Step 5: Gap Analysis
-- Apply the **gap_analysis** tool to identify expected-but-absent entities
+- Apply **gap analysis** to identify expected-but-absent entities
 - Note whether absences are informative given the study context
 
 ### Step 6: Synthesis
@@ -368,7 +368,7 @@ def build_agent_options() -> ClaudeAgentOptions:
     """
     kestrel_config = _get_kestrel_mcp_config()
     options_kwargs = {
-        "allowed_tools": list(ALLOWED_TOOLS),
+        "allowed_tools": [KESTREL_SERVER_RULE, *sorted(ALLOWED_TOOLS)],
         "system_prompt": SYSTEM_PROMPT,
         "mcp_servers": {"kestrel": kestrel_config},
         "hooks": {"PreToolUse": [HookMatcher(matcher="Bash", hooks=[bash_security_hook])]},
@@ -442,7 +442,7 @@ async def run_agent_turn(user_message: str, session_id: str | None = None) -> As
                         tool_id = getattr(block, "id", None)
 
                         # Security check: verify tool is allowed
-                        if tool_name not in ALLOWED_TOOLS:
+                        if not is_tool_allowed(tool_name):
                             # Build context based on tool type for better error messages
                             context = ""
                             if tool_name == "Write" and "file_path" in tool_input:
