@@ -104,6 +104,21 @@ class TestResolveViaApiHinted:
         res = await asyncio.wait_for(resolve_via_api("glutamate", category=SM), timeout=2)
         assert res.curie == "RM:0135893"  # ranked from the hybrid pool alone
 
+    async def test_completed_text_search_survives_a_stalled_sibling(self, monkeypatch):
+        # Greptile P1 on #123: the acid-form search finishes, the plain search stalls — the
+        # completed rows (the only place the parent acid appears) must still be ranked.
+        async def fake(tool, args):
+            if tool == "hybrid_search":
+                return _hs(args["search_text"], [GLU_SALT, GLU_2MINUS, D_GLU])
+            if args["search_text"] == "glutamic acid":
+                return _hs("glutamic acid", [GLU_ACID])
+            await asyncio.sleep(60)
+
+        monkeypatch.setattr(entity_resolution, "call_kestrel_tool", fake)
+        monkeypatch.setattr(entity_resolution, "_SM_TEXT_TIMEOUT_S", 0.05)
+        res = await asyncio.wait_for(resolve_via_api("glutamate", category=SM), timeout=2)
+        assert res.curie == "RM:0135893"
+
     async def test_metabolite_low_top_score_still_routes_to_tier2(self, monkeypatch):
         calls = []
 

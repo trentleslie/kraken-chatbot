@@ -293,26 +293,25 @@ async def resolve_via_api(
             # absent from both pools for the anion name ("fumarate").
             # Concurrent, under one short shared timeout: these are additive (the hybrid score has
             # already passed the gate), so a stalled search must not hold up the run.
-            forms = sorted(_query_forms(entity))
+            # Searches that finish inside the budget are kept; only stragglers are dropped.
+            tasks = {
+                asyncio.ensure_future(call_kestrel_tool("text_search", {
+                    "search_text": form, "limit": _SM_POOL, "category": category,
+                })): form
+                for form in sorted(_query_forms(entity))
+            }
+            done, pending = await asyncio.wait(tasks, timeout=_SM_TEXT_TIMEOUT_S)
+            for task in pending:
+                task.cancel()
+                logger.info("Tier 1 '%s': text_search(%r) timed out", entity, tasks[task])
             text_rows: list = []
-            try:
-                responses = await asyncio.wait_for(
-                    asyncio.gather(
-                        *[call_kestrel_tool("text_search", {
-                            "search_text": form, "limit": _SM_POOL, "category": category,
-                        }) for form in forms],
-                        return_exceptions=True,
-                    ),
-                    timeout=_SM_TEXT_TIMEOUT_S,
-                )
-            except asyncio.TimeoutError:
-                logger.info("Tier 1 '%s': text_search timed out; ranking the hybrid pool", entity)
-                responses = []
-            for form, resp in zip(forms, responses):
-                if isinstance(resp, BaseException):
-                    logger.debug("Tier 1 '%s': text_search(%r) failed: %s", entity, form, resp)
+            for task in sorted(done, key=tasks.__getitem__):  # stable pool order
+                if task.exception() is not None:
+                    logger.debug(
+                        "Tier 1 '%s': text_search(%r) failed: %s", entity, tasks[task], task.exception()
+                    )
                     continue
-                text_rows += _search_rows(resp, form)
+                text_rows += _search_rows(task.result(), tasks[task])
             chosen = _rerank_small_molecule(entity, results + text_rows) or top
             if chosen is not top:
                 logger.info(
