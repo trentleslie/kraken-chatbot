@@ -3,6 +3,7 @@
 Fixture rows are trimmed copies of live Kestrel responses (kestrel.krakenkg.com, 2026-11-06).
 """
 
+import asyncio
 import json
 
 from kestrel_backend.graph.nodes import entity_resolution
@@ -91,6 +92,17 @@ class TestResolveViaApiHinted:
         assert res.category == SM          # node is tagged Drug first; the hint wins
         assert res.confidence == 0.95      # confidence still from the top hybrid score
         assert {a["search_text"] for t, a in calls if t == "text_search"} == {"glutamate", "glutamic acid"}
+
+    async def test_stalled_text_search_times_out_and_ranks_hybrid_pool(self, monkeypatch):
+        async def fake(tool, args):
+            if tool == "hybrid_search":
+                return _hs(args["search_text"], [GLU_SALT, D_GLU, GLU_ACID])
+            await asyncio.sleep(60)  # a stalled text_search
+
+        monkeypatch.setattr(entity_resolution, "call_kestrel_tool", fake)
+        monkeypatch.setattr(entity_resolution, "_SM_TEXT_TIMEOUT_S", 0.05)
+        res = await asyncio.wait_for(resolve_via_api("glutamate", category=SM), timeout=2)
+        assert res.curie == "RM:0135893"  # ranked from the hybrid pool alone
 
     async def test_metabolite_low_top_score_still_routes_to_tier2(self, monkeypatch):
         calls = []

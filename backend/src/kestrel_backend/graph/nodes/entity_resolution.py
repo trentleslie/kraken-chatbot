@@ -98,6 +98,8 @@ _HUMAN_TAXON = "NCBITaxon:9606"
 # Candidate pool per search tool for small-molecule re-ranking. The free metabolite is often
 # outside hybrid_search's top 10 (glutamate → RM:0135893 is text_search #1, hybrid #11+).
 _SM_POOL = 25
+# Shared budget for the additive text_search calls (normally ~100 ms each).
+_SM_TEXT_TIMEOUT_S = 10.0
 
 # Names that are a derivative of the queried molecule, not the molecule: salts, esters, charged
 # microspecies ("glutamate(2-)"), conjugates. Kestrel merges bare-name synonyms onto these
@@ -289,17 +291,28 @@ async def resolve_via_api(
         if rerank and score > _config.tier1_min_score:
             # text_search the query and its acid form: the parent acid ("fumaric acid") is often
             # absent from both pools for the anion name ("fumarate").
+            # Concurrent, under one short shared timeout: these are additive (the hybrid score has
+            # already passed the gate), so a stalled search must not hold up the run.
+            forms = sorted(_query_forms(entity))
             text_rows: list = []
-            for form in sorted(_query_forms(entity)):
-                try:
-                    text_rows += _search_rows(
-                        await call_kestrel_tool("text_search", {
+            try:
+                responses = await asyncio.wait_for(
+                    asyncio.gather(
+                        *[call_kestrel_tool("text_search", {
                             "search_text": form, "limit": _SM_POOL, "category": category,
-                        }),
-                        form,
-                    )
-                except Exception as e:  # noqa: BLE001 — additive; the hybrid pool still ranks
-                    logger.debug("Tier 1 '%s': text_search(%r) failed: %s", entity, form, e)
+                        }) for form in forms],
+                        return_exceptions=True,
+                    ),
+                    timeout=_SM_TEXT_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                logger.info("Tier 1 '%s': text_search timed out; ranking the hybrid pool", entity)
+                responses = []
+            for form, resp in zip(forms, responses):
+                if isinstance(resp, BaseException):
+                    logger.debug("Tier 1 '%s': text_search(%r) failed: %s", entity, form, resp)
+                    continue
+                text_rows += _search_rows(resp, form)
             chosen = _rerank_small_molecule(entity, results + text_rows) or top
             if chosen is not top:
                 logger.info(
