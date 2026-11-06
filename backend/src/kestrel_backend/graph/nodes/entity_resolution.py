@@ -91,6 +91,89 @@ Return ONLY valid JSON:
 If no candidate fits: {"curie": null, "confidence": 0.0}"""
 
 
+# ============================ Tier-1 hinted ranking (#114) ============================
+_SMALL_MOLECULE = "biolink:SmallMolecule"
+_TAXON_SCOPED = {"biolink:Gene", "biolink:Protein"}
+_HUMAN_TAXON = "NCBITaxon:9606"
+# Candidate pool per search tool for small-molecule re-ranking. The free metabolite is often
+# outside hybrid_search's top 10 (glutamate → RM:0135893 is text_search #1, hybrid #11+).
+_SM_POOL = 25
+
+# Names that are a derivative of the queried molecule, not the molecule: salts, esters, charged
+# microspecies ("glutamate(2-)"), conjugates. Kestrel merges bare-name synonyms onto these
+# ("Glutamate" on a 1-edge sodium salt; "mannose" on glycoprotein-phospho-D-mannose).
+_DERIVATIVE_RE = re.compile(
+    r"\bsalt\b|\bester\b|\(\d*[+-]\)|\bion\b|glycoprotein|\bphospho|\bconjugate\b|\bhydrate\b",
+    re.IGNORECASE,
+)
+_STEREO_PREFIX_RE = re.compile(r"^(?:dl|[dlrs]|alpha|beta|α|β|(?:alpha|beta)-[dl])-", re.IGNORECASE)
+
+
+def _norm_name(s: str) -> str:
+    return re.sub(r"[\s_]+", " ", s.strip().lower())
+
+
+def _query_forms(entity: str) -> set[str]:
+    """The query plus its acid form: carboxylate anion names map to the parent acid, which is
+    the record the KG keys metabolite edges on (glutamate → glutamic acid, lactate → lactic acid).
+    """
+    q = _norm_name(entity)
+    forms = {q}
+    if q.endswith("ate") and " " not in q:
+        forms.add(q[:-3] + "ic acid")
+    return forms
+
+
+def _name_forms(name: str) -> set[str]:
+    n = _norm_name(name)
+    return {n, _STEREO_PREFIX_RE.sub("", n)}
+
+
+def _rerank_small_molecule(entity: str, rows: list[dict]) -> dict | None:
+    """Pick the free molecule a hinted metabolite name refers to, or None to keep the top hit.
+
+    Among candidates whose name or a synonym IS the query (or its acid form, ignoring a leading
+    stereo prefix), drop derivatives (salt/ester/ion/conjugate names) and degenerate ≤1-edge
+    nodes, then prefer the best-connected one — the KG's canonical record for a common
+    metabolite carries its edges; split-off duplicates and microspecies carry few.
+    """
+    forms = _query_forms(entity)
+    # A query that itself names a derivative ("phosphocreatine", "sodium glutamate") wants one.
+    screen_derivatives = not _DERIVATIVE_RE.search(entity)
+    best: dict | None = None
+    seen: set[str] = set()
+    for row in rows:
+        curie = row.get("id") or row.get("curie")
+        name = row.get("name") or ""
+        if not curie or curie in seen:
+            continue
+        seen.add(curie)
+        if (screen_derivatives and _DERIVATIVE_RE.search(name)) or (row.get("neighbors_count") or 0) <= 1:
+            continue
+        labels = _name_forms(name)
+        for syn in row.get("synonyms") or []:
+            if isinstance(syn, str):
+                labels |= _name_forms(syn)
+        if not labels & forms:
+            continue
+        if best is None or (row.get("neighbors_count") or 0) > (best.get("neighbors_count") or 0):
+            best = row
+    return best
+
+
+def _search_rows(result: dict, search_text: str) -> list:
+    """Result rows of a call_kestrel_tool search response, [] on error/empty/unparseable."""
+    if result.get("isError"):
+        return []
+    content = result.get("content") or []
+    if not content:
+        return []
+    text = content[0].get("text", "") if isinstance(content[0], dict) else str(content[0])
+    try:
+        return _extract_search_results(json.loads(text), search_text)
+    except (json.JSONDecodeError, AttributeError):
+        return []
+
 
 async def resolve_via_api(
     entity: str, category: str | None = None
@@ -116,15 +199,26 @@ async def resolve_via_api(
     """
     try:
         # Call hybrid_search directly - parameter is 'search_text' not 'query'
+        rerank = category == _SMALL_MOLECULE
         search_args: dict = {
             "search_text": entity,
-            "limit": 1,  # Only need top result
+            # Small molecules pull a candidate pool for _rerank_small_molecule (#114); else top-1.
+            "limit": _SM_POOL if rerank else 1,
         }
         if category is not None:
             # Constrain to the expected Biolink class. Matching is list-membership (a node
             # matches if the class is anywhere in its categories array) — verified live 2026-06-17.
             search_args["category"] = category
+        if category in _TAXON_SCOPED:
+            # Gene/protein hints are human by default: without a taxon filter, "insulin" ranks a
+            # taxon-less LOINC part code and non-human INS orthologs above HGNC:6081 (#114).
+            search_args["taxon"] = _HUMAN_TAXON
         result = await call_kestrel_tool("hybrid_search", search_args)
+        if category in _TAXON_SCOPED and not result.get("isError") and not _search_rows(result, entity):
+            # No human node for this text (e.g. a deliberately non-human query) — keep the old reach.
+            result = await call_kestrel_tool(
+                "hybrid_search", {k: v for k, v in search_args.items() if k != "taxon"}
+            )
 
         # Debug logging - show raw API response
         is_error = result.get("isError", False)
@@ -187,16 +281,44 @@ async def resolve_via_api(
             logger.info("Tier 1 '%s': No search results", entity)
             return None
 
-        # Take top result
+        # Take top result. The score gate below still reads the top hybrid hit: a re-rank only
+        # changes WHICH node a confident query lands on, never whether it is confident.
         top = results[0]
         score = float(top.get("score", 0))
-        curie = top.get("id") or top.get("curie")
-        name = top.get("name") or top.get("label")
+        chosen = top
+        if rerank and score > _config.tier1_min_score:
+            # text_search the query and its acid form: the parent acid ("fumaric acid") is often
+            # absent from both pools for the anion name ("fumarate").
+            text_rows: list = []
+            for form in sorted(_query_forms(entity)):
+                try:
+                    text_rows += _search_rows(
+                        await call_kestrel_tool("text_search", {
+                            "search_text": form, "limit": _SM_POOL, "category": category,
+                        }),
+                        form,
+                    )
+                except Exception as e:  # noqa: BLE001 — additive; the hybrid pool still ranks
+                    logger.debug("Tier 1 '%s': text_search(%r) failed: %s", entity, form, e)
+            chosen = _rerank_small_molecule(entity, results + text_rows) or top
+            if chosen is not top:
+                logger.info(
+                    "Tier 1 '%s': re-ranked %s -> %s (%s, %s edges)",
+                    entity, top.get("id"), chosen.get("id"), chosen.get("name"),
+                    chosen.get("neighbors_count"),
+                )
+        curie = chosen.get("id") or chosen.get("curie")
+        name = chosen.get("name") or chosen.get("label")
         # categories is a list in the API response. Named node_category (not category) so it does
         # not shadow the function's `category` constraint parameter — this is the resolved node's
         # own Biolink class, which may differ from the requested filter (list-membership match).
-        categories = top.get("categories", [])
-        node_category = categories[0] if categories else top.get("category")
+        # When the node carries the hinted class, report that: amino acids/sugars are also tagged
+        # biolink:Drug first, which routed metabolites into drug-action pathways (#114).
+        categories = chosen.get("categories", [])
+        if category is not None and category in categories:
+            node_category = category
+        else:
+            node_category = categories[0] if categories else chosen.get("category")
 
         # Map score to confidence
         if score > 1.5:
@@ -538,6 +660,7 @@ def _biomapper_candidate_curies(biomapper_result: dict, hint: str | None) -> lis
             ordered.append(curie)
 
     _add(biomapper_result.get("curie"))
+    _add(biomapper_result.get("primary_curie"))
     # xrefs in configured preference order, then any remaining namespaces (lowest priority).
     pref_upper = [p.upper() for p in prefs]
     for ns in sorted(xrefs, key=lambda n: pref_upper.index(n.upper()) if n.upper() in pref_upper else 999):
