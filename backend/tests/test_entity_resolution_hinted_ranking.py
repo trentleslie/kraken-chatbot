@@ -166,3 +166,42 @@ class TestResolveViaApiHinted:
         res = await resolve_via_api("glutamate", category=None)
         assert res.curie == "CHEBI:13107" and res.category == "biolink:Drug"
         assert calls == [("hybrid_search", {"search_text": "glutamate", "limit": 1})]
+
+
+async def test_reconcile_reports_hinted_category_over_first_listed_drug(monkeypatch):
+    # Greptile P1 on #127: the biomapper path must apply the same hinted-category rule as Tier 1.
+    from kestrel_backend.graph.nodes.entity_resolution import reconcile_to_kestrel
+
+    async def fake(tool, args):
+        node = {"id": "RM:0135893", "name": "Glutamic acid", "categories": ["biolink:Drug", SM]}
+        return {"content": [{"type": "text", "text": json.dumps({args["curies"]: node})}], "isError": False}
+
+    monkeypatch.setattr(entity_resolution, "call_kestrel_tool", fake)
+    curie, category, name = await reconcile_to_kestrel({"curie": "RM:0135893", "xrefs": {}}, "metabolite")
+    assert (curie, category, name) == ("RM:0135893", SM, "Glutamic acid")
+
+
+async def test_caller_cancellation_cancels_inflight_text_searches(monkeypatch):
+    # Greptile P2 on #127: cancelling resolve_via_api must not leave text_search tasks running.
+    started, cancelled = [], []
+
+    async def fake(tool, args):
+        if tool == "hybrid_search":
+            return _hs(args["search_text"], [GLU_SALT, D_GLU, GLU_ACID])
+        started.append(args["search_text"])
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.append(args["search_text"])
+            raise
+
+    monkeypatch.setattr(entity_resolution, "call_kestrel_tool", fake)
+    task = asyncio.ensure_future(resolve_via_api("glutamate", category=SM))
+    while len(started) < 2:
+        await asyncio.sleep(0)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    assert sorted(cancelled) == ["glutamate", "glutamic acid"]

@@ -300,10 +300,17 @@ async def resolve_via_api(
                 })): form
                 for form in sorted(_query_forms(entity))
             }
-            done, pending = await asyncio.wait(tasks, timeout=_SM_TEXT_TIMEOUT_S)
-            for task in pending:
-                task.cancel()
-                logger.info("Tier 1 '%s': text_search(%r) timed out", entity, tasks[task])
+            try:
+                done, pending = await asyncio.wait(tasks, timeout=_SM_TEXT_TIMEOUT_S)
+                for task in pending:
+                    logger.info("Tier 1 '%s': text_search(%r) timed out", entity, tasks[task])
+            finally:
+                # Also on caller cancellation: never leave searches holding Kestrel connections.
+                unfinished = [t for t in tasks if not t.done()]
+                for task in unfinished:
+                    task.cancel()
+                if unfinished:
+                    await asyncio.gather(*unfinished, return_exceptions=True)
             text_rows: list = []
             for task in sorted(done, key=tasks.__getitem__):  # stable pool order
                 if task.exception() is not None:
@@ -632,11 +639,15 @@ def _node_has_human_marker(node: dict) -> bool:
     return any(str(x).upper().startswith(_HGNC_MARKER) for x in eq)
 
 
-def _node_category(node: dict) -> str | None:
-    """The node's Kestrel-native category (so the biomapper path emits Kestrel spellings)."""
+def _node_category(node: dict, preferred: str | None = None) -> str | None:
+    """The node's Kestrel-native category (so the biomapper path emits Kestrel spellings).
+
+    ``preferred`` (the hinted Biolink class) wins when the node carries it — the same rule as
+    Tier 1, so a metabolite tagged ``biolink:Drug`` first is not reported as a drug (#114).
+    """
     cats = node.get("categories")
     if isinstance(cats, list) and cats:
-        return cats[0]
+        return preferred if preferred in cats else cats[0]
     return node.get("category")
 
 
@@ -708,7 +719,11 @@ async def reconcile_to_kestrel(
             # Confirmed in Kestrel but no HGNC marker → non-human ortholog; reject (defense-in-depth).
             logger.info("FALLBACK_EVENT node=entity_resolution reason=biomapper_non_human curie=%s", candidate)
             continue
-        return node.get("id") or candidate, _node_category(node), _node_name(node)
+        return (
+            node.get("id") or candidate,
+            _node_category(node, biolink_class_for(hint)),
+            _node_name(node),
+        )
     return None
 
 
