@@ -109,14 +109,21 @@ async def resolve_entity(
     if _TIER_RANK.get(tier, -1) < _TIER_RANK[_MIN_CONFIDENCE_TIER]:
         return None
 
-    curie = getattr(result, "primary_curie", None)
-    if not curie or not _CURIE_RE.match(curie):
+    # chosen_kg_id is the KG node Biomapper actually selected; primary_curie can be the record the
+    # name first matched — a salt or conjugate carrying the bare-name synonym (glutamate →
+    # CHEBI:13107 sodium salt while chosen_kg_id is RM:0135893 glutamic acid; #114).
+    primary = getattr(result, "primary_curie", None)
+    chosen = getattr(result, "chosen_kg_id", None)
+    candidates = [c for c in (chosen, primary) if isinstance(c, str) and _CURIE_RE.match(c)]
+    if not candidates:
         # Missing or malformed CURIE from a third-party service → treat as unmapped.
         return None
+    curie = candidates[0]
 
     xrefs = getattr(result, "kg_equivalent_ids", None) or {}
     return {
         "curie": curie,
+        "primary_curie": candidates[1] if len(candidates) > 1 else None,
         "tier": tier,
         "confidence": getattr(result, "confidence_score", None),
         # Biomapper has no canonical display-name field (only query_name echo + chosen_kg_id);

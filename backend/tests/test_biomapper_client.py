@@ -102,6 +102,28 @@ class TestResolveHappyPath:
         assert out is not None and out["tier"] == "high"
 
 
+class TestChosenKgId:
+    """#114: chosen_kg_id (the node Biomapper selected) leads; primary_curie is the next candidate."""
+
+    async def test_chosen_kg_id_leads_primary_kept_as_alternate(self, monkeypatch):
+        res = _result(curie="CHEBI:13107", score=3.1).model_copy(update={"chosen_kg_id": "RM:0135893"})
+        _install(monkeypatch, result=res)
+        out = await resolve_entity("glutamate", "metabolite")
+        assert out["curie"] == "RM:0135893"
+        assert out["primary_curie"] == "CHEBI:13107"
+
+    async def test_falls_back_to_primary_when_chosen_absent(self, monkeypatch):
+        _install(monkeypatch, result=_result(curie="NCBIGene:7132", score=2.5))
+        out = await resolve_entity("TNFRSF1A", "gene")
+        assert out["curie"] == "NCBIGene:7132" and out["primary_curie"] is None
+
+    async def test_malformed_chosen_is_ignored(self, monkeypatch):
+        res = _result(curie="NCBIGene:7132", score=2.5).model_copy(update={"chosen_kg_id": "bad curie;"})
+        _install(monkeypatch, result=res)
+        out = await resolve_entity("TNFRSF1A", "gene")
+        assert out["curie"] == "NCBIGene:7132"
+
+
 class TestResolveGateAndSkips:
     async def test_low_tier_returns_none(self, monkeypatch):
         _install(monkeypatch, result=_result(score=0.5))  # <1.0 -> low, below medium gate
