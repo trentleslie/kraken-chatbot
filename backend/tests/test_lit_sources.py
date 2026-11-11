@@ -199,8 +199,9 @@ def test_basic_csv_parses_with_group_and_type():
 def test_capture_spec_refuses_unset_module_directions():
     specs = run_study.load_capture_specs(RULES)
     modules = next(s for s in specs if s["id"] == "t2d_modules")
+    assert len(run_study.capture_inputs(modules, RULES)["module_directions"]) == 3
     with pytest.raises(run_study.CaptureSpecIncomplete):
-        run_study.capture_inputs(modules, RULES)
+        run_study.capture_inputs({**modules, "module_directions": "UNSET"}, RULES)
     basic = next(s for s in specs if s["id"] == "t2d_basic")
     inputs = run_study.capture_inputs(basic, RULES)
     assert len(inputs["structured_analytes"]) == 12

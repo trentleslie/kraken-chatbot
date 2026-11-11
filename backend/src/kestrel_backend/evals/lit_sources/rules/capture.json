@@ -8,8 +8,24 @@
       "query": "Which mechanisms link these co-expression modules to type 2 diabetes?",
       "selected_groups": [],
       "trait_label": "type 2 diabetes",
-      "module_directions": "UNSET",
-      "module_directions_note": "No direction table ships with kraken_test_panel_modules.csv. Trent supplies the per-module eigengene-trait correlations before Unit 4; the capture stage refuses this capture while this field is UNSET, and setting it is logged as a manifest deviation."
+      "module_directions": [
+        {
+          "group": "M1_bcaa",
+          "eigengene_trait_correlation": 0.6,
+          "trait_label": "type 2 diabetes"
+        },
+        {
+          "group": "M2_glycemic",
+          "eigengene_trait_correlation": 0.8,
+          "trait_label": "type 2 diabetes"
+        },
+        {
+          "group": "M3_adipokine",
+          "eigengene_trait_correlation": 0.5,
+          "trait_label": "type 2 diabetes"
+        }
+      ],
+      "module_directions_note": "Set 2026-11-11 to the directions Trent used for dev run cdf9fa68 (2026-11-09): trait type 2 diabetes, M1_bcaa 0.6, M2_glycemic 0.8, M3_adipokine 0.5. Filled before any capture; logged as a manifest deviation."
     },
     {
       "id": "t2d_basic",
@@ -30,7 +46,13 @@
     "target": 10,
     "min_fallback": 6,
     "order": "round-robin across captures in the order listed, each capture's hypotheses sorted by tier (production order), deduplicated on normalized title+claim",
-    "coverage": {"min_panels": 2, "required_types": ["bridge", "inferred_role"]},
+    "coverage": {
+      "min_panels": 2,
+      "required_types": [
+        "bridge",
+        "inferred_role"
+      ]
+    },
     "on_coverage_miss": "continue the round-robin past target until coverage is met or hypotheses run out",
     "below_min": "capture one more run"
   }
