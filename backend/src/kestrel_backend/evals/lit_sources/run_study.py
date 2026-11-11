@@ -179,8 +179,21 @@ class Manifest:
         self.save()
 
 
+def is_retryable(row: dict[str, Any]) -> bool:
+    """Rows a resume must redo: exhausted transient source failures and judge not_run rows.
+
+    Deterministic outcomes (ok, empty, a 4xx lookup_failed, a snapshot not_run such as "no named
+    entity for the Boolean query") are final.
+    """
+    if row.get("retries_exhausted"):
+        return True
+    if row.get("state") == "lookup_failed" and row.get("transient"):
+        return True
+    return row.get("status") == "not_run"
+
+
 class JsonlCheckpoint:
-    """Append-only per-item rows; resume skips rows whose key is already present."""
+    """Append-only per-item rows. The latest row per key wins; resume redoes retryable rows."""
 
     def __init__(self, path: Path, key_fields: tuple[str, ...]):
         self.path = Path(path)
@@ -190,13 +203,27 @@ class JsonlCheckpoint:
     def rows(self) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []
-        return [json.loads(line) for line in self.path.read_text().splitlines() if line.strip()]
+        rows = []
+        for line in self.path.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue  # a torn final line from a kill mid-write; that item is simply redone
+        return rows
+
+    def latest_rows(self) -> list[dict[str, Any]]:
+        latest: dict[tuple, dict[str, Any]] = {}
+        for r in self.rows():
+            latest[self.key(r)] = r
+        return list(latest.values())
 
     def key(self, row: dict[str, Any]) -> tuple:
         return tuple(row[k] for k in self.key_fields)
 
     def done_keys(self) -> set[tuple]:
-        return {self.key(r) for r in self.rows()}
+        return {self.key(r) for r in self.latest_rows() if not is_retryable(r)}
 
     def append(self, row: dict[str, Any]) -> None:
         with self.path.open("a") as f:
@@ -229,7 +256,7 @@ async def run_stage_items(items: list[dict[str, Any]], work_fn: Callable[[dict],
             continue
         row = await call_with_retry(lambda: work_fn(item), attempts=attempts, sleep=sleep)
         checkpoint.append(row)
-    return checkpoint.rows()
+    return checkpoint.latest_rows()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -571,13 +598,17 @@ async def _snapshot_stage(run_dir: Path, manifest: Manifest) -> None:  # pragma:
         if item["arm"] == "arm1":
             rec = await sources.snapshot_with_retry(p, item["source"])
         else:
-            rec = await sources.snapshot_pubmed_direct(p, arm=item["arm"], rules=rules)
-        if item["source"] == "exa" and rec["interactions"]:
-            manifest.bump("exa_calls", len(rec["interactions"]))
+            rec = await sources.snapshot_with_retry(
+                p, "pubmed",
+                snap_fn=lambda pin, _src, arm=item["arm"]: sources.snapshot_pubmed_direct(pin, arm=arm, rules=rules))
+        if item["source"] == "exa" and rec.get("interactions_all_attempts"):
+            manifest.bump("exa_calls", rec["interactions_all_attempts"])
         return rec
 
     await run_stage_items(items, work, ck)
-    manifest.update_stage("snapshot", "complete", rows=len(ck.rows()))
+    latest = ck.latest_rows()
+    manifest.update_stage("snapshot", "complete", rows=len(latest),
+                          retryable_remaining=sum(1 for r in latest if is_retryable(r)))
 
 
 def main() -> None:  # pragma: no cover - CLI glue

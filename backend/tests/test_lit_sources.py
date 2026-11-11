@@ -925,3 +925,63 @@ def test_recommendation_table_renders_every_source():
     md = analyze.render_recommendation_table(t)
     for s in ("pubmed", "openalex", "exa", "s2", "consensus", "Judge filter"):
         assert s in md
+
+
+# --- resume must redo exhausted transient failures and judge not_run rows (review P1/P2) ---
+
+def test_exhausted_transient_and_not_run_rows_are_redone_on_resume(tmp_path):
+    ck = run_study.JsonlCheckpoint(tmp_path / "rows.jsonl", key_fields=("id",))
+    ck.append({"id": 1, "state": "ok"})
+    ck.append({"id": 2, "state": "lookup_failed", "transient": True, "retries_exhausted": True})
+    ck.append({"id": 3, "state": "lookup_failed", "transient": False})  # e.g. a 403: final
+    ck.append({"id": 4, "status": "not_run", "error": "unparseable"})
+    ck.append({"id": 5, "state": "not_run", "reason": "no named entity"})  # deterministic: final
+    assert ck.done_keys() == {(1,), (3,), (5,)}
+
+    calls = []
+
+    async def work(item):
+        calls.append(item["id"])
+        return {"id": item["id"], "state": "ok"}
+
+    rows = asyncio.run(run_study.run_stage_items([{"id": i} for i in range(1, 6)], work, ck, rules_dir=RULES))
+    assert calls == [2, 4]
+    assert {r["id"]: r["state"] if "state" in r else r["status"] for r in rows} == {
+        1: "ok", 2: "ok", 3: "lookup_failed", 4: "ok", 5: "not_run"}
+
+
+def test_torn_final_line_is_skipped_and_redone(tmp_path):
+    p = tmp_path / "rows.jsonl"
+    p.write_text('{"id": 1, "state": "ok"}\n{"id": 2, "sta')
+    ck = run_study.JsonlCheckpoint(p, key_fields=("id",))
+    assert ck.done_keys() == {(1,)}
+
+
+async def test_snapshot_with_retry_counts_interactions_over_all_attempts():
+    attempts = iter([
+        {"state": "lookup_failed", "transient": True, "interactions": [{"s": 503}]},
+        {"state": "ok", "interactions": [{"s": 200}]},
+    ])
+
+    async def snap(pinned, source):
+        return dict(next(attempts))
+
+    async def no_sleep(_):
+        return None
+
+    rec = await sources.snapshot_with_retry({}, "exa", snap_fn=snap, sleep=no_sleep)
+    assert rec["state"] == "ok" and rec["interactions_all_attempts"] == 2
+
+
+def test_audit_packet_ids_are_opaque_and_map_back_on_ingest(tmp_path):
+    sample = [{"item_id": "H1|exa|arm1|10.1/x", "claim": "c", "title": "t", "abstract": "a"},
+              {"item_id": "H2|pubmed|arm2|PMID:1", "claim": "c2", "title": "t2", "abstract": "a2"}]
+    packet = judge.export_audit_packet(sample, tmp_path / "packet.jsonl", seed=7)
+    text = packet.read_text()
+    assert "exa" not in text and "pubmed" not in text and "arm" not in text
+    rows = [json.loads(line) for line in text.splitlines()]
+    labels_path = tmp_path / "labels.jsonl"
+    labels_path.write_text("".join(json.dumps({"item_id": r["item_id"], "hit": r["title"] == "t"}) + "\n"
+                                   for r in rows))
+    labels = judge.ingest_audit_labels(labels_path, key_path=Path(f"{packet}.key.json"))
+    assert labels == {"H1|exa|arm1|10.1/x": True, "H2|pubmed|arm2|PMID:1": False}

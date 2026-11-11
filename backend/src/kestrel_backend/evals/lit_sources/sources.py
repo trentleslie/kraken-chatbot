@@ -246,9 +246,12 @@ async def snapshot_with_retry(pinned, source, *, attempts: int = 3, sleep=None, 
     sleep = sleep or asyncio.sleep
     snap_fn = snap_fn or snapshot_arm1
     rec = None
+    total_interactions = 0
     for attempt in range(attempts):
         rec = await snap_fn(pinned, source)
+        total_interactions += len(rec.get("interactions") or [])
         rec["attempts"] = attempt + 1
+        rec["interactions_all_attempts"] = total_interactions
         if not (rec["state"] == "lookup_failed" and rec.get("transient")):
             return rec
         if attempt + 1 < attempts:
@@ -352,7 +355,8 @@ async def snapshot_pubmed_direct(pinned: dict[str, Any], *, arm: str, rules: dic
             errors.append(f"{type(e).__name__}: {e}")
     st = classify_call("pubmed", rec.interactions, key_present=True, n_items=len(papers))
     if errors and st["state"] in ("ok", "empty"):
-        st = {"state": "lookup_failed", "reason": errors[0], "transient": False, "warnings": st["warnings"]}
+        transient = any(t in errors[0] for t in _TRANSIENT_EXC)
+        st = {"state": "lookup_failed", "reason": errors[0], "transient": transient, "warnings": st["warnings"]}
     return _record(pinned, "pubmed", arm, query, papers, st, rec.interactions, started, t0, errors)
 
 

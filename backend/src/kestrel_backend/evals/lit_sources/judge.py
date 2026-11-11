@@ -78,8 +78,8 @@ async def default_call_model(prompt: str) -> str:  # pragma: no cover - live, Un
     options = ClaudeAgentOptions(
         system_prompt="You are a careful biomedical evidence judge. Return only the JSON object.",
         allowed_tools=[],
+        tools=[],  # built-ins off: abstracts are untrusted text; allowed_tools=[] alone removes nothing
         max_turns=1,
-        permission_mode="bypassPermissions",
         model=JUDGE_MODEL,
     )
     options = _apply_byok_env(options)
@@ -107,7 +107,7 @@ async def judge_items(
     already-judged item_ids are skipped and new rows are appended as they finish.
     """
     sem = asyncio.Semaphore(concurrency)
-    done = checkpoint.done_keys() if checkpoint is not None else set()
+    done = checkpoint.done_keys() if checkpoint is not None else set()  # not_run rows are not done
 
     async def one(item: dict[str, Any]) -> dict[str, Any]:
         row = await judge_one(item)
@@ -202,17 +202,36 @@ def draw_audit_sample(
     return packet
 
 
+def opaque_id(item_id: str, seed: int) -> str:
+    """Packet id that reveals nothing about source, arm or role."""
+    return "A" + hashlib.sha256(f"{seed}:{item_id}".encode()).hexdigest()[:10]
+
+
 def export_audit_packet(sample: list[dict[str, Any]], path: Path, seed: int = 0) -> Path:
-    """Write the verdict-blind, source-blind packet (shuffled so role order leaks nothing)."""
-    rows = [{k: s[k] for k in _PACKET_FIELDS if k in s} for s in sample]
+    """Write the verdict-blind, source-blind packet (shuffled so role order leaks nothing).
+
+    item_ids can encode the source, so the packet carries opaque ids; the mapping back is written
+    beside it (``<packet>.key.json``) for ingest and must not be shown to the labeller.
+    """
+    rows, key = [], {}
+    for s in sample:
+        row = {k: s[k] for k in _PACKET_FIELDS if k in s and k != "item_id"}
+        oid = opaque_id(s["item_id"], seed)
+        key[oid] = s["item_id"]
+        rows.append({"item_id": oid, **row})
     random.Random(seed).shuffle(rows)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    Path(f"{path}.key.json").write_text(json.dumps(key, indent=1))
     return path
 
 
-def ingest_audit_labels(path: Path) -> dict[str, bool]:
-    """Read Trent's labels: one JSON object per line with ``item_id`` and boolean ``hit``."""
+def ingest_audit_labels(path: Path, key_path: Path | None = None) -> dict[str, bool]:
+    """Read Trent's labels: one JSON object per line with ``item_id`` and boolean ``hit``.
+
+    With ``key_path`` (the packet's ``.key.json``), opaque packet ids map back to item_ids.
+    """
+    key = json.loads(Path(key_path).read_text()) if key_path else {}
     labels: dict[str, bool] = {}
     for line in path.read_text().splitlines():
         if not line.strip():
@@ -220,7 +239,7 @@ def ingest_audit_labels(path: Path) -> dict[str, bool]:
         row = json.loads(line)
         if not isinstance(row.get("hit"), bool):
             raise ValueError(f"audit label for {row.get('item_id')} is not a boolean hit")
-        labels[row["item_id"]] = row["hit"]
+        labels[key.get(row["item_id"], row["item_id"])] = row["hit"]
     return labels
 
 
