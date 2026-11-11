@@ -50,3 +50,21 @@ def test_httpx_url_object_with_api_key_is_redacted_even_when_httpx_is_set_to_inf
     out = capsys.readouterr().out
     assert "SECRETKEY123" not in out and "NCBIKEY99" not in out
     assert "api_key=***REDACTED***" in out and "search=insulin" in out and "term=y" in out
+
+
+
+def test_uvicorn_access_formatter_still_renders_redacted_line():
+    """Greptile #136: args must keep their 5-tuple shape for uvicorn's AccessFormatter."""
+    import logging as _logging
+
+    from uvicorn.logging import AccessFormatter
+
+    from kestrel_backend.logging_config import QueryTokenRedactionFilter
+
+    record = _logging.LogRecord(
+        "uvicorn.access", _logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+        ("10.0.0.5:51234", "GET", "/ws/chat?token=eyJSECRETJWT", "1.1", 101), None)
+    assert QueryTokenRedactionFilter().filter(record)
+    line = AccessFormatter(fmt="%(client_addr)s %(request_line)s %(status_code)s", use_colors=False).format(record)
+    assert "eyJSECRETJWT" not in line
+    assert "10.0.0.5:51234" in line and "/ws/chat?token=***REDACTED***" in line and "101" in line
