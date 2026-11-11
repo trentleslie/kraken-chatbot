@@ -1054,3 +1054,13 @@ def test_json_safe_stringifies_tuple_keys_so_capture_state_serializes():
     out = run_study.json_safe(state)
     assert json.loads(json.dumps(out)) == {"specificity_by_bridge": {"CHEBI:1|HGNC:2": {"score": 1}},
                                            "x": [{"a": 1}]}
+
+
+def test_selection_dedups_bridges_that_differ_only_in_generic_title():
+    claim = "Path connects D-Glucose to INS"
+    a = make_hyp(entities=["CHEBI:1", "HGNC:2"]).model_copy(update={"title": "Bridge: Drug -> Protein (1 hops)", "claim": claim})
+    b = a.model_copy(update={"title": "Bridge: Drug -> Protein (2 hops)"})
+    c = a.model_copy(update={"title": "Bridge: Drug -> Protein (2 hops)", "claim": "Path connects D-Glucose to IL6"})
+    run = {"capture_id": "r", "hypotheses": [a, b, c], "disease_context": "type 2 diabetes", "kg_pmids": {}}
+    sel = run_study.select_hypotheses([run], target=2, min_n=1, coverage={"min_panels": 1, "required_types": []})
+    assert [s["hypothesis"]["claim"] for s in sel["selected"]] == [claim, "Path connects D-Glucose to IL6"]

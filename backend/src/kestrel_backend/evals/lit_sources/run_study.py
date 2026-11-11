@@ -471,8 +471,12 @@ def run_from_capture(capture: dict[str, Any], path: str | None = None) -> dict[s
     }
 
 
-def _dedup_key(h: Hypothesis) -> str:
-    return re.sub(r"\s+", " ", f"{h.title}|{h.claim}".lower()).strip()
+def _dedup_key(h: Hypothesis, disease_context: str = "") -> str:
+    """What grounding actually sees. For "Bridge:"/"Inferred role of" titles the production query
+    is built from the claim (+ disease), so hypotheses differing only in such a title are the same
+    grounding problem; counting them twice would be pseudo-replication."""
+    title = "" if h.title.startswith(("Bridge:", "Inferred role of")) else h.title
+    return re.sub(r"\s+", " ", f"{title}|{h.claim}|{disease_context}".lower()).strip()
 
 
 def _coverage(selected: list[dict[str, Any]], cov: dict[str, Any]) -> bool:
@@ -500,7 +504,7 @@ def select_hypotheses(runs: list[dict[str, Any]], *, target: int = 10, min_n: in
         while cursors[qi] < len(indexed):
             idx, h = indexed[cursors[qi]]
             cursors[qi] += 1
-            k = _dedup_key(h)
+            k = _dedup_key(h, run.get("disease_context", ""))
             if k in seen:
                 continue
             seen.add(k)

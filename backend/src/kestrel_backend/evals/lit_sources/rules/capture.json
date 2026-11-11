@@ -45,7 +45,7 @@
   "selection": {
     "target": 10,
     "min_fallback": 6,
-    "order": "round-robin across captures in the order listed, each capture's hypotheses sorted by tier (production order), deduplicated on normalized title+claim",
+    "order": "round-robin across captures in the order listed, each capture's hypotheses sorted by tier (production order), deduplicated on what grounding sees: normalized claim + disease context, plus the title only when it is not a generic 'Bridge:'/'Inferred role of' title (amended 2026-11-11 before any source query; was title+claim)",
     "coverage": {
       "min_panels": 2,
       "required_types": [

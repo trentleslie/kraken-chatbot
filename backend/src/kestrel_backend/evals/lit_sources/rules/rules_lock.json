@@ -1,8 +1,8 @@
 {
-  "frozen_at": "2026-11-11T20:46:28.260298+00:00",
+  "frozen_at": "2026-11-11T21:14:39.094340+00:00",
   "algorithm": "sha256",
   "files": {
-    "capture.json": "a4977ed55c7d5e3f7b69cc4e3e27c64d8a6a0ab60a9f7059b610c6b95053595f",
+    "capture.json": "8e9769cfdc6c778632c3274a495fd2724121975b3a1d7c9ca879db8f78304b4f",
     "decision_rule.json": "feb48c140e4ff61e5738638c756d682bbdb31383560475d7879eadb2900a0b77",
     "kraken_test_panel_basic.csv": "e74fc8e722ef3e527c8f15ab47bf81607cbe70a4ed0dff641924a37a09ddc7a2",
     "kraken_test_panel_modules.csv": "d427aa8c88abe4fbbe0cf4bae05d699aa75a30144f5fbd15a1982865d6f2d8f0",
