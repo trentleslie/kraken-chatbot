@@ -239,7 +239,8 @@ def stage_audit_export(run_dir: Path) -> dict[str, Any]:  # pragma: no cover - l
     sample = judge.draw_audit_sample(real, false_support_events=fs, consensus_checks=cc, rule=rule["audit"])
     _atomic_write(run_dir / "audit_sample.json", json.dumps(sample, indent=1, default=str))
     packet = judge.export_audit_packet(sample, run_dir / "audit_packet.jsonl", seed=rule["audit"]["seed"])
-    return {"packet": str(packet), "readings": len(sample),
+    sheet = judge.render_audit_sheet(packet, run_dir / "AUDIT_SHEET.md")
+    return {"packet": str(packet), "sheet": str(sheet), "readings": len(sample),
             "roles": {r: sum(1 for s in sample if s["audit_role"] == r) for r in
                       ("sample", "false_support", "consensus_identity")}}
 

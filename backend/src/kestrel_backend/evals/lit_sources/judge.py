@@ -215,7 +215,11 @@ def export_audit_packet(sample: list[dict[str, Any]], path: Path, seed: int = 0)
     """
     rows, key = [], {}
     for s in sample:
-        row = {k: s[k] for k in _PACKET_FIELDS if k in s and k != "item_id"}
+        # Judgment rows carry only claim/title/abstract: Consensus resolution fields would reveal the
+        # source. Only identity-check rows (a different question, own section) carry them.
+        fields = _PACKET_FIELDS if s.get("audit_role") == "consensus_identity" else ("claim", "title", "abstract")
+        row = {k: s[k] for k in fields if k in s and k != "item_id"}
+        row["question"] = ("identity" if s.get("audit_role") == "consensus_identity" else "evidence")
         oid = opaque_id(s["item_id"], seed)
         key[oid] = s["item_id"]
         rows.append({"item_id": oid, **row})
@@ -224,6 +228,47 @@ def export_audit_packet(sample: list[dict[str, Any]], path: Path, seed: int = 0)
     path.write_text("".join(json.dumps(r) + "\n" for r in rows))
     Path(f"{path}.key.json").write_text(json.dumps(key, indent=1))
     return path
+
+
+def render_audit_sheet(packet_path: Path, sheet_path: Path) -> Path:
+    """A numbered markdown sheet for the human labeller: evidence items, then identity checks.
+
+    Fill each ``Answer:`` with y or n. Parse it back with ``parse_audit_sheet``.
+    """
+    rows = [json.loads(line) for line in Path(packet_path).read_text().splitlines() if line.strip()]
+    ev = [r for r in rows if r.get("question") != "identity"]
+    idc = [r for r in rows if r.get("question") == "identity"]
+    out = ["# Audit sheet", "",
+           "Part A: does the paper report evidence (supporting OR refuting) on the specific claimed link?",
+           "Answer y or n. Topical papers that mention both entities without addressing the link are n.", ""]
+    for i, r in enumerate(ev, 1):
+        out += [f"## A{i} `{r['item_id']}`", f"**Claim:** {r['claim']}", f"**Title:** {r.get('title') or ''}",
+                "", f"{r.get('abstract') or '(no abstract)'}", "", "Answer: ", ""]
+    out += ["# Part B: are these the same paper? (Consensus record vs the OpenAlex match) Answer y or n.", ""]
+    for i, r in enumerate(idc, 1):
+        out += [f"## B{i} `{r['item_id']}`",
+                f"- Consensus: {r.get('consensus_title')} ({r.get('consensus_year')}, {r.get('consensus_first_author')})",
+                f"- Matched:   {r.get('resolved_title')} ({r.get('resolved_year')}, {r.get('resolved_first_author')})",
+                "", "Answer: ", ""]
+    Path(sheet_path).write_text("\n".join(out))
+    return Path(sheet_path)
+
+
+def parse_audit_sheet(sheet_path: Path) -> list[dict[str, Any]]:
+    """Read y/n answers back into label rows ``{item_id, hit}``; refuses blanks or other values."""
+    rows, current = [], None
+    for line in Path(sheet_path).read_text().splitlines():
+        m = re.match(r"^## [AB]\d+ `([^`]+)`", line)
+        if m:
+            current = m.group(1)
+            continue
+        if line.startswith("Answer:") and current:
+            v = line.split(":", 1)[1].strip().lower()
+            if v not in ("y", "n", "yes", "no"):
+                raise ValueError(f"item {current}: answer must be y or n, got {v!r}")
+            rows.append({"item_id": current, "hit": v in ("y", "yes")})
+            current = None
+    return rows
 
 
 def ingest_audit_labels(path: Path, key_path: Path | None = None) -> dict[str, bool]:

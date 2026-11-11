@@ -1093,3 +1093,26 @@ async def test_openalex_get_backs_off_on_429_then_succeeds():
     assert r.status_code == 200 and route.call_count == 3
     assert [w for w in waits if w != 0.15] == [2.0, 3.0]
     assert "mailto:" in route.calls[0].request.headers["User-Agent"]
+
+
+
+def test_audit_packet_hides_consensus_fields_on_evidence_rows_and_sheet_round_trips(tmp_path):
+    sample = [
+        {"item_id": "H1|doi:a", "claim": "c", "title": "t", "abstract": "ab", "audit_role": "sample",
+         "consensus_title": "t", "resolved_title": "t"},
+        {"item_id": "H2|doi:b", "claim": "c2", "title": "t2", "abstract": "ab2", "audit_role": "consensus_identity",
+         "consensus_title": "T2", "consensus_year": 2020, "resolved_title": "T2", "resolved_year": 2020},
+    ]
+    packet = judge.export_audit_packet(sample, tmp_path / "p.jsonl", seed=1)
+    rows = [json.loads(line) for line in packet.read_text().splitlines()]
+    ev = next(r for r in rows if r["question"] == "evidence")
+    assert "consensus_title" not in ev and "resolved_title" not in ev
+    sheet = judge.render_audit_sheet(packet, tmp_path / "s.md")
+    text = sheet.read_text().replace("Answer: ", "Answer: y", 1).replace("Answer: \n", "Answer: n\n", 1)
+    sheet.write_text(text)
+    labels = judge.parse_audit_sheet(sheet)
+    assert len(labels) == 2 and {lbl["hit"] for lbl in labels} == {True, False}
+    blank = tmp_path / "blank.md"
+    blank.write_text(judge.render_audit_sheet(packet, tmp_path / "b.md").read_text())
+    with pytest.raises(ValueError):
+        judge.parse_audit_sheet(blank)
