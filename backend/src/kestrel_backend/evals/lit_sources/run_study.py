@@ -30,6 +30,7 @@ import csv
 import hashlib
 import io
 import json
+import pickle
 import math
 import os
 import re
@@ -117,6 +118,17 @@ def verify_rules_lock(rules_dir: Path = RULES_DIR) -> dict[str, str]:
 # ---------------------------------------------------------------------------------------------
 # Manifest, checkpoints, retry
 # ---------------------------------------------------------------------------------------------
+
+
+def json_safe(value: Any) -> Any:
+    """Make dict keys JSON-encodable (the pipeline state has tuple-keyed dicts, e.g.
+    ``specificity_by_bridge``); tuple keys become ``"a|b|c"``."""
+    if isinstance(value, dict):
+        return {("|".join(map(str, k)) if isinstance(k, tuple) else k): json_safe(v)
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [json_safe(v) for v in value]
+    return value
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -415,12 +427,17 @@ async def capture_run(spec: dict[str, Any], run_dir: Path, rules_dir: Path = RUL
     state = await run_discovery(inputs["query"], structured_analytes=inputs["structured_analytes"],
                                 selected_groups=inputs["selected_groups"],
                                 module_directions=inputs["module_directions"])
+    path = Path(run_dir) / "captures" / f"{spec['id']}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Persist the raw state FIRST: a serialization bug must never cost the run (expensive-run SOP).
+    raw_path = path.with_suffix(".state.pkl")
+    with raw_path.open("wb") as f:
+        pickle.dump(dict(state), f)
     out = {"capture_id": spec["id"], "inputs": inputs, "captured_at": _now(),
            "duration_s": round(time.monotonic() - t0, 1),
            "live_kg_pmid_count": analyze.kg_pmid_total(state),
-           "state": _serialize_state(state)}
-    path = Path(run_dir) / "captures" / f"{spec['id']}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
+           "raw_state": raw_path.name,
+           "state": json_safe(_serialize_state(state))}
     _atomic_write(path, json.dumps(out, indent=2, default=str))
     return out
 
@@ -629,6 +646,9 @@ def main() -> None:  # pragma: no cover - CLI glue
     verify_rules_lock()
     if args.stage == "capture":
         for spec in load_capture_specs():
+            if (run_dir / "captures" / f"{spec['id']}.json").exists():
+                print(f"capture {spec['id']}: already captured, skipping")
+                continue
             out = asyncio.run(capture_run(spec, run_dir))
             manifest.update_stage(f"capture:{spec['id']}", "complete", duration_s=out["duration_s"],
                                   live_kg_pmid_count=out["live_kg_pmid_count"])

@@ -1047,3 +1047,10 @@ def test_pubmed_pairs_use_matched_sentence_calls_on_real_hypotheses_only():
             {"hyp_id": "T1", "source": "pubmed", "arm": "arm1", "state": "empty", "papers": []},
             {"hyp_id": "T1", "source": "pubmed", "arm": "arm1_direct", "state": "ok", "papers": [{}]}]
     assert run_tail.pubmed_pairs(recs, pinned) == [(0, 2)]
+
+
+def test_json_safe_stringifies_tuple_keys_so_capture_state_serializes():
+    state = {"specificity_by_bridge": {("CHEBI:1", "HGNC:2"): {"score": 1}}, "x": [{("a",): 1}]}
+    out = run_study.json_safe(state)
+    assert json.loads(json.dumps(out)) == {"specificity_by_bridge": {"CHEBI:1|HGNC:2": {"score": 1}},
+                                           "x": [{"a": 1}]}
