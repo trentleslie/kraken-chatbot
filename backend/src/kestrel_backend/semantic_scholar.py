@@ -9,6 +9,7 @@ import asyncio
 import math
 import os
 import logging
+import time
 from typing import Any, Literal
 
 import httpx
@@ -42,6 +43,11 @@ S2_DELAY = 1.1 if S2_API_KEY else 10.0
 S2_MAX_RETRIES = 3
 S2_BACKOFF_BASE = 2.0
 S2_BACKOFF_CAP = 30.0
+# After retries are exhausted, fail fast for this long instead of backing off again. Without it,
+# sustained 429s cost ~15 s per call and push literature_grounding past its 300 s stage timeout,
+# which discards the papers every other source already found.
+S2_COOLDOWN_SECONDS = 120.0
+_cooldown_until = 0.0
 
 
 def _backoff_seconds(attempt: int, response: httpx.Response) -> float:
@@ -83,6 +89,10 @@ async def search_papers(
 
     logger.info("S2 search: %s", truncated_query[:80])
 
+    global _cooldown_until
+    if time.monotonic() < _cooldown_until:
+        raise S2RateLimitError("Semantic Scholar rate limited; cooling down after exhausted retries")
+
     async with S2_SEMAPHORE:
         await asyncio.sleep(S2_DELAY)  # Rate limiting
 
@@ -121,7 +131,9 @@ async def search_papers(
                 return papers
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:
-                    logger.warning("S2 API rate limited (429)")
+                    _cooldown_until = time.monotonic() + S2_COOLDOWN_SECONDS
+                    logger.warning("S2 API rate limited (429); retries exhausted, failing fast for %.0fs",
+                                   S2_COOLDOWN_SECONDS)
                     raise S2RateLimitError("Semantic Scholar rate limit exceeded")
                 logger.error("S2 API HTTP error: %s %s", e.response.status_code, e)
                 return []
