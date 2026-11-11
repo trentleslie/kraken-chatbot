@@ -82,3 +82,18 @@ async def test_query_with_usage_locks_options_built_elsewhere(monkeypatch):
     await sdk_utils.query_with_usage("hi", loose, node_name="t")
     assert seen["options"].tools == []
     assert seen["options"].permission_mode != "bypassPermissions"
+
+
+@pytest.mark.skipif(not sdk_utils.HAS_SDK, reason="claude_agent_sdk not installed")
+async def test_query_with_usage_strips_an_explicit_tool_list(monkeypatch):
+    seen = {}
+
+    async def fake_query(prompt, options):
+        seen["options"] = options
+        return
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(sdk_utils, "query", fake_query)
+    opts = sdk_utils.ClaudeAgentOptions(system_prompt="x", tools=["Bash"], max_turns=1)
+    await sdk_utils.query_with_usage("hi", opts, node_name="t")
+    assert seen["options"].tools == []

@@ -239,8 +239,8 @@ def _disable_builtin_tools(options):
     uploaded analyte names), so built-ins are always off and permissions are never bypassed."""
     if options is None:
         return options
-    if getattr(options, "tools", None) is None:
-        options.tools = []
+    # Unconditional: query_with_usage serves text-only nodes, so any tool list here is a mistake.
+    options.tools = []
     if getattr(options, "permission_mode", None) == "bypassPermissions":
         options.permission_mode = "default"
     return options
