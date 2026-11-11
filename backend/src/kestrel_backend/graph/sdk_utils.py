@@ -183,7 +183,7 @@ def create_agent_options(
     allowed_tools: list[str] | None = None,
     max_turns: int = 3,
     mcp_servers: list[Any] | None = None,
-    permission_mode: str = "bypassPermissions",
+    permission_mode: str = "default",
     max_buffer_size: int = 10 * 1024 * 1024,
     model: str | None = None,
 ) -> Any:
@@ -209,6 +209,9 @@ def create_agent_options(
     kwargs: dict[str, Any] = {
         "system_prompt": system_prompt,
         "allowed_tools": allowed_tools or [],
+        # allowed_tools only lists tools that skip approval; tools=[] is what removes Claude
+        # Code's built-in tools (Bash, Write, ...). Prompts carry untrusted text.
+        "tools": [],
         "max_turns": max_turns,
         "permission_mode": permission_mode,
         "max_buffer_size": max_buffer_size,
@@ -226,6 +229,21 @@ def create_agent_options(
         kwargs["cli_path"] = cli
 
     return ClaudeAgentOptions(**kwargs)
+
+
+def _disable_builtin_tools(options):
+    """Remove Claude Code's built-in tools from options built outside create_agent_options.
+
+    ``allowed_tools=[]`` does not remove tools, and ``bypassPermissions`` would let every
+    built-in run without approval. Pipeline prompts carry untrusted text (abstracts, KG names,
+    uploaded analyte names), so built-ins are always off and permissions are never bypassed."""
+    if options is None:
+        return options
+    # Unconditional: query_with_usage serves text-only nodes, so any tool list here is a mistake.
+    options.tools = []
+    if getattr(options, "permission_mode", None) == "bypassPermissions":
+        options.permission_mode = "default"
+    return options
 
 
 def _pin_model(options):
@@ -315,7 +333,7 @@ async def query_with_usage(
     # node span — no parent/trace-id threading. When Langfuse is disabled, this is a no-op
     # nullcontext yielding None. Creating it inside this coroutine (and inside any asyncio
     # task spawned from it, which copies the contextvars context) keeps nesting correct.
-    options = _pin_model(options)
+    options = _disable_builtin_tools(_pin_model(options))
     # Attribute usage to the model the SDK is actually told to use (a node may pin its own).
     if model_name == DEFAULT_MODEL_NAME and getattr(options, "model", None):
         model_name = options.model
