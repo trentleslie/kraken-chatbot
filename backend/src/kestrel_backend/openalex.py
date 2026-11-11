@@ -1,12 +1,14 @@
 """OpenAlex API client for literature search.
 
-OpenAlex is free, has no rate limits, and covers 250M+ works.
-https://docs.openalex.org/
+OpenAlex covers 250M+ works. https://docs.openalex.org/
 
-Using polite pool: Requests with valid email get priority routing.
+Keyless requests share a small free daily budget per IP address (about 100 searches/day as of
+2026-11); once spent, OpenAlex returns 429 until midnight UTC. Set ``OPENALEX_API_KEY`` to bill
+calls to the account's own budget instead.
 """
 
 import logging
+import os
 from typing import Any
 
 import httpx
@@ -32,17 +34,26 @@ async def search_works(
     Returns:
         List of work objects with title, authors, year, DOI, PMID, etc.
     """
+    params: dict[str, Any] = {
+        "search": query[:200],  # Truncate long queries
+        "per_page": limit,
+        "select": "id,title,authorships,publication_year,doi,ids,cited_by_count",
+    }
+    api_key = os.getenv("OPENALEX_API_KEY")  # read per call so a .env loaded later still applies
+    if api_key:
+        params["api_key"] = api_key
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            response = await client.get(
-                f"{OPENALEX_API}/works",
-                params={
-                    "search": query[:200],  # Truncate long queries
-                    "per_page": limit,
-                    "select": "id,title,authorships,publication_year,doi,ids,cited_by_count",
-                },
-                headers={"User-Agent": USER_AGENT},
-            )
+            response = await client.get(f"{OPENALEX_API}/works", params=params,
+                                        headers={"User-Agent": USER_AGENT})
+            if response.status_code == 429:
+                # Budget exhaustion, not "no results": say so, so a silent zero is visible in logs.
+                logger.warning(
+                    "OpenAlex rate limited (429): budget remaining_usd=%s, retry_after=%ss, key=%s",
+                    response.headers.get("x-ratelimit-remaining-usd"),
+                    response.headers.get("retry-after"), "set" if api_key else "NOT SET",
+                )
+                return []
             response.raise_for_status()
             data = response.json()
             results = data.get("results", [])
