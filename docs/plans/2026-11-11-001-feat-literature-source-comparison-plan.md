@@ -12,157 +12,201 @@ origin: docs/brainstorms/2026-11-11-literature-source-comparison-requirements.md
 
 ## Overview
 
-A one-time research spike that decides which literature sources the discovery pipeline should keep, add, re-query, reweight or drop, and whether a certified link-evidence filter should screen the papers users see. It builds a standalone harness under `backend/src/kestrel_backend/evals/lit_sources/`. That harness:
+A one-time research spike that decides which literature sources the discovery pipeline should keep, add, fix the query for, reweight or drop, and whether a certified link-evidence filter should screen the papers users see. A small standalone harness under `backend/src/kestrel_backend/evals/lit_sources/`:
+
 - captures real pipeline hypotheses;
-- queries each source in two arms (as-deployed and native query);
+- snapshots each source once (cold, every call recorded, including failures);
 - normalizes papers to canonical IDs and abstracts;
-- judges each paper for evidence on the specific link (blinded LLM judge, certified by Trent's audit);
+- judges evidence on the specific link (blinded LLM judge, certified by Trent's audit);
 - replays the production merge to measure what users actually see.
 
 Production code is not changed.
 
 ## Problem Frame
 
-On dev run `cdf9fa68`, all 30 kept papers came from OpenAlex and Exa; KG, PubMed and S2 contributed nothing. Nobody has measured whether the kept papers are evidence for the hypotheses. The fix-first gate (G0) was lifted on 2026-11-11 (Trent): the spike runs now, S2 is reported unavailable until its new key arrives, and Consensus joins through the claude.ai connector (see origin).
+On dev run `cdf9fa68`, all 30 kept papers came from OpenAlex and Exa; KG, PubMed and S2 contributed nothing. Nobody has measured whether kept papers are evidence for the hypotheses. The fix-first gate (G0) was lifted on 2026-11-11 (Trent): the spike runs now, S2 is reported unavailable until its new key works, and Consensus joins through the claude.ai connector (see origin).
 
-Research surfaced three facts that shape the design:
-1. **No stored real hypotheses.** Postgres keeps only the synthesis markdown, and Langfuse only counts. Real hypotheses must be captured by running the pipeline (`assessment.capture` / `graph/runner.run_discovery`), which persists full state.
-2. **KG short-circuits the other sources.** In `literature_grounding.run()`, if `ground_hypothesis_kg` returns any PMID, `parallel_search_hypothesis` is skipped for that hypothesis. KG PMIDs are attached per entity, not per link, at relevance 1.0.
-3. **The merge ranks on relevance scores that aren't comparable across sources.** `merge_literature` sorts on each source's raw `relevance_score` and keeps the top `papers_per_hypothesis = 3`:
-   - KG: 1.0
-   - OpenAlex: 0.9 − 0.03·rank
-   - PubMed: 0.88 − 0.03·rank
-   - Exa: native score
-   - S2: Jaccard-based, low
+Research facts that shape the design:
 
-   S2 therefore structurally loses the kept set even when it works. The headline "what users see" numbers must reproduce both effects.
+1. **No stored real hypotheses.** Postgres keeps only the synthesis markdown, and Langfuse only counts. The two committed captures (`backend/assessment_data/assessment_runs/assessment_20260618T*.json`) hold 3 hypotheses on one urolithin query with an empty `study_context`, so they have no disease focus and are unusable here. Real hypotheses must be captured fresh.
+2. **KG short-circuits the other sources.** In `literature_grounding.run()`, if `ground_hypothesis_kg` returns any PMID, `parallel_search_hypothesis` is skipped. KG PMIDs are attached per entity, not per link, at relevance 1.0.
+3. **The merge compares relevance scores on different scales.** `merge_literature` sorts on raw `relevance_score` and keeps `papers_per_hypothesis = 3`:
+   - KG: 1.0;
+   - OpenAlex: 0.9 − 0.03·rank;
+   - PubMed: 0.88 − 0.03·rank;
+   - Exa: its native score;
+   - S2: a Jaccard-based score that runs low.
+
+   S2 therefore structurally loses the kept set. The production fetch is `parallel_fetch_limit = 6` per source, and dedup ties depend on concatenation order (OpenAlex, Exa, PubMed, S2).
 
 ## Requirements Trace
 
-Carried from origin (`R` numbers as in the requirements doc):
-- R1-R3 (hit definition, blinded judge, audit certification) → Units 5, 7
-- R2a (abstract and ID normalization) → Unit 3
-- R4-R6a (real hypotheses, true and false controls, pinned Hypothesis objects) → Unit 4
-- R7, R7a (sources and tiers, error-transparent calls, verified PubMed client) → Units 1, 2, 6
-- R8-R10 (two arms, top-5) → Units 2, 6
-- R10a, R10b (end-to-end kept set, judge-as-filter) → Unit 7
-- R11, R13 (diagnostics, licensing gate) → Units 2, 8
-- R14, R15 (persist by default, pinned inputs, resumable, no 5xx caching) → Unit 1
-- R16 (pre-registered decision rule) → Unit 4 (frozen) and Unit 8 (applied)
-- R17 (budget cap $25 plus about 1 h audit, ordered cuts) → Compute budget section, Unit 9
-- G0 (lifted) → recorded in manifest; S2 reported unavailable until the key works
+Carried from origin (R numbers as in the requirements doc):
+- R1–R3, R2a (hit definition, blinded judge, audit certification, normalization) → Units 2, 3
+- R4–R6a (real hypotheses, controls, pinned Hypothesis objects) → Unit 1
+- R7, R7a, R8–R10, R13 (sources and tiers, error transparency, arms, top-k, ToS gate) → Units 2, 4
+- R10a, R10b (end-to-end kept set, judge-as-filter) → Unit 3
+- R11, R16 (diagnostics, decision rule) → Units 1 (frozen), 3 (applied)
+- R14, R15, R17 (persistence, resume, budget) → Unit 1, Compute budget, Unit 4
 
 ## Scope Boundaries
 
-- No change to `backend/src/kestrel_backend/graph/nodes/literature_grounding.py` or any production client. The harness may import production functions (`build_search_query`, `merge_literature`, `extract_hypotheses`) but never patches them.
-- Not a reusable benchmark: no CI job, no cron, no Inspect solver.
-- Title and abstract judging only; no full text.
-- Hit/not-hit plus direction; no graded relevance.
+- No change to `backend/src/kestrel_backend/graph/nodes/literature_grounding.py`, its clients or its config. The harness imports production functions (`build_search_query`, the `*_raw` source functions, `merge_literature`, `ground_hypothesis_kg`) and never patches their logic.
+- Not a reusable benchmark: no CI job, no cron, no Inspect solver. Four modules and the tests the gates need, nothing more.
+- Judging uses title and abstract only. Verdicts are hit/not-hit plus direction.
 
 ### Deferred to Separate Tasks
 
-- Fixing PubMed `raw=0` (#126) in the production client: separate PR. This spike diagnoses it.
-- Exponential backoff for S2 on 429: separate PR, to be shipped before the new S2 key is used (it is promised on the key request form).
-- KG zero-yield root cause in `direct_kg` (`edge[5]` PMID extraction, cold_start routing): this spike reports the evidence; the fix is a separate PR.
-- Implementing any recommended source-mix, query or filter change in production: separate PR(s).
-- Per-source health logging in production: recommended follow-up.
+- The production PubMed fix (#126), S2 exponential backoff (promised on the key request form; due before the new key is used), the KG `direct_kg` `edge[5]` PMID extraction fix, any adopted mix/query/filter change, and per-source health logging. Each is its own PR, filed from this spike's findings.
 
 ## Context & Research
 
 ### Relevant Code and Patterns
 
-- `backend/src/kestrel_backend/evals/biomapper_resolution/run_eval.py`: the eval pattern to mirror. Pure `evaluate()` with injectable functions, plus `summarize()`, `build_artifact()`, `default_artifact_path(ts)`. It always writes an artifact; `--out` only overrides the path. `reproduce_inputs` pins versions and SHAs. Tests: `backend/tests/test_biomapper_eval.py` (injected fakes, no HTTP).
-- `backend/src/kestrel_backend/assessment/capture.py` + `graph/runner.py:run_discovery`: run the pipeline and persist full serialized state (hypotheses, `resolved_entities`, `study_context`). Example output: `backend/assessment_data/assessment_runs/assessment_20260618T*.json`.
-- `backend/src/kestrel_backend/assessment/cassette.py` (`CassetteRecorder`, respx transport intercept): records raw request/response pairs for all five production clients. It is the way to get HTTP status codes while still calling production clients unchanged (R7a).
-- `backend/src/kestrel_backend/graph/nodes/hypothesis_extraction.py:extract_hypotheses` (sync; title templates "Inferred role of …", "Bridge: …", "Inferred: A -> B").
-- `backend/src/kestrel_backend/graph/nodes/literature_grounding.py`:
-  - `build_search_query`, `parallel_search_hypothesis`, `merge_literature`, `ground_hypothesis_kg`, `collect_pmids_from_state`, `backfill_abstracts`, `run`;
-  - `SOURCE_PRIORITY`;
-  - `LiteratureGroundingConfig` in `graph/pipeline_config.py` (`papers_per_hypothesis = 3`, `parallel_fetch_limit = 6`, `max_hypotheses = 15`).
-- Per-source query reality: see the table in the repo research. OpenAlex truncates to 200 chars, PubMed receives the natural-language sentence as an ESearch term, and S2 runs three strategies.
-- Clients that swallow errors into `[]`: `openalex.search_works` (all), `semantic_scholar.search_papers` (all but 429), `exa_client.search_papers` (no key or non-HTTP errors), `pubmed_client._esearch` / `_esummary` (generic exceptions).
-- Standalone `literature_grounding.run()` works (uncommitted spike `tmp/spike_litground.py`). `load_dotenv()` must run **before** imports, because `EXA_API_KEY` and `S2_API_KEY` are read at import time.
-- Tests: pytest `asyncio_mode = auto`, `respx` available, `ftfy` already a dependency. Run with `python -m pytest` (the venv path contains spaces).
+- `backend/src/kestrel_backend/evals/biomapper_resolution/run_eval.py` + `backend/tests/test_biomapper_eval.py`: the eval shape to mirror. It always writes an artifact (`--out` is only an override) and pins its reproduce inputs.
+- `backend/src/kestrel_backend/graph/runner.py:run_discovery` (takes `structured_analytes`). `assessment/capture.py` does not pass analytes, so the harness calls `run_discovery` directly.
+- `backend/src/kestrel_backend/assessment/capture.py`: its `httpx.AsyncClient.send` patch pattern. `assessment/cassette.py` provides `CassetteRecorder`, `CassetteReplayer` and `setup_replay`, used for P6 replay.
+- `backend/src/kestrel_backend/graph/nodes/literature_grounding.py`: the `*_raw` functions, `parallel_search_hypothesis`, `merge_literature`, `SOURCE_PRIORITY`, `collect_pmids_from_state`, `ground_hypothesis_kg` and `run`. The latter two use attribute access on state objects.
+- `client/src/lib/analyteParse.ts` (the CSV analyte parser, which exists only in TypeScript) and `backend/src/kestrel_backend/analyte_ingest.py:validate_and_normalize`.
+- `kestrel_client` `get_metagraph` MCP tool, for the KG fingerprint.
+- Clients that turn errors into `[]`:
+  - `openalex.search_works`: all errors.
+  - `semantic_scholar.search_papers`: all except 429.
+  - `exa_client`: no key, or a non-HTTP error.
+  - `pubmed_client._esearch` / `_esummary`: generic exceptions.
+
+  NCBI can also return HTTP 200 with an `ERROR` field.
+- `load_dotenv()` must run before importing `kestrel_backend` (`EXA_API_KEY` and `S2_API_KEY` are read at import time). Tests: pytest `asyncio_mode = auto`, `respx` available, `ftfy` available, run with `python -m pytest`.
 
 ### Institutional Learnings
 
-- `docs/solutions/best-practices/reliable-long-running-llm-batch-runs-2026-06-07.md`:
-  - one shared transient-exception tuple;
-  - retry, then raise, and never record a timeout as a negative;
-  - per-item JSONL checkpoints;
-  - cost counted as a per-unit delta.
-- Vault `docs/solutions/best-practices/absent-evidence-is-unverifiable-not-wrong-2026-08-06.md`: three cell states `ok` / `empty` / `lookup_failed`, never pooled.
-- Memory `project_tier3_determinism_cache_confound`: no on-disk HTTP response cache across arms or repeats; run cold; record cache state in the manifest.
-- Memory `project_hajjar_scorer_artifact`: match on every identifier a paper carries, never `keys[0]`.
-- Vault `docs/solutions/best-practices/benchmark-gate-changes-to-llm-majority-vote-validation-gates-2026-11-01.md`: a missing judge verdict counts as `not_run` and blocks. Calibrate against the human audit, not against LLM-to-LLM agreement.
-- Vault `docs/solutions/best-practices/vacuous-tests-verify-the-mutation-landed-2026-08-04.md`: mutation-check the planted-control detectors.
-- Vault `docs/solutions/integration-issues/hand-built-fixture-hid-a-live-production-bug-2026-09-23.md`: test fixtures are captured real payloads, one per source.
-- Memories `reference_elicit_api` and `reference_ipv6_cloudflare_broken`:
-  - Elicit REST `/api/v2` `POST /search/papers` with a Bearer key from `~/.config/elicit/token`;
-  - a browser User-Agent;
-  - force IPv4.
-- Memory `reference_paperbanana_run_provenance` + vault `expensive-run-artifacts-must-outlive-the-worktree-2026-08-04.md`: write the manifest at start and update it as the run progresses. The output root is outside the repo and worktree.
-- `docs/solutions/logic-errors/repair-dont-strip-utf8-mojibake-in-citation-fields-2026-06-01.md`: repair titles and abstracts with `ftfy` before dedup and judging.
-- Memory `feedback_spike_sizing`: budget and fan-out are set up front; stop at overruns.
+- **Batch-run discipline** (`docs/solutions/best-practices/reliable-long-running-llm-batch-runs-2026-06-07.md`): one transient-exception tuple; retry, then raise; per-item JSONL checkpoints; cost counted per unit.
+- **Failed is not empty** (vault `absent-evidence-is-unverifiable-not-wrong-2026-08-06.md`): a failed call is never pooled as "nothing found".
+- **No HTTP cache** (memory `project_tier3_determinism_cache_confound`): run cold.
+- **Match on every identifier** (memory `project_hajjar_scorer_artifact`): not just the first.
+- **Missing verdicts block** (vault `benchmark-gate-changes-to-llm-majority-vote-validation-gates-2026-11-01.md`): a missing verdict blocks rather than passing; calibrate against the human, not against LLM-to-LLM agreement.
+- **Prove gates can fail** (vault `vacuous-tests-verify-the-mutation-landed-2026-08-04.md`).
+- **Real fixtures** (vault `hand-built-fixture-hid-a-live-production-bug-2026-09-23.md`): captured real payloads, not hand-built ones.
+- **Elicit access** (memories `reference_elicit_api`, `reference_ipv6_cloudflare_broken`): REST `/api/v2`, browser User-Agent, IPv4.
+- **Artifacts outlive the worktree** (vault `expensive-run-artifacts-must-outlive-the-worktree-2026-08-04.md` + memory `reference_paperbanana_run_provenance`): manifest written at start; output outside the worktree.
+- **Repair mojibake** (`docs/solutions/logic-errors/repair-dont-strip-utf8-mojibake-in-citation-fields-2026-06-01.md`): repair, don't strip, before dedup and judging.
+- **Spike sizing** (memory `feedback_spike_sizing`): budget and fan-out set up front.
 
 ## Key Technical Decisions
 
-- **One snapshot, many views.** Each (hypothesis, source, arm) is queried once, cold, and its raw result persisted. Diagnostics (R11) and all simulated mixes (R10a) are computed from that snapshot. Re-querying per mix would make the mixes differ by API drift, not by design.
-- **Mixes are replayed with production code, and a fidelity check proves the replay.** A mix replay calls the production `merge_literature` and replicates the KG-first short-circuit over the snapshot. For the current mix, replay output is compared with a real `literature_grounding.run()` on 2 hypotheses executed in the same session. Any difference in kept-set identity outside API drift halts the run. Without this check, "what users see" would be the harness's opinion.
-- **Error transparency via cassette, not wrappers.** Production clients run unchanged under `CassetteRecorder`, so each call's HTTP status is classified from the recorded raw response (`ok` / `empty` / `lookup_failed` / `unavailable`). Arm 2 PubMed uses a separate direct E-utilities call, certified against a known query with a known PMID count. Its divergence from the pipeline client is the #126 diagnosis.
-- **Consensus runs in-session.** The free-plan connector is callable only from a Claude session. A harness step emits a Consensus work-list (query per hypothesis per arm). A Claude agent runs the connector calls and writes raw results to `sources/consensus.jsonl` in the run directory, with timestamp and query. The harness ingests that file like any other source. Consensus results carry no DOI or PMID, so they resolve by title through OpenAlex, and the unresolved share is reported.
-- **Judge = Claude Sonnet 5 via the Agent SDK (local Claude login), blinded to source.** It has no metered API cost. It shares a family with the Opus hypothesis generator; that shared prior is disclosed. Certification comes from Trent's blinded audit, not from the model family. The judge sees only the hypothesis claim, title and normalized abstract.
-- **Run directory outside the repo:** `~/kraken-studies/lit-sources/<UTC-ts>/`, local disk, not the Drive-synced checkout. The manifest is written at start and updated per stage; per-item JSONL checkpoints allow resume.
-- **Query rules and the decision rule are frozen and hashed (Unit 4) before any control link is authored or any source is queried.** Hashes go in the manifest.
-- **Pre-registered decision rule (R16 defaults, adjustable at Checkpoint 2).** 95% confidence intervals are bootstrapped over hypotheses. A difference whose interval includes 0 counts as noise and maps to "keep as-is". Rules:
-  - **drop:** contributes 0 judged hits to any kept set across all mixes **and** the upper bound of its per-source precision is below 0.2.
-  - **fix query:** Arm 2 precision or yield beats Arm 1, with an interval that excludes 0.
-  - **add (Tier 2 / Consensus):** passes the R13 terms-of-service gate **and** adds ≥3 judged unique hits to the kept set **and** does not raise the false-support count.
-  - **reweight:** a candidate mix with the same sources but different ranking raises kept-set precision, with an interval that excludes 0.
-  - **adopt the judge filter:** raises kept-set precision and lowers false-support, with an interval that excludes 0.
-- **Judge certification thresholds:** pooled hit/not-hit agreement ≥ 85% **and** Cohen's κ ≥ 0.6. Per-source agreement is reported; any source below 70% is flagged and its judge-based numbers are excluded.
+- **One snapshot, many views.** Each (hypothesis, source, arm) is called once, cold, at production limits:
+  - The Arm 1 `*_raw` functions run with `limit = parallel_fetch_limit` (6), and the resulting `LiteratureSupport` objects are persisted after the Exa filter and S2 scoring.
+  - Precision@5 is a derived view over the first 5.
+  - All mixes and diagnostics read this snapshot; nothing is re-queried per mix.
+- **Error transparency via the harness's own `send` wrapper.** It patches `httpx.AsyncClient.send` (the `capture.py` pattern) and records, per call, request, status and body, or `{exception_type, url}` when the call raises.
+  - **Recorder scope:** one recorder per (hypothesis, source, arm); interactions are attributed to a source by host.
+  - **States** (the origin's `error` is named `lookup_failed` here; it means the same):
+    - `unavailable`: key or connector absent.
+    - `lookup_failed`: any recorded exception, any non-2xx response, a 2xx whose body contains a source error (NCBI `ERROR` / `WarningList`, OpenAlex or Exa error JSON), or no expected-host interaction while the key is present.
+    - `empty`: 2xx with zero parsed items.
+    - `ok`: otherwise.
+- **Arm 1 PubMed is the production client by design** (as-deployed), so it is exposed to #126. The **client-failure attribution uses a matched pair:** the direct E-utilities client is also run with the identical Arm 1 sentence, and only that same-query pair can attribute a failure to the client. Arm 2 PubMed (Boolean query) separately tests query form. Certification: the direct client must return ≥1 PMID on a fixed known query at run start.
+- **Consensus is a separately promoted candidate source** (neither Tier 1 nor Tier 2):
+  - **Queries:** Consensus gets only its native question form. It is not part of the deployed pipeline, so it has no Arm 1.
+  - **Collection:** an explicit stop point in the run. The harness emits `consensus_worklist.jsonl` and stops; the connector calls run in Trent's interactive Claude session (the claude.ai connector is not guaranteed to exist in dispatched or headless agents); the harness resumes on `consensus-ingest`.
+  - **Records:** the agent writes the **raw connector output per call** (text or error, plus timestamp); the harness derives the call state from it.
+  - **Preflight:** a connector probe in the timing stage. If the connector is unavailable, Consensus is `unavailable`, not `not_run`.
+- **Replay fidelity is checked exactly, not against a live run.** P6 runs the real `literature_grounding.run()` on rehydrated state inside `setup_replay(snapshot_cassette)`, so drift is zero by construction.
+  - **Pass condition:** kept sets must be identical.
+  - **Halt conditions:** any unmatched request, or a `literature_errors` entry containing "grounding failed".
+  - **Coverage:** at least 1 KG-path and 1 search-path hypothesis.
+  - **Tie order:** replay preserves production concatenation order.
+- **Captured state is rehydrated before use.** Captures serialize with `model_dump()`, but `collect_pmids_from_state` and `run()` use attribute access. Rehydration uses `model_validate` into `Finding`, `DiseaseAssociation`, `EntityResolution` and `Hypothesis`. Gate: the KG PMID count from rehydrated state equals the count from the live state at capture time. Otherwise the harness itself would fabricate the "KG yields 0" result.
+- **Candidate mixes are pre-fixed, deliberately departing from origin R10a.** The origin said mixes are chosen from diagnostics; choosing after seeing data is the post-hoc choice pre-registration exists to prevent. The pre-fixed mixes, frozen in `decision_rule.json`:
+  - **(a)** current mix with PubMed's Arm 2 Boolean query in place of the production query;
+  - **(b)** current mix + Consensus;
+  - **(c) reweight:** current sources with per-source rank-normalized scores (score = 1 − rank/limit per source, ties broken by `SOURCE_PRIORITY`).
+
+  **Consensus score mapping in replay:** frozen to mirror OpenAlex (0.9 − 0.03·rank, priority just after OpenAlex). An "add" verdict must also hold under a best-case (1.0) and a worst-case (0.5) mapping.
+  - **Elicit** (Tier 2): built only if its ToS gate is "yes" and the timing run shows headroom. It has source-level diagnostics only, labelled "no kept-set verdict".
+- **Judge:**
+  - **Model:** Claude Sonnet 5 via the Agent SDK on the local Claude login. It shares a family with the Opus hypothesis generator; this is disclosed, and certification rests on Trent's audit.
+  - **Inputs:** claim, title and normalized abstract only, blind to source.
+  - **Concurrency:** fixed by design at a semaphore of 4.
+  - **Missing verdicts:** a missing or unparseable verdict is `not_run`. Any `not_run` blocks verdicts, not diagnostics.
+- **Audit:**
+  - **Sample rule:** written into `decision_rule.json` at the freeze. The sample is drawn after judging by a seeded rule, stratified by source × judge verdict, with **verdicts hidden from Trent**.
+  - **Packet size (hard cap):** 40 sampled rows + all false-support events, deduplicated by (hypothesis, paper) and capped at 15, + 5 resolved-Consensus identity checks. That is ≤ 60 readings, about 1 hour.
+  - **Certification:** pooled agreement ≥ 85% **and** κ ≥ 0.6 **and** judge PPV ≥ 0.75.
+  - **Per-source agreement:** reported with n, descriptive only (cells are too small to exclude a source on).
+  - **Headline precision:** reported raw **and** PPV/NPV-corrected to the population verdict prevalence.
+  - **Non-certification** blocks verdicts, not the run (origin R3). The output is diagnostics marked uncertified plus ID-matched landmark recall.
+- **Headline population:** the 10 real hypotheses only. Controls feed P1–P3 and never enter headline metrics or decision-rule inputs (enforced by a test). The count of KG-short-circuited real hypotheses is reported. Comparative verdicts are computed on the **search-path subset**, and marked underpowered if that subset has fewer than 6 hypotheses.
+- **Decision rule** (frozen and hashed in `rules/decision_rule.json` at plan approval; any later change is logged as a deviation in the manifest):
+  - **Precedence:** PubMed client-failure diagnosis, then fix query, then add, then reweight, then drop, then keep. "Drop" is blocked for any source diagnosed `client failure`.
+  - **Drop:**
+    - zero judged hits in every kept set across all mixes; **and**
+    - Wilson 95% upper bound on pooled per-source precision < 0.2; **and**
+    - ≥ 30 judged papers with abstracts.
+
+    Otherwise the result is "insufficient data".
+  - **Fix query:** Arm 2 precision exceeds Arm 1, with a bootstrap 95% CI over hypotheses excluding 0, **and** Arm 2 precision ≥ 0.2. Yield is reported, not decisive.
+  - **Add (Consensus):**
+    - ToS gate "yes"; **and**
+    - judged unique kept hits spread over ≥ 3 distinct real hypotheses; **and**
+    - no increase in false-support count; **and**
+    - holds under both best-case and worst-case score mappings.
+  - **Reweight:** mix (c) raises kept-set precision, with a CI excluding 0.
+  - **Judge filter:** raises kept-set precision **and** lowers false-support, with a CI excluding 0.
+  - **Keep:** any difference whose interval includes 0 maps to keep-as-is.
+  - **Unavailable:** a source that did not run (S2 today) appears in the table as `unavailable` with its reason.
+- **Run directory:** `~/kraken-studies/lit-sources/<UTC-ts>/`, on local disk outside the Drive checkout and the worktree. The manifest is written at start and updated per stage, recording:
+  - repo SHA;
+  - rule and CSV hashes;
+  - judge model and prompt hash;
+  - KG fingerprint from `get_metagraph`, via the same `KESTREL_MCP_URL` as capture (URL logged);
+  - per-source status;
+  - per-call timestamps;
+  - `cache: cold`;
+  - "G0 lifted";
+  - budget counters;
+  - deviations.
+
+  Per-item JSONL checkpoints enable resume.
 
 ## Open Questions
 
 ### Resolved During Planning
 
-- Where do real hypotheses come from? From 3 fresh capture runs via `assessment.capture` on 3 pre-registered panels with a disease focus:
-  - the T2D modules panel (`kraken_test_panel_modules.csv`);
-  - the T2D basic panel (`kraken_test_panel_basic.csv`);
-  - one non-diabetes free-text query fixed in Unit 4 (for example Alzheimer's).
+- **Hypothesis source:** 3 fresh `run_discovery` captures with fixed query strings (written in `rules/capture.json` at the freeze). The capture runs use:
+  - the T2D modules panel, with its module directions;
+  - the T2D basic panel;
+  - one non-diabetes free-text query (Alzheimer's disease).
 
-  Selection rule: the first 4 hypotheses per run in production tier order, deduplicated, capped at 10 (pre-grounding = final hypotheses with `literature_support` stripped).
-- Survivorship? None. Research confirmed no stage filters or ranks hypotheses on grounding output (`bridge_grounding` and `synthesis` don't return hypotheses).
-- How is KG queried standalone? By `collect_pmids_from_state` + `ground_hypothesis_kg` over the captured run's own state, with no new Kestrel query. KG skips Arm 2 and is excluded from drop/reweight verdicts.
-- What is S2's Arm 1? The deployed three-strategy merge, cut to the top 5. S2 is reported `unavailable` while the key is rejected.
-- How is precision computed with fewer than 5 results? Hits ÷ returned papers with an abstract; the returned count is reported alongside.
+  The panel CSVs are copied into `evals/lit_sources/rules/` and hashed. A Python parser mirrors `analyteParse.ts` and is validated by `analyte_ingest.validate_and_normalize`.
+- **Selection:**
+  - **Order:** round-robin across the 3 runs, in production tier order, deduplicated, until 10.
+  - **Coverage check:** ≥ 2 panels and both bridge and inferred-role types; continue the round-robin if not met.
+  - **Fallback:** if fewer than 10 exist, use ≥ 6. If fewer than 6, capture one more run.
+- **Survivorship:** none. No stage filters hypotheses using grounding output.
+- **KG standalone:** `collect_pmids_from_state` + `ground_hypothesis_kg` on rehydrated captured state. KG has no Arm 2 and is excluded from drop and reweight verdicts.
+- **Precision with fewer than 5 results:** hits ÷ returned papers that have abstracts, with the returned count shown.
+- **False support:** reported as raw counts. Origin R6 supersedes R11's "rate".
 
 ### Deferred to Implementation
 
-- Consensus free-plan daily quota: measured in the timing run; if it binds, Consensus Arm 2 is the first cut.
-- Elicit cost per call and terms-of-service answer: checked in Unit 2 before any Elicit scoring (Tier 2).
-- Whether OpenAlex title search resolves Consensus papers reliably: the unresolved share is measured. If it exceeds 30%, Consensus unique-hit numbers are flagged as low-confidence.
-- Exact Arm 2 query strings follow the frozen rules; the edge-case handling of each rule is settled when building it, before the freeze.
+- Consensus free-plan quota (measured at preflight; if it binds, reduce Consensus to real hypotheses only).
+- Elicit cost and ToS answer.
+- Consensus title-resolution quality (thresholds below; unresolved share reported).
 
 ## Output Structure
 
     backend/src/kestrel_backend/evals/lit_sources/
         __init__.py
-        run_study.py          # CLI: stages, manifest, resume
-        sources.py            # per-source adapters + call classification
-        normalize.py          # canonical IDs, abstracts, ftfy
-        hypothesis_set.py     # capture selection, controls loader, query rules
-        judge.py              # blinded judge, audit packet, agreement
-        mixes.py              # merge replay, fidelity check, judge filter
-        analyze.py            # metrics, bootstrap CIs, decision rule
-        rules/                # frozen + hashed: query_rules.json, decision_rule.json
-        controls/             # true_links.json, false_links.json (authored after the freeze)
+        run_study.py        # stages, manifest, resume, capture, selection, controls loader
+        sources.py          # send wrapper, call states, Arm 1/2 adapters, Consensus work-list/ingest, normalization
+        judge.py            # blinded judge, audit packet export/ingest, agreement + PPV correction
+        analyze.py          # rehydration, mix replay, P6 fidelity, diagnostics, decision rule, report
+        rules/              # frozen + hashed: query_rules.json, decision_rule.json, capture.json, panel CSVs
+        controls/           # true_links.json, false_links.json (authored after the freeze)
     backend/tests/
-        test_lit_sources_sources.py
-        test_lit_sources_normalize.py
-        test_lit_sources_mixes.py
-        test_lit_sources_analyze.py
-        fixtures/lit_sources/    # one captured real payload per source
+        test_lit_sources.py
+        fixtures/lit_sources/   # captured real payloads incl. failure cases
 
 ## High-Level Technical Design
 
@@ -170,379 +214,224 @@ Carried from origin (`R` numbers as in the requirements doc):
 
 ```mermaid
 flowchart TD
-  F[Freeze + hash query rules & decision rule] --> C[Author controls: true links + landmarks, false links, corruption twin]
-  C --> P[Planted-truth gate on controls only]
-  P -->|fail| HALT[Halt + report]
-  P -->|pass| K[Capture 3 pipeline runs -> select 10 real hypotheses]
-  K --> T[Timing run: 1 hypothesis, all sources]
-  T -->|projection over cap| CUT[Apply ordered cuts R17]
-  T --> Q[Query snapshot: hyp x source x arm, cold, cassette-recorded]
+  F[Freeze + hash rules at plan approval] --> C[Author controls]
+  C --> P[Planted-truth gate on controls]
+  P -->|fail| HALT[Halt + manifest reason]
+  P -->|pass| K[3 captures -> rehydrate -> select 10 real]
+  K --> T[Timing run + Consensus preflight]
+  T -->|projection over cap| CUT[Ordered cuts]
+  T --> Q[Snapshot: hyp x source x arm, cold, send-wrapper recorded]
   CUT --> Q
-  Q --> CS[Consensus work-list -> in-session agent -> consensus.jsonl]
-  Q --> N[Normalize: canonical IDs + abstracts + ftfy]
-  CS --> N
-  N --> J[Blinded judge per hyp x paper]
-  J --> A[Audit packet: stratified ~50 + every false-support event]
-  A -->|Trent labels| CERT{Judge certified?}
-  CERT -->|no| HALT
-  CERT -->|yes| M[Mix replay + fidelity check vs real run]
-  M --> R[Analyze: diagnostics, kept-set headline, decision rule -> recommendation table]
+  Q --> W[Emit Consensus work-list -> STOP]
+  W -->|Trent's session runs connector, writes raw| CI[consensus-ingest]
+  CI --> N[Normalize IDs + abstracts]
+  N --> J[Blinded judge, semaphore 4]
+  J --> A[Audit packet <=60 -> Trent labels]
+  A --> CERT{Certified?}
+  CERT -->|no| D[Diagnostics only, marked uncertified]
+  CERT -->|yes| M[Mix replay + P6 cassette fidelity]
+  M -->|P6 fail| HALT
+  M --> R[Decision rule -> recommendation table]
 ```
 
 ## Planted-truth controls
 
-All controls are frozen in Unit 4, before any real hypothesis is queried. They pass through the full path: the same adapters, normalization, judge and matcher as real hypotheses.
+All controls are authored after the rule freeze and before any real hypothesis is queried. They go through the full path: the same adapters, normalization, judge and matcher as real hypotheses. P1–P3 and P6 run live; P4 and P5 are unit tests over captured real payloads (the live data contains no deliberately broken inputs to catch).
 
-| Control | What is planted | Pass criterion | On failure |
+| Control | Planted | Pass criterion | On failure |
 |---|---|---|---|
-| **P1 Known-true recall** | ~6 established links (e.g., BCAA → insulin resistance; leucine → mTORC1), each with ≥1 landmark registered as a PMID + DOI pair before any query. At least 2 are of moderate obscurity, closer to bridge-style hypotheses. | ≥1 landmark recovered by canonical-ID match in at least one source. **And** every available source that recovers no landmark is investigated before its numbers are used. | Halt: the harness or matcher is broken. |
-| **P2 Corruption (entity swap)** | One true link re-issued with both entities swapped for unrelated ones; its original landmark paper is injected into the corrupted hypothesis's paper list. | The judge marks the injected landmark **not-hit** for the corrupted link, and **hit** for the clean twin. | Halt: the judge is matching topic, not link. |
-| **P3 False links** | ~4 fabricated plausible links, each verified before the run to have no supporting literature (explicit search across all sources, recorded). | Every judge "supports" verdict is routed to Trent's review (100%); counts reported raw. | Not a halt; it is the measured false-support quantity. |
-| **P4 Matcher mutation** | A landmark presented under its DOI only, under its PMID only, and under a mojibake'd title. | All three variants match the registered landmark; a decoy with a one-character DOI change does not. | Halt: the identity layer is miscounting. |
-| **P5 Failure-state nulls** | Captured fixtures: S2 403, OpenAlex 500, a timeout, and a genuine empty 200. | They classify as `lookup_failed`, `lookup_failed`, `lookup_failed` and `empty` respectively; none counts as 0 hits. | Halt: failures would masquerade as "nothing found". |
-| **P6 Fidelity** | Current-mix replay vs a real `literature_grounding.run()` on 2 captured hypotheses, same session. | Identical kept-set identity, except for papers attributable to API drift between the two calls (logged). | Halt: the headline would measure the harness, not production. |
+| **P1 Known-true recall** | ~6 established links, each with ≥1 landmark registered as a PMID + DOI pair verified in PubMed at authoring. ≥2 of the links are of moderate obscurity. | ≥1 landmark recovered by canonical-ID match overall. Each available source with zero landmark recall gets a written disposition (broken vs genuine corpus gap), and its verdict is marked low-confidence. | Zero overall → halt. |
+| **P2 Near-miss corruption** | One true link with **one** entity swapped for a sibling (keep A, replace B with a related B′). Its original landmark is injected into the corrupted hypothesis's paper list. | Judge marks the injected landmark not-hit for the corrupted link and hit for the clean twin, **consistently across 3 live runs**. | Halt: the judge is matching topic, not link. |
+| **P3 False links** | ~4 fabricated plausible links, each with a recorded pre-run search across all sources showing no supporting literature. | Every judge "supports" verdict goes to Trent's audit (within the packet cap). Counts are reported raw. | Not a halt; this is the measured quantity. |
+| **P4 Matcher mutation** (unit test) | A landmark as DOI-only, PMID-only and mojibake'd title; a decoy DOI with one character changed. | The 3 variants match; the decoy does not. | Test fails → the build halts. |
+| **P5 Failure states** (unit test) | Captured: S2 403; OpenAlex 500; a raised timeout (no response); NCBI 200 with `ERROR`; a genuine empty 200; Exa with no key. | `lookup_failed` ×4, `empty`, `unavailable`. | Test fails → the build halts. |
+| **P6 Replay fidelity** | `run()` on rehydrated state inside `setup_replay(snapshot_cassette)`, ≥1 KG-path and ≥1 search-path hypothesis. | Identical kept sets; no unmatched request; no "grounding failed". | Halt: the headline would measure the harness. |
 
-Each detector gets a "prove it can fail" check (vacuous-test learning): the clean twin of P2 must pass and the decoy in P4 must fail. These run as unit tests and again live in the gate stage.
+Direction-reversed twins are deliberately **not** used: under R1, refuting evidence is a hit, so a reversed link has no clean expected answer.
 
 ## Compute budget
 
-- **Timing run first** (Unit 9, stage `timing`): 1 real hypothesis × all available sources × both arms, plus judging of its papers, with a time-stamped log. Rate is fit per stage (source calls, normalization lookups, judge calls). The projection is written to the manifest, with its provenance, before the full run.
-- **A priori fan-out (unmeasured guess, to be replaced by the timing run):**
-  - Hypotheses: 20 (10 real + 6 true + 4 false).
-  - Source calls: about 200 (Tier 1 = 4 sources, with S2 unavailable today; Arm 2 for PubMed and Consensus only; Consensus also in Arm 1).
-  - Raw papers: up to ~1,000. After dedup, ~600–800 (hypothesis, paper) judge calls.
-  - Capture: 3 pipeline runs.
-- **Cost:** judge and capture both run on the local Claude login (no metered spend). Metered spend is limited to Elicit credits (Tier 2 only) and Exa, which is already paid per call on the existing key. Cap: **$25** (R17).
-- **Time:** if the projection exceeds **2 hours wall-clock**, restructure before launch, in this order:
+- **Caps:**
+  - **Metered spend:** $25. The origin's "$25 of LLM judging + credits" is redefined to metered spend, because judging and capture run on the local Claude login with no metered cost. Metered spend is Exa calls plus Elicit credits if Tier 2 runs.
+  - **Trent's time:** about 1 hour (the audit packet cap).
+  - **Wall-clock:** 2 hours for the post-capture run (timing-discipline threshold). The three captures (multi-minute Opus runs) are timed and reported separately.
+- **Timing run first:** 1 real hypothesis × all available sources × arms, plus judging of its papers, plus the Consensus preflight, with a time-stamped log. Rate fit per stage, and the projection is written to the manifest with its provenance before the full run.
+- **A priori fan-out (an unmeasured guess the timing run replaces):**
+  - 21 hypotheses (10 real + 6 true + 4 false + 1 corruption twin).
+  - About 170 source calls: Tier 1 Arm 1 (OpenAlex, Exa, PubMed; S2 unavailable today), Arm 2 PubMed Boolean, the matched PubMed direct call, and Consensus questions.
+  - Up to ~1,000 raw papers, about 600–800 judge calls.
+  - At semaphore 4 and roughly 5–15 s per call: about 15–50 minutes of judging.
+- **Ordered cuts if a projection exceeds a cap** (origin R17 extended; the added steps are deliberate):
   1. drop Tier 2 (Elicit);
-  2. drop Consensus Arm 2;
-  3. drop Arm 2 for any remaining source whose native form is a sentence;
+  2. limit Consensus to real hypotheses only;
+  3. drop Arm 2 for sources whose native form is the sentence;
   4. trim real hypotheses from 10 to 6.
-
-  Bigger machines or more parallelism are not the answer.
-- **Trent's time:** about 1 hour, covering the audit packet (~50 judgments) plus every false-support event (≤~20 expected). If the false-support count would push his time over 1.5 hours, the false links are cut from 4 to 3.
-- **Progress unit:** judged (hypothesis, paper) rows in `judgments.jsonl`. Monitoring watches that count.
+- **Progress unit:** judged rows in `judgments.jsonl`.
 
 ## Independence
 
 | Headline number | Produced by | Certified by | Why they can't fail the same way | Deepest shared layer |
 |---|---|---|---|---|
-| Kept-set evidence-precision per mix (R10a) | Blinded LLM judge on replayed kept sets | Trent's blinded audit, stratified by source, sample drawn by rule before he sees any verdict | Different reader (human vs LLM). The sample rule is fixed before verdicts exist, so a cherry-picked sample can't hide judge error. | Both read the same normalized abstract. A garbled or missing abstract is a shared failure, mitigated by ftfy repair and by excluding no-abstract papers (counted separately). |
-| False-support count (P3, per mix) | LLM judge "supports" on fabricated links | Trent reviews **every** event | Full review, not a sample. | The fabricated links themselves. Mitigated by the pre-run literature check across all sources, recorded. |
-| Landmark recall (P1) | Canonical-ID matcher over normalized results | The pre-registered landmark list, written before any query, plus the P4 mutation test | The list cannot have been tuned to the matcher, and the mutation test proves the matcher fails on the decoy. | The NCBI ID converter / OpenAlex used for normalization. Mitigated: landmarks are registered as PMID + DOI pairs, verified at authoring time directly in PubMed. |
-| "Current mix" equals production | Harness replay (`merge_literature` + KG-first replica) | P6 fidelity: a real `literature_grounding.run()` | The production entry point vs the harness path. | `merge_literature` itself is shared by design: the claim is "replay = production", not "merge is correct". |
-| PubMed diagnosis (client vs query vs corpus) | Pipeline PubMed client (Arm 1) vs direct E-utilities (Arm 2) | A known query with a known PMID count checked on the direct client | Different code paths. Only NCBI itself is shared, and it is the ground truth. | NCBI E-utilities. |
+| Kept-set evidence precision per mix (real hypotheses) | Blinded LLM judge on replayed kept sets | Trent's audit (verdict-blind), PPV/NPV correction | Human vs LLM reader. The sample rule was frozen before verdicts existed, and Trent never sees the verdict. | The same normalized abstract. Mitigated by ftfy repair; no-abstract papers are excluded and counted. |
+| False-support count | Judge "supports" on fabricated links | Trent reviews every event (≤ 15 after dedup) | Full review, not a sample | The fabricated links. Mitigated by the recorded pre-run search, but that search uses the same sources under test, so "false" means "absent from these sources" (disclosed). |
+| Landmark recall | Canonical-ID matcher | Pre-registered landmark list + P4 mutation test | The list is fixed before any query, and the matcher is proven to fail on the decoy. | NCBI ID converter / OpenAlex. Landmarks are verified directly in PubMed at authoring. |
+| "Current mix = production" | Harness replay | P6: the real `run()` under cassette replay | Production entry point vs harness path, on identical inputs | `merge_literature` (shared by design; the claim is fidelity, not merge correctness). |
+| PubMed client vs query vs corpus | Pipeline client vs direct client | The matched same-query pair + a known-count certification query | Different code paths, same query | NCBI (the ground truth). |
 
-**Oracle contact log:** the landmark list and false-link list are append-only once frozen. Any edit after the first real-hypothesis query is logged in the manifest and invalidates P1 and P3 for that run.
+Edits to controls or rules after the first real query are logged as deviations in the manifest.
 
 ## Implementation Units
 
-- [ ] **Unit 1: Harness skeleton, manifest and persistence**
+- [ ] **Unit 1: Run harness: manifest, rules, capture, selection, controls**
 
-**Goal:** CLI with stages (`gate`, `capture`, `timing`, `query`, `consensus-ingest`, `normalize`, `judge`, `audit-export`, `audit-ingest`, `mixes`, `analyze`). It writes the run directory and manifest at start, checkpoints per item, and resumes.
+**Goal:**
+- Freeze and hash `rules/` (`query_rules.json`, `decision_rule.json`, `capture.json`, panel CSVs).
+- Load the controls.
+- Run the 3 captures via `run_discovery`, rehydrate state, select 10 real hypotheses, and serialize every hypothesis as `Hypothesis` + `disease_context` + entity-name map.
+- Provide stages, manifest at start, per-item resume, and the transient-retry policy.
 
-**Requirements:** R14, R15, R17
+**Requirements:** R4–R6a, R14, R15, R16 (freeze), R17
 
 **Dependencies:** None
 
 **Files:**
-- Create: `backend/src/kestrel_backend/evals/lit_sources/__init__.py`, `backend/src/kestrel_backend/evals/lit_sources/run_study.py`
-- Test: `backend/tests/test_lit_sources_analyze.py` (manifest and resume cases live with the analysis tests to keep the test file count small)
+- Create: `backend/src/kestrel_backend/evals/lit_sources/__init__.py`, `backend/src/kestrel_backend/evals/lit_sources/run_study.py`, `backend/src/kestrel_backend/evals/lit_sources/rules/*`, `backend/src/kestrel_backend/evals/lit_sources/controls/*`
+- Test: `backend/tests/test_lit_sources.py`
 
 **Approach:**
-- Mirror `evals/biomapper_resolution/run_eval.py`: injectable functions, an always-written artifact, `--out` as an override only.
-- Output root `~/kraken-studies/lit-sources/<UTC-ts>/`. The manifest records:
-  - repo SHA;
-  - rule hashes;
-  - judge model ID and prompt hash;
-  - KG build fingerprint (Kestrel `/metagraph`);
-  - per-source status and API versions;
-  - cache state (`cold`);
-  - G0-lifted note;
-  - budget counters.
-- Shared transient-exception tuple, retry with backoff, then raise. A transient failure is never written as a result.
-- `load_dotenv()` before any `kestrel_backend` import.
-
-**Patterns to follow:** `backend/src/kestrel_backend/evals/biomapper_resolution/run_eval.py`; `reliable-long-running-llm-batch-runs` learning.
+- Mirror `run_eval.py`. Call `load_dotenv()` before imports.
+- The panel CSV parser mirrors `client/src/lib/analyteParse.ts`.
+- Rehydrate captured state with `model_validate`. Gate: KG PMID count from rehydrated state equals the live count at capture.
 
 **Test scenarios:**
-- Happy path: a new run creates the directory and writes the manifest before any stage executes.
-- Edge case: resuming after a partial `judgments.jsonl` skips the completed rows and judges only the missing ones.
-- Error path: a stage raising mid-item leaves the manifest updated with the failed stage and no partial row.
-- Error path: a timeout from an injected source function is retried, then raises, and is never written as an empty result.
+- Happy path: manifest written before any stage runs; a killed run resumes to the same row count.
+- Error path: a rule-file hash mismatch at query time → the stage refuses to run.
+- Error path: an injected timeout is retried, then raises; it is never written as a result.
+- Edge case: selection round-robin hits the coverage check (≥ 2 panels, both types); fewer than 10 falls back to ≥ 6.
+- Integration: rehydrated state yields the same KG PMIDs as typed state; a plain-dict state yields 0 (proves the gate can fail).
+- Integration: the parsed modules CSV passes `validate_and_normalize` and reproduces the module directions.
 
-**Verification:** a killed run resumes to the same final row count, and the manifest exists from the first second.
+**Verification:** captures persisted, 10 selected hypotheses serialized, KG-count gate passes, manifest carries all hashes.
 
-- [ ] **Unit 2: Source adapters and call classification**
+- [ ] **Unit 2: Sources, call states and normalization**
 
-**Goal:** One adapter per source returning raw results plus a call state (`ok` / `empty` / `lookup_failed` / `unavailable`) and latency.
-- Arm 1 calls the production functions exactly as `parallel_search_hypothesis` does, under `CassetteRecorder`: OpenAlex, Exa, PubMed pipeline client, and S2's three-strategy merge cut to the top 5.
-- Arm 2: a direct PubMed E-utilities call with a Boolean query; the Elicit REST API (Tier 2); a Consensus work-list emitter.
-- Terms-of-service gate record per source.
+**Goal:**
+- The send wrapper and call-state classifier.
+- Arm 1 production `*_raw` calls at production limits.
+- Arm 2 PubMed (Boolean) plus the matched same-query direct call.
+- Consensus work-list emit and ingest (raw output in, state derived).
+- Elicit adapter, built only if its ToS gate passes and the budget has headroom.
+- Normalization:
+  - canonical IDs, matching on every identifier;
+  - one abstract-resolver chain: PMID → EFetch, DOI → OpenAlex `abstract_inverted_index`, title → OpenAlex;
+  - ftfy repair;
+  - Consensus title resolution with similarity ≥ 0.9, plus a year and first-author check;
+  - unresolved and no-abstract shares reported per source.
 
-**Requirements:** R7, R7a, R8, R9, R13
+**Requirements:** R2a, R7, R7a, R8, R9, R13
 
 **Dependencies:** Unit 1
 
 **Files:**
 - Create: `backend/src/kestrel_backend/evals/lit_sources/sources.py`
-- Test: `backend/tests/test_lit_sources_sources.py`, `backend/tests/fixtures/lit_sources/` (captured real payloads: OpenAlex, Exa, PubMed ESearch/ESummary, S2 403, Elicit, Consensus text)
-
-**Approach:**
-- Classify from the cassette's recorded status, not from result length.
-- The direct PubMed client is certified with a known query (e.g., a fixed term with a recorded PMID count) at the start of every run.
-- Elicit: Bearer key, browser User-Agent, IPv4; skipped entirely unless its R13 gate is "yes".
-- Consensus: emit `consensus_worklist.jsonl` (hypothesis ID, arm, query string) for the in-session agent.
-
-**Patterns to follow:** `backend/src/kestrel_backend/assessment/cassette.py`; `backend/tests/test_cassette_spike.py` (respx).
+- Test: `backend/tests/test_lit_sources.py`, `backend/tests/fixtures/lit_sources/` (captured real payloads)
 
 **Test scenarios:**
-- Happy path: the OpenAlex fixture classifies `ok` with 5 papers.
-- Error path: the S2 403 fixture classifies `lookup_failed`, not `empty` (even though the production client returns `[]`).
-- Error path: a missing `EXA_API_KEY` classifies `unavailable`.
-- Edge case: a genuine empty 200 classifies `empty`.
-- Integration: Arm 1 OpenAlex receives the same query string `build_search_query` produces for the same hypothesis (truncated at 200 chars).
-- Integration: the direct PubMed client returns ≥1 PMID on the certification query, and the pipeline client's result for the same hypothesis is recorded alongside.
+- P5: each failure fixture classifies as specified; Exa without a key → `unavailable`; a raised timeout (no response) → `lookup_failed`.
+- P4: DOI-only, PMID-only and mojibake'd landmark variants match; the one-character decoy does not.
+- Integration: Arm 1 OpenAlex receives exactly the query string `build_search_query` produces for the same hypothesis; snapshot holds 6 per source.
+- Integration: the matched pair runs the direct client on the identical Arm 1 sentence.
+- Edge case: a Consensus title with near-match but wrong year stays unresolved, not mis-resolved.
+- Error path: a missing work-list row is `not_run`; a recorded connector error is `lookup_failed`; a failed preflight makes Consensus `unavailable`.
 
-**Verification:** every planted failure fixture (P5) classifies correctly, and no adapter path can emit a 0-hit `ok` from an exception.
+**Verification:** every call in the snapshot has exactly one state; no exception yields `ok` with 0 hits.
 
-- [ ] **Unit 3: Normalization (canonical IDs, abstracts, text repair)**
+- [ ] **Unit 3: Judge, audit, replay, analysis**
 
-**Goal:** Resolve every paper to a canonical identity (PMID and/or DOI, plus OpenAlex ID, matching on **every** identifier carried) and fetch one abstract per paper from a single resolver chain:
-- PMID → PubMed EFetch;
-- DOI → OpenAlex `abstract_inverted_index`;
-- title → OpenAlex search, for Consensus.
+**Goal:**
+- Blinded judging (semaphore 4).
+- Audit packet export and ingest under the hard cap, with agreement, κ, PPV/NPV and corrected precision.
+- Mix replay (current, a, b, c) with the KG-first short-circuit, plus P6 cassette fidelity.
+- The judge-filter variant.
+- Diagnostics: precision@5 with n, unique hits, landmark recall, false-support counts, median latency, call-state counts, cost.
+- The KG-path count and search-path-subset comparisons.
+- The decision rule with precedence; the recommendation table; the PubMed three-way diagnosis; the KG zero-yield evidence.
 
-`ftfy` repair is applied before dedup and judging.
-
-**Requirements:** R2a, R11 (unique hits), P4
+**Requirements:** R1–R3, R10a, R10b, R11, R16, Success Criteria
 
 **Dependencies:** Unit 2
 
 **Files:**
-- Create: `backend/src/kestrel_backend/evals/lit_sources/normalize.py`
-- Test: `backend/tests/test_lit_sources_normalize.py`
-
-**Approach:**
-- Source-written text (Exa highlights, Consensus summaries) is never judged.
-- A paper with no retrievable abstract is kept, flagged `no_abstract`, and excluded from precision.
-- The per-source unresolved and no-abstract shares are recorded.
-
-**Patterns to follow:** `repair-dont-strip-utf8-mojibake-in-citation-fields` learning; existing `backfill_abstracts` for EFetch usage.
+- Create: `backend/src/kestrel_backend/evals/lit_sources/judge.py`, `backend/src/kestrel_backend/evals/lit_sources/analyze.py`
+- Test: `backend/tests/test_lit_sources.py`
 
 **Test scenarios:**
-- Happy path: a paper carrying both a PMID and a DOI resolves to one canonical record.
-- Edge case: a DOI-only paper and a PMID-only paper that are the same work dedupe to one.
-- Edge case: a mojibake'd title is repaired and still matches.
-- Error path: a title-only Consensus paper with no OpenAlex match is flagged unresolved, not dropped.
-- Mutation (P4): the decoy DOI with one character changed does not match the landmark.
+- Happy path: on a synthetic snapshot with a planted known precision, that value is recovered exactly.
+- Integration (P6): replay equals the real `run()` under cassette replay; a mutated replay is detected and halts.
+- Edge case: duplicates across sources keep the higher `SOURCE_PRIORITY` copy, and tie order matches production concatenation.
+- Edge case: control hypothesis IDs never appear in the headline frame.
+- Edge case: a source with 0 hits and fewer than 30 judged papers → "insufficient data", not "drop".
+- Edge case: PubMed diagnosed `client failure` → drop blocked; precedence picks client failure.
+- Edge case: a Consensus "add" that fails under the worst-case score mapping → not added.
+- Error path: any `not_run` judgment, or a non-certified judge → no verdicts, diagnostics marked uncertified.
+- Integration (P2, live, recorded): the near-miss twin is judged not-hit and the clean twin hit, 3 of 3.
 
-**Verification:** P4 passes, and the unresolved and no-abstract shares are present in the normalized output for every source.
+**Verification:** the recommendation table has a verdict or `unavailable` per Tier 1 source, a verdict for Consensus, and a judge-filter yes/no, each traceable to run-directory files.
 
-- [ ] **Unit 4: Frozen rules, controls and real-hypothesis set**
+- [ ] **Unit 4: Execute: gate, captures, timing, snapshot, Consensus stop, judge, audit, analysis**
 
-**Goal:**
-- **First:** write and hash `rules/query_rules.json` (Arm 2 rule per source) and `rules/decision_rule.json` (the R16 defaults above).
-- **Then:** author `controls/true_links.json` (with landmarks as PMID + DOI pairs, verified in PubMed) and `controls/false_links.json` (each verified to have no supporting literature; the evidence is recorded). Build the P2 corruption twin.
-- **Then:** run 3 capture runs on the pre-registered panels and select 10 real hypotheses by the stated rule.
-- Serialize every hypothesis as a `Hypothesis` plus `disease_context` plus the entity-name map.
+**Goal:** Run the stages in order.
+1. Planted-truth gate (P1, P2, P3 setup).
+2. Captures.
+3. Timing run with Consensus preflight, and the projection written down.
+4. Cuts if any cap would be exceeded.
+5. Snapshot.
+6. **Stop** for Consensus collection in Trent's session; then ingest.
+7. Normalize and judge.
+8. Audit packet → Trent → ingest.
+9. P6, mixes and analysis.
 
-**Requirements:** R4, R5, R6, R6a, R9, R16
+The report goes to the wiki through the pipeline's publish stage.
 
-**Dependencies:** Unit 1 (manifest records the hashes)
+**Requirements:** all
 
-**Files:**
-- Create: `backend/src/kestrel_backend/evals/lit_sources/hypothesis_set.py`, `backend/src/kestrel_backend/evals/lit_sources/rules/query_rules.json`, `backend/src/kestrel_backend/evals/lit_sources/rules/decision_rule.json`, `backend/src/kestrel_backend/evals/lit_sources/controls/true_links.json`, `backend/src/kestrel_backend/evals/lit_sources/controls/false_links.json`
-- Test: `backend/tests/test_lit_sources_analyze.py` (selection rule and hash checks)
+**Dependencies:** Units 1–3
 
-**Execution note:**
-- The rule files are committed before the controls files, in a separate commit, so git history proves the order.
-- Controls are written in the same title/claim template as pipeline bridges.
+**Files:** run directory only (outside the repo)
 
-**Approach:**
-- Capture via `assessment.capture` / `run_discovery` with the panel CSVs as `structured_analytes`, on the local Claude login.
-- Pre-grounding hypotheses = captured hypotheses with `literature_support` stripped.
-
-**Patterns to follow:** `backend/assessment_data/assessment_runs/assessment_20260618T*.json` (state format).
-
-**Test scenarios:**
-- Happy path: the selection rule picks the first 4 per run by tier, deduplicates, and caps at 10.
-- Edge case: a run with fewer than 4 hypotheses contributes all of them, and the cap still holds.
-- Error path: if a frozen rule file's hash differs from the manifest at query time, the stage refuses to run.
-- Integration: a serialized control round-trips into a `Hypothesis` that `build_search_query` accepts.
-
-**Verification:** the rule-file commit precedes the controls commit. Every landmark resolves in PubMed by PMID and by DOI, and every false link carries its recorded no-literature check.
-
-- [ ] **Unit 5: Blinded judge and audit packet**
-
-**Goal:**
-- Judge each (hypothesis, paper) for evidence on the specific link (hit / not-hit, direction, one-line reason) from the claim + title + normalized abstract, blinded to source.
-- Export the audit packet: a ~50-item stratified sample drawn by a seeded rule before any verdict is shown, plus every false-support event. Trent labels without seeing verdicts.
-- Ingest the labels and compute agreement.
-
-**Requirements:** R1, R2, R3, P2, P3
-
-**Dependencies:** Unit 3
-
-**Files:**
-- Create: `backend/src/kestrel_backend/evals/lit_sources/judge.py`
-- Test: `backend/tests/test_lit_sources_analyze.py`
-
-**Approach:**
-- Claude Sonnet 5 via the Agent SDK. A missing or unparseable verdict is recorded `not_run`, and any `not_run` blocks the analysis.
-- The prompt and model are hashed into the manifest.
-- The audit packet is a CSV/markdown sheet with hypothesis, title, abstract and an empty label column; stratified by source and by judge verdict (balanced hit / not-hit).
-
-**Test scenarios:**
-- Happy path: a parseable verdict is stored with direction and reason.
-- Error path: a malformed judge response is recorded `not_run`, and the analysis stage refuses to run.
-- Edge case: the sample rule with a fixed seed draws the same items on rerun, and its draw happens before verdicts are written.
-- Integration (P2): the injected landmark is judged not-hit for the corrupted twin and hit for the clean twin, using a recorded live response in the test.
-
-**Verification:** P2 passes live. Agreement is computed pooled and per source, and certification follows the thresholds in Key Technical Decisions.
-
-- [ ] **Unit 6: Consensus in-session collection**
-
-**Goal:** Run the Consensus work-list through the claude.ai connector from a Claude agent, top 5 per query, writing raw records (title, authors, year, Consensus ID, abstract, query, timestamp) to `sources/consensus.jsonl` in the run directory. The harness ingests the file.
-
-**Requirements:** R7 (Consensus tier), R8, R9
-
-**Dependencies:** Unit 2 (work-list), Unit 4 (hypotheses)
-
-**Files:**
-- Create: none in the repo. The agent writes into the run directory.
-- Test: `backend/tests/test_lit_sources_sources.py` (ingestion of a captured Consensus fixture)
-
-**Approach:**
-- The agent's instructions: call the connector with `page_size=5` and no filters, and record every call, including failures as `lookup_failed`.
-- The quota is measured in the timing run.
-- Rationale: there is no REST key, and the API is approval-only.
-
-**Test scenarios:**
-- Happy path: the captured Consensus fixture ingests to 5 records with titles and abstracts.
-- Error path: a recorded failure line ingests as `lookup_failed`, not empty.
-- Edge case: a work-list item missing from the JSONL is reported as `not_run` and blocks the analysis for that cell.
-
-**Verification:** the number of work-list items equals the number of ingested cells, with each cell assigned exactly one state.
-
-- [ ] **Unit 7: Mix replay, fidelity check and judge filter**
-
-**Goal:**
-- Replay the kept set per hypothesis for the current mix and 1–2 candidate mixes, using the production `merge_literature` and the KG-first short-circuit over the snapshot.
-- Run P6 fidelity against a real `literature_grounding.run()` on 2 captured hypotheses.
-- Compute the judge-filtered variant of each mix.
-
-**Requirements:** R10a, R10b, P6
-
-**Dependencies:** Units 3, 5
-
-**Files:**
-- Create: `backend/src/kestrel_backend/evals/lit_sources/mixes.py`
-- Test: `backend/tests/test_lit_sources_mixes.py`
-
-**Approach:**
-- Candidate mixes are chosen by a rule fixed in `decision_rule.json`, not after the diagnostics are seen:
-  - **(a)** the current mix with Arm 2 PubMed substituted;
-  - **(b)** the current mix plus Consensus, if available.
-- Kept set = top `papers_per_hypothesis` as configured.
-
-**Test scenarios:**
-- Happy path: a KG PMID present → the replay keeps the KG papers and skips the search sources, matching production behavior.
-- Edge case: duplicate papers across sources → the higher-`SOURCE_PRIORITY` copy is kept, as in production.
-- Integration (P6): the replay and the real run on the same snapshot agree. A forced divergence (a mutated replay) is detected and halts.
-- Happy path: the judge filter drops not-hit papers and the kept-set metrics recompute.
-
-**Verification:** P6 passes, and each mix produces a kept set per hypothesis with judged rows.
-
-- [ ] **Unit 8: Analysis, decision rule and recommendation table**
-
-**Goal:**
-- Compute diagnostics: per-source × arm precision@5 (returned count alongside), unique hits, landmark recall, false-support counts, median latency, call-state counts, cost.
-- Compute the kept-set headline per mix, with and without the judge filter.
-- Bootstrap 95% CIs over hypotheses, apply the frozen decision rule, and emit the recommendation table plus the PubMed three-way diagnosis and the KG zero-yield evidence.
-
-**Requirements:** R11, R13, R16, Success Criteria
-
-**Dependencies:** Units 5, 7
-
-**Files:**
-- Create: `backend/src/kestrel_backend/evals/lit_sources/analyze.py`
-- Test: `backend/tests/test_lit_sources_analyze.py`
-
-**Approach:**
-- Hypotheses where no source found a hit are reported separately (noise and false-support probes).
-- `lookup_failed` and `unavailable` cells are never pooled into precision.
-- Every number in the report cites its source file in the run directory.
-
-**Test scenarios:**
-- Happy path: a synthetic snapshot with a known answer (a planted precision value) is recovered exactly.
-- Edge case: a difference whose CI includes 0 maps to "keep as-is".
-- Edge case: a source with fewer than 5 returned papers computes hits ÷ returned.
-- Error path: any `not_run` judgment, or uncertified judge numbers, make the analysis refuse to emit verdicts (it emits the diagnostics marked uncertified instead).
-- Integration: the PubMed diagnosis picks "client failure" when the direct client returns hits and the pipeline client returns 0 for the same hypothesis.
-
-**Verification:** the recommendation table has a verdict per Tier 1 source and Consensus, plus a judge-filter yes/no, each traceable to run-directory files.
-
-- [ ] **Unit 9: Gate, timing run and full run (execution)**
-
-**Goal:**
-- Run the stages in order: the planted-truth gate (P1–P5) on controls only; capture; a timing run on 1 hypothesis with a written projection and its provenance.
-- Apply cuts if over cap; run the full query snapshot; run Consensus collection; normalize; judge.
-- Export the audit packet to Trent; ingest it; run P6 and the mixes; analyze.
-
-**Requirements:** all; BootLoops gates
-
-**Dependencies:** Units 1–8
-
-**Files:**
-- Run directory only (outside the repo). The final report goes to the wiki via the pipeline's publish stage.
-
-**Approach:**
-- Halt on any gate failure (P1, P2, P4, P5, P6), on judge non-certification, or on budget overrun. The halt reason and stage are recorded in the manifest.
-- S2 stays `unavailable` unless the new key works at run time; if it does, the run records S2's status and timestamp.
-
-**Test expectation:** none. This is execution of the tested units; the gates themselves are the checks.
+**Test expectation:** none. This unit executes tested code; the gates are the checks.
 
 **Verification:**
-- The manifest shows all stages complete, every gate passing and the judge certified.
-- The report's numbers trace to files.
-- Total metered spend is ≤ $25, and Trent's audit was ≤ ~1 hour.
+- The manifest shows every stage complete, all gates passed, judge certification recorded, metered spend ≤ $25, and audit packet ≤ 60 readings.
+- Every reported number cites its run-directory file.
 
 ## System-Wide Impact
 
-- **Interaction graph:** read-only use of production modules. Capture runs execute the full discovery pipeline locally on the local Claude login and Kestrel (`kestrel.krakenkg.com`).
-- **Error propagation:** every external failure is a recorded cell state, never an exception that silently empties a result.
-- **State lifecycle risks:**
-  - The run directory lives outside the worktree, so it survives `git worktree remove`.
-  - No HTTP response cache across arms or repeats.
-- **Unchanged invariants:**
-  - The production `literature_grounding` node, its clients and its config are untouched.
-  - Prod and dev deployments are unaffected (the harness never runs on Lightsail).
-- **External load:**
-  - About 200 source calls total. Exa and NCBI stay within key limits.
-  - Consensus calls count against the free-plan allowance.
+- **Read-only use of production code.** Captures run the full discovery pipeline locally (local Claude login; Kestrel at the logged `KESTREL_MCP_URL`).
+- **Error propagation:** every external failure becomes a recorded call state.
+- **Unchanged invariants:** the production node, clients, config and deployments.
+- **External load:** about 170 source calls; Exa and NCBI within their key limits; Consensus within the free-plan allowance, measured at preflight.
 
 ## Risks & Dependencies
 
 | Risk | Mitigation |
 |------|------------|
-| The Consensus free-plan quota runs out mid-run | Measure in the timing run; Consensus Arm 2 is the first cut; partial cells are recorded `not_run`, not empty |
-| The judge fails certification | The analysis emits diagnostics marked uncertified plus PMID-based landmark recall only; no verdicts. A recorded outcome, not a silent pass |
-| Replay diverges from production (P6) | Halt; fix the replay before any headline number exists |
-| Real hypotheses too T2D-heavy | The third capture panel is non-diabetes by rule; generalization is noted as a limitation |
-| Small n (~10 real hypotheses) | Bootstrap CIs over hypotheses; differences inside the noise band → "keep as-is" by rule |
-| Shared Claude family between judge and hypothesis generator | Disclosed; certification rests on Trent's blinded audit |
-| S2 key still rejected at run time | Recorded `unavailable` with reason; no S2 verdict; rerun S2 cells later against the same frozen rules if wanted |
-| API drift between snapshot and fidelity run | The fidelity check runs immediately after the snapshot in the same session; drift-attributable differences are logged, not counted |
+| Consensus connector absent or quota-limited | Preflight probe; `unavailable` fallback; cut step 2 |
+| Judge not certified | Diagnostics plus ID-matched landmark recall, marked uncertified; no verdicts (origin R3) |
+| P6 replay mismatch | Halt before any headline number exists |
+| Small n / KG short-circuit dilutes comparisons | Search-path subset; marked underpowered below 6; Wilson bounds and minimum-n for drop |
+| T2D-heavy set | Third capture is non-diabetes by rule; generalization stated as a limitation |
+| Same model family for judge and generator | Disclosed; certification by Trent, PPV-gated |
+| S2 key still rejected | `unavailable` with reason; S2 cells can be added later under the same frozen rules |
+| Snapshot calls lack production's overall 300 s timeout | Per-call latency recorded; any source exceeding 300 s per hypothesis is flagged as "production would have timed out" |
 
 ## Documentation / Operational Notes
 
-- The final report is published to the Phenome wiki by the pipeline's research tail. The run directory path and manifest are cited.
-- Follow-up issues to file from the results: production PubMed query/client fix (#126), S2 backoff, KG `edge[5]` extraction, and any adopted mix/filter change.
+- The final report publishes to the Phenome wiki through the research tail, citing the run directory and manifest. Follow-up issues: #126 production fix, S2 backoff, KG `edge[5]` extraction, and any adopted change.
 
 ## Sources & References
 
 - **Origin document:** [docs/brainstorms/2026-11-11-literature-source-comparison-requirements.md](../brainstorms/2026-11-11-literature-source-comparison-requirements.md)
-- Related code: `backend/src/kestrel_backend/graph/nodes/literature_grounding.py`, `backend/src/kestrel_backend/assessment/cassette.py`, `backend/src/kestrel_backend/evals/biomapper_resolution/run_eval.py`
-- Related issues: #124 and #125 (fixed, PR #130), #126 (S2/PubMed)
-- Prior art: `docs/plans/2026-05-29-001-feat-astabench-litground-comparison-plan.md` (qualitative, deferred scoring)
+- Related code: `backend/src/kestrel_backend/graph/nodes/literature_grounding.py`, `backend/src/kestrel_backend/assessment/cassette.py`, `backend/src/kestrel_backend/assessment/capture.py`, `backend/src/kestrel_backend/evals/biomapper_resolution/run_eval.py`
+- Related issues: #124/#125 (fixed, PR #130), #126
+- Prior art: `docs/plans/2026-05-29-001-feat-astabench-litground-comparison-plan.md`
