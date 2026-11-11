@@ -284,7 +284,7 @@ Edits to controls or rules after the first real query are logged as deviations i
 
 ## Implementation Units
 
-- [ ] **Unit 1: Run harness: manifest, rules, capture, selection, controls**
+- [x] **Unit 1: Run harness: manifest, rules, capture, selection, controls**
 
 **Goal:**
 - Freeze and hash `rules/` (`query_rules.json`, `decision_rule.json`, `capture.json`, panel CSVs).
@@ -315,7 +315,7 @@ Edits to controls or rules after the first real query are logged as deviations i
 
 **Verification:** captures persisted, 10 selected hypotheses serialized, KG-count gate passes, manifest carries all hashes.
 
-- [ ] **Unit 2: Sources, call states and normalization**
+- [x] **Unit 2: Sources, call states and normalization**
 
 **Goal:**
 - The send wrapper and call-state classifier.
@@ -348,7 +348,7 @@ Edits to controls or rules after the first real query are logged as deviations i
 
 **Verification:** every call in the snapshot has exactly one state; no exception yields `ok` with 0 hits.
 
-- [ ] **Unit 3: Judge, audit, replay, analysis**
+- [x] **Unit 3: Judge, audit, replay, analysis**
 
 **Goal:**
 - Blinded judging (semaphore 4).
