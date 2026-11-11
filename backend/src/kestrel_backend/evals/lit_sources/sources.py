@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import os
 import re
 import time
 import unicodedata
@@ -625,6 +626,9 @@ async def openalex_get(url: str, params: dict[str, Any], *, attempts: int = 6,
     from ...openalex import USER_AGENT
 
     sleep = sleep or _sleep
+    key = os.getenv("OPENALEX_API_KEY")
+    if key:  # OpenAlex bills keyless calls to a small shared per-IP daily budget
+        params = {**params, "api_key": key}
     for attempt in range(attempts):
         await sleep(0.15)
         async with httpx.AsyncClient(timeout=30.0) as c:
