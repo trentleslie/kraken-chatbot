@@ -238,6 +238,9 @@ async def snapshot_arm1(pinned: dict[str, Any], source: str, *, limit: int | Non
     if raised is not None and st["state"] not in ("lookup_failed", "unavailable"):
         st = {"state": "lookup_failed", "reason": f"raised {type(raised).__name__}",
               "transient": False, "warnings": st.get("warnings", [])}
+    if st["state"] == "lookup_failed" and any("rate limited" in str(e).lower() for e in errors):
+        # The client's 429 backoff/cool-down skipped the request: a rate limit, never a final answer.
+        st = {**st, "transient": True, "reason": f"rate limited: {st.get('reason')}"}
     return _record(pinned, source, "arm1", query, papers, st, rec.interactions, started, t0, errors)
 
 

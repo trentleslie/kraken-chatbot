@@ -1064,3 +1064,16 @@ def test_selection_dedups_bridges_that_differ_only_in_generic_title():
     run = {"capture_id": "r", "hypotheses": [a, b, c], "disease_context": "type 2 diabetes", "kg_pmids": {}}
     sel = run_study.select_hypotheses([run], target=2, min_n=1, coverage={"min_panels": 1, "required_types": []})
     assert [s["hypothesis"]["claim"] for s in sel["selected"]] == [claim, "Path connects D-Glucose to IL6"]
+
+
+async def test_s2_rate_limit_skip_is_transient_not_final(monkeypatch):
+    async def skipped(hyp, **kw):  # the production client during its fail-fast cool-down: no request
+        return [], ["S2 rate limited - strategy 1 skipped"]
+
+    monkeypatch.setitem(sources._RAW_FNS, "s2", skipped)
+    monkeypatch.setattr(sources, "key_present", lambda s: True)
+    pinned = {"hyp_id": "h", "kind": "real", "disease_context": "t2d",
+              "hypothesis": make_hyp().model_dump(), "entity_names": {}}
+    rec = await sources.snapshot_arm1(pinned, "s2")
+    assert rec["state"] == "lookup_failed" and rec["transient"] is True
+    assert run_study.is_retryable(rec)
