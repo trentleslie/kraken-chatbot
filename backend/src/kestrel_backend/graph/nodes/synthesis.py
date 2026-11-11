@@ -534,7 +534,8 @@ def format_shared_neighbors(
                 category_short = sn.category.replace("biolink:", "")
                 lines.append(f"- **{sn.name}** (`{sn.curie}`) — {category_short}")
                 lines.append(f"  - Connects: {', '.join(sn.connected_inputs[:5])}")
-                lines.append(f"  - Degree: {sn.degree} edges")
+                if sn.degree is not None:
+                    lines.append(f"  - Degree: {sn.degree} edges")
                 if sn.predicates:
                     lines.append(f"  - Predicates: {', '.join(list(set(sn.predicates))[:3])}")
             lines.append("")
@@ -543,7 +544,8 @@ def format_shared_neighbors(
             lines.append("### Hub Nodes (High Connectivity)")
             lines.append("*These nodes have >1000 edges and may represent non-specific associations.*\n")
             for sn in hubs[:5]:
-                lines.append(f"- {sn.name} (`{sn.curie}`) — {sn.degree} edges")
+                edges = f" — {sn.degree} edges" if sn.degree is not None else ""
+                lines.append(f"- {sn.name} (`{sn.curie}`){edges}")
             if len(hubs) > 5:
                 lines.append(f"- ... and {len(hubs) - 5} more hub nodes")
             lines.append("")
@@ -2073,7 +2075,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 system_prompt=SYNTHESIS_PROMPT,
                 allowed_tools=[],  # No tools - pure reasoning
                 max_turns=1,
-                permission_mode="bypassPermissions",
+                tools=[],  # built-ins off; allowed_tools=[] alone does not remove them
             )
 
             text, usage_record = await query_with_usage(

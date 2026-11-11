@@ -173,16 +173,21 @@ def parse_enrichment_result(
         return shared_neighbors, themes, errors
 
     # Parse shared neighbors
-    for sn in data.get("shared_neighbors", []):
+    # Model output: any field may be present-but-null, so default with `or`, not .get(k, default).
+    # A null degree crashed `> hub_threshold` on every row, turning 917 shared neighbors into 0 (#125).
+    for sn in data.get("shared_neighbors") or []:
         try:
+            curie = sn.get("curie") or ""
+            degree = sn.get("degree")
+            degree = degree if isinstance(degree, int) and not isinstance(degree, bool) else None
             shared_neighbors.append(SharedNeighbor(
-                curie=sn.get("curie", ""),
-                name=sn.get("name", "Unknown"),
-                category=sn.get("category", "biolink:NamedThing"),
-                degree=sn.get("degree", 0),
-                is_hub=sn.get("is_hub", False) or sn.get("degree", 0) > _config.hub_threshold,
-                connected_inputs=sn.get("connected_inputs", []),
-                predicates=sn.get("predicates", []),
+                curie=curie,
+                name=sn.get("name") or curie or "Unknown",
+                category=sn.get("category") or "biolink:NamedThing",
+                degree=degree,
+                is_hub=bool(sn.get("is_hub")) or (degree is not None and degree > _config.hub_threshold),
+                connected_inputs=sn.get("connected_inputs") or [],
+                predicates=sn.get("predicates") or [],
             ))
         except Exception as e:
             errors.append(f"Error parsing shared neighbor: {e}")
@@ -484,7 +489,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             system_prompt=PATHWAY_INFERENCE_PROMPT,
             allowed_tools=[],  # data-in-prompt inference — no MCP tools (issue #44)
             max_turns=2,
-            permission_mode="bypassPermissions",
+            tools=[],  # built-ins off; allowed_tools=[] alone does not remove them
             max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for embedded KG data
         )
 

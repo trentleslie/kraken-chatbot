@@ -206,7 +206,7 @@ async def score_hypotheses(
         "system_prompt": JUDGE_PROMPT,
         "allowed_tools": [],
         "max_turns": 1,
-        "permission_mode": "bypassPermissions",
+        "tools": [],  # built-ins off; allowed_tools=[] alone does not remove them
     }
 
     options = ClaudeAgentOptions(**options_kwargs)

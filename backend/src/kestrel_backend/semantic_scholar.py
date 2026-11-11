@@ -9,6 +9,7 @@ import asyncio
 import math
 import os
 import logging
+import time
 from typing import Any, Literal
 
 import httpx
@@ -35,6 +36,28 @@ S2_SEMAPHORE = asyncio.Semaphore(1)
 # Delay between requests: 1s with API key, 10s without (safe margin for free tier)
 # S2 free tier: 100 req/5min = 0.33 req/s. Using 10s = 0.1 req/s for safety.
 S2_DELAY = 1.1 if S2_API_KEY else 10.0
+
+# On 429, back off exponentially (2s, 4s, 8s) or for Retry-After when S2 sends it, then give up.
+# The S2 API-key terms require exponential backoff; retries stay inside the semaphore so they
+# remain serial.
+S2_MAX_RETRIES = 3
+S2_BACKOFF_BASE = 2.0
+S2_BACKOFF_CAP = 30.0
+# After retries are exhausted, fail fast for this long instead of backing off again. Without it,
+# sustained 429s cost ~15 s per call and push literature_grounding past its 300 s stage timeout,
+# which discards the papers every other source already found.
+S2_COOLDOWN_SECONDS = 120.0
+_cooldown_until = 0.0
+
+
+def _backoff_seconds(attempt: int, response: httpx.Response) -> float:
+    retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return min(float(retry_after), S2_BACKOFF_CAP)
+        except ValueError:
+            pass  # HTTP-date form: fall back to exponential
+    return min(S2_BACKOFF_BASE * (2 ** attempt), S2_BACKOFF_CAP)
 
 
 async def search_papers(
@@ -66,7 +89,15 @@ async def search_papers(
 
     logger.info("S2 search: %s", truncated_query[:80])
 
+    global _cooldown_until
+    if time.monotonic() < _cooldown_until:
+        raise S2RateLimitError("Semantic Scholar rate limited; cooling down after exhausted retries")
+
     async with S2_SEMAPHORE:
+        # Re-check after the wait: a search queued behind one that just exhausted its retries
+        # must not start its own backoff.
+        if time.monotonic() < _cooldown_until:
+            raise S2RateLimitError("Semantic Scholar rate limited; cooling down after exhausted retries")
         await asyncio.sleep(S2_DELAY)  # Rate limiting
 
         headers = {}
@@ -85,11 +116,18 @@ async def search_papers(
                 if fields_of_study:
                     params["fieldsOfStudy"] = ",".join(fields_of_study)
 
-                response = await client.get(
-                    S2_SEARCH_ENDPOINT,
-                    params=params,
-                    headers=headers,
-                )
+                for attempt in range(S2_MAX_RETRIES + 1):
+                    response = await client.get(
+                        S2_SEARCH_ENDPOINT,
+                        params=params,
+                        headers=headers,
+                    )
+                    if response.status_code != 429 or attempt == S2_MAX_RETRIES:
+                        break
+                    wait = _backoff_seconds(attempt, response)
+                    logger.warning("S2 API rate limited (429); retry %d/%d in %.1fs",
+                                   attempt + 1, S2_MAX_RETRIES, wait)
+                    await asyncio.sleep(wait)
                 response.raise_for_status()
                 data = response.json()
                 papers = data.get("data", [])
@@ -97,7 +135,9 @@ async def search_papers(
                 return papers
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:
-                    logger.warning("S2 API rate limited (429)")
+                    _cooldown_until = time.monotonic() + S2_COOLDOWN_SECONDS
+                    logger.warning("S2 API rate limited (429); retries exhausted, failing fast for %.0fs",
+                                   S2_COOLDOWN_SECONDS)
                     raise S2RateLimitError("Semantic Scholar rate limit exceeded")
                 logger.error("S2 API HTTP error: %s %s", e.response.status_code, e)
                 return []
@@ -215,7 +255,7 @@ Return ONLY one word: supporting, contradicting, tangential, or methodological""
             system_prompt="You are a biomedical literature classifier. Return only the classification category.",
             allowed_tools=[],
             max_turns=1,
-            permission_mode="bypassPermissions",
+            tools=[],  # built-ins off; allowed_tools=[] alone does not remove them
         )
 
         from .graph.sdk_utils import _apply_byok_env, _pin_model

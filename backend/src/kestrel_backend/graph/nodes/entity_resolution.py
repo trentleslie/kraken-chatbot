@@ -822,7 +822,7 @@ async def resolve_single_entity(entity: str, is_retry: bool = False) -> tuple[En
                 system_prompt=RETRY_PROMPT if is_retry else RESOLUTION_PROMPT,
                 allowed_tools=[],  # data-in-prompt selection; no KG tools
                 max_turns=1,
-                permission_mode="bypassPermissions",
+                tools=[],  # built-ins off; allowed_tools=[] alone does not remove them
                 max_buffer_size=10 * 1024 * 1024,
             )
             result_text, usage_record = await query_with_usage(

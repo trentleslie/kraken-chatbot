@@ -283,7 +283,7 @@ function PathwayEnrichmentDetails({ details }: { details: Record<string, unknown
     curie: string;
     name: string;
     category: string;
-    degree: number;
+    degree: number | null;
     connected_inputs: string[];
   }>) || [];
 

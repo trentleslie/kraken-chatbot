@@ -685,7 +685,7 @@ If no gaps found, return: {{"gaps": []}}
         options = ClaudeAgentOptions(
             allowed_tools=[],
             max_turns=5,
-            permission_mode="bypassPermissions",
+            tools=[],  # built-ins off; allowed_tools=[] alone does not remove them
         )
 
         # Execute the query using query_with_usage

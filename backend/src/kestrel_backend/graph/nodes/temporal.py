@@ -296,7 +296,7 @@ Classify each finding by its temporal relationship to disease progression.
         options = ClaudeAgentOptions(
             allowed_tools=[],
             max_turns=3,  # Lightweight reasoning-focused node
-            permission_mode="bypassPermissions",
+            tools=[],  # built-ins off; allowed_tools=[] alone does not remove them
         )
 
         # Execute the query and capture usage metrics
