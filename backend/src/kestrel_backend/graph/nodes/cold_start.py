@@ -503,7 +503,7 @@ async def analyze_cold_start_entity(
                 system_prompt=INFERENCE_PROMPT,
                 allowed_tools=[],  # No tools needed - KG data provided in prompt
                 max_turns=1,  # Single turn - just inference reasoning
-                permission_mode="bypassPermissions",
+                tools=[],  # built-ins off; allowed_tools=[] alone does not remove them
             )
 
             logger.info("Cold-start Step 3: Invoking SDK inference for '%s' (%s)...", raw_name, curie)

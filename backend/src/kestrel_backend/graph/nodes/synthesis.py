@@ -2075,7 +2075,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
                 system_prompt=SYNTHESIS_PROMPT,
                 allowed_tools=[],  # No tools - pure reasoning
                 max_turns=1,
-                permission_mode="bypassPermissions",
+                tools=[],  # built-ins off; allowed_tools=[] alone does not remove them
             )
 
             text, usage_record = await query_with_usage(

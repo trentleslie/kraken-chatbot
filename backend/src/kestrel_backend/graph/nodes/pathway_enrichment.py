@@ -489,7 +489,7 @@ async def run(state: DiscoveryState) -> dict[str, Any]:
             system_prompt=PATHWAY_INFERENCE_PROMPT,
             allowed_tools=[],  # data-in-prompt inference — no MCP tools (issue #44)
             max_turns=2,
-            permission_mode="bypassPermissions",
+            tools=[],  # built-ins off; allowed_tools=[] alone does not remove them
             max_buffer_size=10 * 1024 * 1024,  # 10MB buffer for embedded KG data
         )
 
