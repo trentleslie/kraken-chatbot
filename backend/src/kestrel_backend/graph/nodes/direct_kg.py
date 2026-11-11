@@ -92,7 +92,9 @@ def _merge_into_deduped(
 
         # Get node info
         node_info = nodes.get(end_node_id, {})
-        node_name = node_info.get("name", end_node_id)
+        # `or`, not a .get default: Kestrel sends "name": null for some nodes, and one null-named
+        # neighbor used to fail validation and discard every finding for the entity (#124).
+        node_name = node_info.get("name") or end_node_id
 
         # Get edge info - API returns "edge_ids" referencing edges_dict
         edge_ids = row.get("edge_ids", [])
@@ -102,7 +104,7 @@ def _merge_into_deduped(
         # Look up first edge from edges_dict to get predicate and source
         first_edge_id = str(edge_ids[0])
         edge = edges_dict.get(first_edge_id, []) if edges_dict else []
-        predicate = edge[1] if len(edge) > 1 else "biolink:related_to"
+        predicate = (edge[1] if len(edge) > 1 else None) or "biolink:related_to"
         source = edge[4] if len(edge) > 4 else "unknown"
         supporting = edge[5] if len(edge) > 5 else None
 
