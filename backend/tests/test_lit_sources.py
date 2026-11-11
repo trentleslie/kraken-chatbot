@@ -278,7 +278,7 @@ def test_selection_below_min_requires_another_capture():
         run_study.select_hypotheses([_run("t2d_basic", [_bridge(1), _inferred(2)])], target=10, min_n=6)
 
 
-def test_controls_load_as_pinned_hypotheses_and_unverified_landmarks_block_live_gate():
+def test_controls_load_verified_and_the_live_gate_refuses_unverified_copies():
     controls = run_study.load_controls(run_study.CONTROLS_DIR)
     kinds = {c["kind"] for c in controls}
     assert kinds == {"control_true", "control_false", "control_corrupt"}
@@ -290,9 +290,18 @@ def test_controls_load_as_pinned_hypotheses_and_unverified_landmarks_block_live_
     assert all(c["landmarks"] for c in trues)
     corrupt = [c for c in controls if c["kind"] == "control_corrupt"]
     assert len(corrupt) == 1 and corrupt[0]["inject_landmarks"]
-    # Landmarks are registered but not yet PubMed-verified: the live gate must refuse.
+    # The committed controls are verified, and the gate still fires when a verification is missing.
+    run_study.require_verified_controls(controls)
+    import copy
+    unverified = copy.deepcopy(controls)
+    trues_u = [c for c in unverified if c["kind"] == "control_true"]
+    trues_u[0]["landmarks"][0]["verified_at"] = None
     with pytest.raises(run_study.ControlsNotVerified):
-        run_study.require_verified_controls(controls)
+        run_study.require_verified_controls(unverified)
+    unsearched = copy.deepcopy(controls)
+    next(c for c in unsearched if c["kind"] == "control_false")["pre_run_search"] = None
+    with pytest.raises(run_study.ControlsNotVerified):
+        run_study.require_verified_controls(unsearched)
 
 
 # ---------------------------------------------------------------------------------------------

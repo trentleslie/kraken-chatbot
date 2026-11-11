@@ -1,5 +1,5 @@
 {
-  "status": "drafted; pre-run search across all sources NOT yet recorded",
+  "status": "pre-run search recorded across PubMed, OpenAlex, Exa, S2 and Consensus (2026-11-11)",
   "authoring_note": "Plausible-sounding fabricated links in the pipeline bridge template. Each needs a recorded pre-run search across all sources showing no supporting literature (pre_run_search) before use; run_study.require_verified_controls refuses otherwise. 'False' means 'absent from these sources' (disclosed).",
   "links": [
     {
@@ -8,7 +8,20 @@
       "b": "adiponectin secretion",
       "claim": "Isoleucine suppresses adiponectin secretion through TCF7L2-dependent signalling in adipocytes.",
       "disease_context": "type 2 diabetes",
-      "pre_run_search": null
+      "pre_run_search": {
+        "searched_at": "2026-11-11",
+        "sources": {
+          "pubmed": "direct E-utilities: claim sentence -> 0 (NCBI 'No items found'); entity-only Boolean co-mention, top 10 read",
+          "openalex": "claim sentence, top 10 read",
+          "exa": "claim sentence, top 10 read",
+          "s2": "claim sentence with the new key, top 10 read",
+          "consensus": "claude.ai connector, entity query, top 5 read"
+        },
+        "verdict": "no returned paper reports this link",
+        "evidence": "Hits concern TCF7L2 in adipocytes or adiponectin regulators (resistin, TNF-a); none involve isoleucine.",
+        "artifacts": "~/kraken-studies/lit-sources/prerun/20261111T204259Z.json + s2_rerun.json",
+        "reviewer": "Claude (in-session); Trent to spot-check"
+      }
     },
     {
       "id": "F2_anhydroglucitol_il6",
@@ -16,7 +29,20 @@
       "b": "interleukin-6 transcription",
       "claim": "1,5-anhydroglucitol directly activates interleukin-6 transcription in visceral adipocytes.",
       "disease_context": "type 2 diabetes",
-      "pre_run_search": null
+      "pre_run_search": {
+        "searched_at": "2026-11-11",
+        "sources": {
+          "pubmed": "direct E-utilities: claim sentence -> 0 (NCBI 'No items found'); entity-only Boolean co-mention, top 10 read",
+          "openalex": "claim sentence, top 10 read",
+          "exa": "claim sentence, top 10 read",
+          "s2": "claim sentence with the new key, top 10 read",
+          "consensus": "claude.ai connector, entity query, top 5 read"
+        },
+        "verdict": "no returned paper reports this link",
+        "evidence": "Hits concern IL-6 in adipocytes (GLP-1, RAGE, thermogenesis); none involve 1,5-anhydroglucitol. PubMed entity co-mention: 0.",
+        "artifacts": "~/kraken-studies/lit-sources/prerun/20261111T204259Z.json + s2_rerun.json",
+        "reviewer": "Claude (in-session); Trent to spot-check"
+      }
     },
     {
       "id": "F3_glycine_leptin_receptor_beta_cell",
@@ -24,7 +50,20 @@
       "b": "leptin receptor signalling",
       "claim": "Glycine inhibits leptin receptor signalling in pancreatic beta cells.",
       "disease_context": "type 2 diabetes",
-      "pre_run_search": null
+      "pre_run_search": {
+        "searched_at": "2026-11-11",
+        "sources": {
+          "pubmed": "direct E-utilities: claim sentence -> 0 (NCBI 'No items found'); entity-only Boolean co-mention, top 10 read",
+          "openalex": "claim sentence, top 10 read",
+          "exa": "claim sentence, top 10 read",
+          "s2": "claim sentence with the new key, top 10 read",
+          "consensus": "claude.ai connector, entity query, top 5 read"
+        },
+        "verdict": "no returned paper reports this link",
+        "evidence": "Hits concern leptin signalling in beta cells or glycine receptors in islets, separately; none link glycine to leptin receptor signalling. PubMed entity co-mention: 0.",
+        "artifacts": "~/kraken-studies/lit-sources/prerun/20261111T204259Z.json + s2_rerun.json",
+        "reviewer": "Claude (in-session); Trent to spot-check"
+      }
     },
     {
       "id": "F4_valine_crp_hepatocyte",
@@ -32,7 +71,20 @@
       "b": "C-reactive protein",
       "claim": "Valine binds and inactivates C-reactive protein inside hepatocytes.",
       "disease_context": "type 2 diabetes",
-      "pre_run_search": null
+      "pre_run_search": {
+        "searched_at": "2026-11-11",
+        "sources": {
+          "pubmed": "direct E-utilities: claim sentence -> 0 (NCBI 'No items found'); entity-only Boolean co-mention, top 10 read",
+          "openalex": "claim sentence, top 10 read",
+          "exa": "claim sentence, top 10 read",
+          "s2": "claim sentence with the new key, top 10 read",
+          "consensus": "claude.ai connector, entity query, top 5 read"
+        },
+        "verdict": "no returned paper reports this link",
+        "evidence": "Hits concern CRP synthesis in hepatocytes or valine in liver disease, separately; none report valine binding or inactivating CRP.",
+        "artifacts": "~/kraken-studies/lit-sources/prerun/20261111T204259Z.json + s2_rerun.json",
+        "reviewer": "Claude (in-session); Trent to spot-check"
+      }
     }
   ]
 }

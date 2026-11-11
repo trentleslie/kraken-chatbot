@@ -1,5 +1,5 @@
 {
-  "status": "registered; landmarks NOT yet PubMed-verified",
+  "status": "registered; landmarks PubMed-verified (PMID + DOI + title) 2026-11-11",
   "authoring_note": "Authored after the rules freeze (rules_lock.json) and before any real hypothesis is queried. Landmark PMID+DOI pairs were registered from the author's knowledge and MUST be verified directly in PubMed (stamp verified_at) before the P1 gate runs; run_study.require_verified_controls refuses otherwise. Titles and claims follow the pipeline bridge template (title 'Bridge: <path>').",
   "links": [
     {
@@ -9,11 +9,20 @@
       "claim": "Elevated branched-chain amino acids contribute to insulin resistance in obesity.",
       "disease_context": "type 2 diabetes",
       "obscurity": "established",
-      "synonyms": {"a": ["BCAA", "leucine"]},
+      "synonyms": {
+        "a": [
+          "BCAA",
+          "leucine"
+        ]
+      },
       "landmarks": [
-        {"pmid": "19356713", "doi": "10.1016/j.cmet.2009.02.002",
-         "title": "A branched-chain amino acid-related metabolic signature that differentiates obese and lean humans and contributes to insulin resistance",
-         "verified_at": null}
+        {
+          "pmid": "19356713",
+          "doi": "10.1016/j.cmet.2009.02.002",
+          "title": "A branched-chain amino acid-related metabolic signature that differentiates obese and lean humans and contributes to insulin resistance",
+          "verified_at": "2026-11-11T20:45:23Z",
+          "verified_by": "PubMed ESummary 2026-11-11: PMID resolves; DOI and title match"
+        }
       ]
     },
     {
@@ -23,10 +32,21 @@
       "claim": "Higher plasma branched-chain and aromatic amino acids predict future type 2 diabetes.",
       "disease_context": "type 2 diabetes",
       "obscurity": "established",
-      "synonyms": {"a": ["isoleucine", "leucine", "valine"]},
+      "synonyms": {
+        "a": [
+          "isoleucine",
+          "leucine",
+          "valine"
+        ]
+      },
       "landmarks": [
-        {"pmid": "21423183", "doi": "10.1038/nm.2307",
-         "title": "Metabolite profiles and the risk of developing diabetes", "verified_at": null}
+        {
+          "pmid": "21423183",
+          "doi": "10.1038/nm.2307",
+          "title": "Metabolite profiles and the risk of developing diabetes",
+          "verified_at": "2026-11-11T20:45:23Z",
+          "verified_by": "PubMed ESummary 2026-11-11: PMID resolves; DOI and title match"
+        }
       ]
     },
     {
@@ -38,9 +58,13 @@
       "obscurity": "established",
       "synonyms": {},
       "landmarks": [
-        {"pmid": "11479627", "doi": "10.1038/90984",
-         "title": "The fat-derived hormone adiponectin reverses insulin resistance associated with both lipoatrophy and obesity",
-         "verified_at": null}
+        {
+          "pmid": "11479627",
+          "doi": "10.1038/90984",
+          "title": "The fat-derived hormone adiponectin reverses insulin resistance associated with both lipoatrophy and obesity",
+          "verified_at": "2026-11-11T20:45:23Z",
+          "verified_by": "PubMed ESummary 2026-11-11: PMID resolves; DOI and title match"
+        }
       ]
     },
     {
@@ -50,11 +74,19 @@
       "claim": "Variants of the TCF7L2 gene confer risk of type 2 diabetes.",
       "disease_context": "type 2 diabetes",
       "obscurity": "established",
-      "synonyms": {"a": ["transcription factor 7-like 2"]},
+      "synonyms": {
+        "a": [
+          "transcription factor 7-like 2"
+        ]
+      },
       "landmarks": [
-        {"pmid": "16415884", "doi": "10.1038/ng1732",
-         "title": "Variant of transcription factor 7-like 2 (TCF7L2) gene confers risk of type 2 diabetes",
-         "verified_at": null}
+        {
+          "pmid": "16415884",
+          "doi": "10.1038/ng1732",
+          "title": "Variant of transcription factor 7-like 2 (TCF7L2) gene confers risk of type 2 diabetes",
+          "verified_at": "2026-11-11T20:45:23Z",
+          "verified_by": "PubMed ESummary 2026-11-11: PMID resolves; DOI and title match"
+        }
       ]
     },
     {
@@ -66,8 +98,13 @@
       "obscurity": "moderate",
       "synonyms": {},
       "landmarks": [
-        {"pmid": "23010998", "doi": "10.1038/msb.2012.43",
-         "title": "Novel biomarkers for pre-diabetes identified by metabolomics", "verified_at": null}
+        {
+          "pmid": "23010998",
+          "doi": "10.1038/msb.2012.43",
+          "title": "Novel biomarkers for pre-diabetes identified by metabolomics",
+          "verified_at": "2026-11-11T20:45:23Z",
+          "verified_by": "PubMed ESummary 2026-11-11: PMID resolves; DOI and title match"
+        }
       ]
     },
     {
@@ -77,11 +114,19 @@
       "claim": "Alpha-hydroxybutyrate is an early biomarker of insulin resistance and glucose intolerance in non-diabetic people.",
       "disease_context": "type 2 diabetes",
       "obscurity": "moderate",
-      "synonyms": {"a": ["2-hydroxybutyrate"]},
+      "synonyms": {
+        "a": [
+          "2-hydroxybutyrate"
+        ]
+      },
       "landmarks": [
-        {"pmid": "20526369", "doi": "10.1371/journal.pone.0010883",
-         "title": "alpha-hydroxybutyrate is an early biomarker of insulin resistance and glucose intolerance in a nondiabetic population",
-         "verified_at": null}
+        {
+          "pmid": "20526369",
+          "doi": "10.1371/journal.pone.0010883",
+          "title": "alpha-hydroxybutyrate is an early biomarker of insulin resistance and glucose intolerance in a nondiabetic population",
+          "verified_at": "2026-11-11T20:45:23Z",
+          "verified_by": "PubMed ESummary 2026-11-11: PMID resolves; DOI and title match"
+        }
       ]
     }
   ],
