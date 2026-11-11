@@ -152,8 +152,10 @@ def body_error(source: str, text: str | None) -> tuple[str | None, list[str]]:
             if es.get("ERROR"):
                 return f"NCBI ERROR: {es['ERROR']}", warnings
             wl = es.get("warninglist") or {}
-            if wl.get("phrasesignored") or wl.get("quotedphrasesnotfound"):
-                return f"NCBI WarningList: {wl}", warnings
+            if wl.get("phrasesignored") or wl.get("quotedphrasesnotfound") or wl.get("outputmessages"):
+                # Informational: NCBI drops stop-words on most sentence queries, with or without hits,
+                # and reports a genuine zero-hit search as "No items found." Never a lookup failure.
+                warnings.append(f"NCBI WarningList: {wl}")
             el = es.get("errorlist") or {}
             if el.get("phrasesnotfound") or el.get("fieldsnotfound"):
                 warnings.append(f"NCBI errorlist (query terms dropped): {el}")

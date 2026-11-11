@@ -306,11 +306,20 @@ def test_controls_load_as_pinned_hypotheses_and_unverified_landmarks_block_live_
     ("ncbi_esearch_error", "pubmed", "lookup_failed"),
     ("openalex_500_constructed", "openalex", "lookup_failed"),
     ("openalex_empty", "openalex", "empty"),
+    ("ncbi_esearch_sentence_no_items", "pubmed", "empty"),
 ])
 def test_p5_failure_fixtures_classify(fixture, source, expected):
     inter = fx_interaction(fixture, source)
     st = sources.classify_call(source, [inter], key_present=True, n_items=0)
     assert st["state"] == expected, st
+
+
+def test_ncbi_stopword_warning_with_hits_is_ok_and_keeps_the_warning():
+    # Real payload: a sentence query with 106 hits AND phrasesignored. Must not be lookup_failed.
+    inter = fx_interaction("ncbi_esearch_hits_with_warning", "pubmed")
+    st = sources.classify_call("pubmed", [inter], key_present=True, n_items=6)
+    assert st["state"] == "ok"
+    assert any("WarningList" in w for w in st["warnings"])
 
 
 def test_p5_raised_timeout_is_lookup_failed():

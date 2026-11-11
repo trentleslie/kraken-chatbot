@@ -1,0 +1,16 @@
+{
+ "note": "real NCBI sentence query: hits AND a WarningList (phrasesignored) - must classify ok",
+ "captured_at": "2026-11-11T20:43:50.592510+00:00",
+ "request": {
+  "method": "GET",
+  "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=branched-chain+amino+acids+contribute+to+insulin+resistance+in+obesity&retmode=json&retmax=6&sort=relevance",
+  "content": null
+ },
+ "response": {
+  "status_code": 200,
+  "headers": {
+   "content-type": "application/json; charset=UTF-8"
+  },
+  "text": "{\"header\":{\"type\":\"esearch\",\"version\":\"0.3\"},\"esearchresult\":{\"count\":\"106\",\"retmax\":\"6\",\"retstart\":\"0\",\"idlist\":[\"33983836\",\"19356713\",\"29755574\",\"27252163\",\"36382190\",\"34003802\"],\"translationset\":[{\"from\":\"branched-chain amino acids\",\"to\":\"\\\"amino acids, branched-chain\\\"[Supplementary Concept] OR \\\"amino acids, branched-chain\\\"[All Fields] OR \\\"branched chain amino acids\\\"[All Fields] OR \\\"amino acids, branched-chain\\\"[MeSH Terms] OR (\\\"amino\\\"[All Fields] AND \\\"acids\\\"[All Fields] AND \\\"branched-chain\\\"[All Fields]) OR \\\"branched-chain amino acids\\\"[All Fields] OR (\\\"branched\\\"[All Fields] AND \\\"chain\\\"[All Fields] AND \\\"amino\\\"[All Fields] AND \\\"acids\\\"[All Fields])\"},{\"from\":\"contribute\",\"to\":\"\\\"contribute\\\"[All Fields] OR \\\"contributed\\\"[All Fields] OR \\\"contributes\\\"[All Fields] OR \\\"contributing\\\"[All Fields] OR \\\"contribution\\\"[All Fields] OR \\\"contributions\\\"[All Fields]\"},{\"from\":\"insulin resistance\",\"to\":\"\\\"insulin resistance\\\"[MeSH Terms] OR (\\\"insulin\\\"[All Fields] AND \\\"resistance\\\"[All Fields]) OR \\\"insulin resistance\\\"[All Fields]\"},{\"from\":\"obesity\",\"to\":\"\\\"obeses\\\"[All Fields] OR \\\"obesity\\\"[MeSH Terms] OR \\\"obesity\\\"[All Fields] OR \\\"obese\\\"[All Fields] OR \\\"obesities\\\"[All Fields] OR \\\"obesity's\\\"[All Fields]\"}],\"querytranslation\":\"(\\\"amino acids branched chain\\\"[Supplementary Concept] OR \\\"amino acids branched chain\\\"[All Fields] OR \\\"branched chain amino acids\\\"[All Fields] OR \\\"amino acids, branched chain\\\"[MeSH Terms] OR (\\\"amino\\\"[All Fields] AND \\\"acids\\\"[All Fields] AND \\\"branched chain\\\"[All Fields]) OR \\\"branched-chain amino acids\\\"[All Fields] OR (\\\"branched\\\"[All Fields] AND \\\"chain\\\"[All Fields] AND \\\"amino\\\"[All Fields] AND \\\"acids\\\"[All Fields])) AND (\\\"contribute\\\"[All Fields] OR \\\"contributed\\\"[All Fields] OR \\\"contributes\\\"[All Fields] OR \\\"contributing\\\"[All Fields] OR \\\"contribution\\\"[All Fields] OR \\\"contributions\\\"[All Fields]) AND (\\\"insulin resistance\\\"[MeSH Terms] OR (\\\"insulin\\\"[All Fields] AND \\\"resistance\\\"[All Fields]) OR \\\"insulin resistance\\\"[All Fields]) AND (\\\"obeses\\\"[All Fields] OR \\\"obesity\\\"[MeSH Terms] OR \\\"obesity\\\"[All Fields] OR \\\"obese\\\"[All Fields] OR \\\"obesities\\\"[All Fields] OR \\\"obesity s\\\"[All Fields])\",\"warninglist\":{\"phrasesignored\":[\"to\",\"in\"],\"quotedphrasesnotfound\":[],\"outputmessages\":[]}}}\n"
+ }
+}
