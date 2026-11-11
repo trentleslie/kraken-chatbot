@@ -11,8 +11,9 @@ from pythonjsonlogger.json import JsonFormatter
 
 
 _KEY_RE = re.compile(r"sk-(?:ant-)?[A-Za-z0-9_-]{16,}")
-# A token= query parameter (the WebSocket carries the Clerk session JWT as ?token=...).
-_TOKEN_QS_RE = re.compile(r"([?&]token=)[^&\s\"']+")
+# Secret-bearing query parameters: token= (the WebSocket carries the Clerk session JWT as
+# ?token=...) and api_key=/apikey=/key= (OpenAlex and NCBI keys travel as query parameters).
+_TOKEN_QS_RE = re.compile(r"([?&](?:token|api_key|apikey|key)=)[^&\s\"']+", re.IGNORECASE)
 
 
 class ApiKeyRedactionFilter(logging.Filter):
@@ -35,10 +36,12 @@ class ApiKeyRedactionFilter(logging.Filter):
 
 
 class QueryTokenRedactionFilter(logging.Filter):
-    """Mask ?token=... query values (Clerk session JWTs) in uvicorn's connection/access lines.
+    """Mask secret query values (?token=, api_key=, key=) in any log line.
 
     Uvicorn's loggers have their own handlers, so the root handler's filters never see them;
-    this is attached to those loggers directly.
+    this is attached to those loggers directly as well as to the root handler. The message is
+    rendered before redacting because callers such as httpx pass the URL as an ``httpx.URL``
+    object, not a string, so redacting string arguments alone would miss it.
     """
 
     @staticmethod
@@ -46,11 +49,18 @@ class QueryTokenRedactionFilter(logging.Filter):
         return _TOKEN_QS_RE.sub(r"\1***REDACTED***", value) if isinstance(value, str) else value
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = self._redact(record.msg)
-        if isinstance(record.args, dict):
-            record.args = {k: self._redact(v) for k, v in record.args.items()}
-        elif record.args:
-            record.args = tuple(self._redact(a) for a in record.args)
+        try:
+            rendered = record.getMessage()
+        except Exception:  # noqa: BLE001 - malformed args: fall back to redacting the parts
+            record.msg = self._redact(record.msg)
+            if isinstance(record.args, dict):
+                record.args = {k: self._redact(v) for k, v in record.args.items()}
+            elif record.args:
+                record.args = tuple(self._redact(a) for a in record.args)
+            return True
+        redacted = self._redact(rendered)
+        if redacted != rendered:
+            record.msg, record.args = redacted, None
         return True
 
 
