@@ -182,7 +182,7 @@ class SharedNeighbor(BaseModel):
     curie: str = Field(..., description="Shared neighbor CURIE")
     name: str = Field(..., description="Canonical name")
     category: str = Field(..., description="Biolink category")
-    degree: int = Field(..., ge=0, description="Total edge count in KG")
+    degree: int | None = Field(..., ge=0, description="Total edge count in KG; None when unknown")
     is_hub: bool = Field(False, description="True if degree > 1000")
     connected_inputs: list[str] = Field(..., description="Input CURIEs sharing this neighbor")
     predicates: list[str] = Field(default_factory=list, description="Predicate types in connections")
