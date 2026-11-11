@@ -255,7 +255,7 @@ Return ONLY one word: supporting, contradicting, tangential, or methodological""
             system_prompt="You are a biomedical literature classifier. Return only the classification category.",
             allowed_tools=[],
             max_turns=1,
-            permission_mode="bypassPermissions",
+            tools=[],  # built-ins off; allowed_tools=[] alone does not remove them
         )
 
         from .graph.sdk_utils import _apply_byok_env, _pin_model
