@@ -1,0 +1,16 @@
+{
+  "note": "real NCBI search with zero hits",
+  "captured_at": "2026-11-11T19:59:29.528134+00:00",
+  "request": {
+    "method": "GET",
+    "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=qzxwvplk%20frobnicated%20zzyzx%20glorptastic&retmode=json&retmax=6&sort=relevance",
+    "content": null
+  },
+  "response": {
+    "status_code": 200,
+    "headers": {
+      "content-type": "application/json; charset=UTF-8"
+    },
+    "text": "{\"header\":{\"type\":\"esearch\",\"version\":\"0.3\"},\"esearchresult\":{\"count\":\"1\",\"retmax\":\"1\",\"retstart\":\"0\",\"idlist\":[\"21413512\"],\"translationset\":[],\"querytranslation\":\"\\\"zzyzx\\\"[All Fields]\",\"errorlist\":{\"phrasesnotfound\":[\"qzxwvplk\",\"frobnicated\",\"glorptastic\"],\"fieldsnotfound\":[]}}}\n"
+  }
+}

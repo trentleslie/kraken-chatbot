@@ -1,0 +1,16 @@
+{
+  "note": "real Exa response to an invalid key",
+  "captured_at": "2026-11-11T19:59:29.979938+00:00",
+  "request": {
+    "method": "POST",
+    "url": "https://api.exa.ai/search",
+    "content": "{\"query\": \"branched-chain amino acids insulin resistance type 2 diabetes\", \"type\": \"neural\", \"category\": \"research paper\", \"numResults\": 6, \"contents\": {\"highlights\": true}}"
+  },
+  "response": {
+    "status_code": 401,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "text": "{\"requestId\":\"f7f4c36c587831aba27ee81b2c8d6fad\",\"error\":\"Invalid API key. Provide a valid key using 'Authorization: Bearer <key>' or 'x-api-key: <key>'. Create a key at https://dashboard.exa.ai/api-keys\",\"tag\":\"INVALID_API_KEY\"}"
+  }
+}

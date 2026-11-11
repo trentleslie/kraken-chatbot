@@ -1,0 +1,16 @@
+{
+  "note": "real ESearch",
+  "captured_at": "2026-11-11T19:59:28.072447+00:00",
+  "request": {
+    "method": "GET",
+    "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=branched-chain%20amino%20acids%20insulin%20resistance%20type%202%20diabetes&retmode=json&retmax=6&sort=relevance",
+    "content": null
+  },
+  "response": {
+    "status_code": 200,
+    "headers": {
+      "content-type": "application/json; charset=UTF-8"
+    },
+    "text": "{\"header\":{\"type\":\"esearch\",\"version\":\"0.3\"},\"esearchresult\":{\"count\":\"399\",\"retmax\":\"6\",\"retstart\":\"0\",\"idlist\":[\"30067154\",\"34044180\",\"33983836\",\"25287287\",\"29755574\",\"35931683\"],\"translationset\":[{\"from\":\"branched-chain amino acids\",\"to\":\"\\\"amino acids, branched-chain\\\"[Supplementary Concept] OR \\\"amino acids, branched-chain\\\"[All Fields] OR \\\"branched chain amino acids\\\"[All Fields] OR \\\"amino acids, branched-chain\\\"[MeSH Terms] OR (\\\"amino\\\"[All Fields] AND \\\"acids\\\"[All Fields] AND \\\"branched-chain\\\"[All Fields]) OR \\\"branched-chain amino acids\\\"[All Fields] OR (\\\"branched\\\"[All Fields] AND \\\"chain\\\"[All Fields] AND \\\"amino\\\"[All Fields] AND \\\"acids\\\"[All Fields])\"},{\"from\":\"insulin resistance\",\"to\":\"\\\"insulin resistance\\\"[MeSH Terms] OR (\\\"insulin\\\"[All Fields] AND \\\"resistance\\\"[All Fields]) OR \\\"insulin resistance\\\"[All Fields]\"},{\"from\":\"type 2 diabetes\",\"to\":\"\\\"diabetes mellitus, type 2\\\"[MeSH Terms] OR \\\"type 2 diabetes mellitus\\\"[All Fields] OR \\\"type 2 diabetes\\\"[All Fields]\"}],\"querytranslation\":\"(\\\"amino acids branched chain\\\"[Supplementary Concept] OR \\\"amino acids branched chain\\\"[All Fields] OR \\\"branched chain amino acids\\\"[All Fields] OR \\\"amino acids, branched chain\\\"[MeSH Terms] OR (\\\"amino\\\"[All Fields] AND \\\"acids\\\"[All Fields] AND \\\"branched chain\\\"[All Fields]) OR \\\"branched-chain amino acids\\\"[All Fields] OR (\\\"branched\\\"[All Fields] AND \\\"chain\\\"[All Fields] AND \\\"amino\\\"[All Fields] AND \\\"acids\\\"[All Fields])) AND (\\\"insulin resistance\\\"[MeSH Terms] OR (\\\"insulin\\\"[All Fields] AND \\\"resistance\\\"[All Fields]) OR \\\"insulin resistance\\\"[All Fields]) AND (\\\"diabetes mellitus, type 2\\\"[MeSH Terms] OR \\\"type 2 diabetes mellitus\\\"[All Fields] OR \\\"type 2 diabetes\\\"[All Fields])\"}}\n"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "note": "real S2 response to an invalid key",
+  "captured_at": "2026-11-11T19:59:29.680782+00:00",
+  "request": {
+    "method": "GET",
+    "url": "https://api.semanticscholar.org/graph/v1/paper/search?query=branched-chain%20amino%20acids%20insulin%20resistance%20type%202%20diabetes&limit=6&fields=paperId%2Ctitle%2Cauthors%2Cyear%2Cabstract%2CcitationCount%2CexternalIds&fieldsOfStudy=Biology%2CMedicine",
+    "content": null
+  },
+  "response": {
+    "status_code": 403,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "text": "{\"message\":\"Forbidden\"}"
+  }
+}

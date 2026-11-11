@@ -1,0 +1,6 @@
+{
+  "note": "CONSTRUCTED (a 500 cannot be captured on demand). Body shape mirrors OpenAlex error JSON.",
+  "request": {"method": "GET", "url": "https://api.openalex.org/works?search=x&per_page=6", "content": null},
+  "response": {"status_code": 500, "headers": {"content-type": "application/json"},
+               "text": "{\"error\": \"Internal Server Error\", \"message\": \"Something went wrong\"}"}
+}
