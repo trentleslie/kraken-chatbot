@@ -60,10 +60,12 @@ async def search_works(
             logger.info("OpenAlex search: %d results for query: %s", len(results), query[:50])
             return results
         except httpx.HTTPStatusError as e:
-            logger.error("OpenAlex HTTP error: %s", e)
+            # Never log str(e): its URL carries the api_key query parameter.
+            logger.error("OpenAlex HTTP error %s for %s", e.response.status_code,
+                         e.request.url.copy_remove_param("api_key"))
             return []
         except Exception as e:
-            logger.error("OpenAlex search failed: %s", e)
+            logger.error("OpenAlex search failed: %s", type(e).__name__)
             return []
 
 

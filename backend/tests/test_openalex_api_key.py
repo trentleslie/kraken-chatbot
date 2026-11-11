@@ -41,3 +41,13 @@ async def test_budget_429_is_logged_as_rate_limit(monkeypatch, caplog):
         assert await oa.search_works("insulin", limit=1) == []
     msg = " ".join(r.getMessage() for r in caplog.records)
     assert "rate limited (429)" in msg and "7788" in msg and "NOT SET" in msg
+
+
+@respx.mock
+async def test_api_key_never_reaches_logs_on_http_error(monkeypatch, caplog):
+    monkeypatch.setenv("OPENALEX_API_KEY", "SECRETKEY123")
+    respx.get(URL).mock(return_value=httpx.Response(500))
+    with caplog.at_level(logging.DEBUG):
+        assert await oa.search_works("insulin", limit=1) == []
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "500" in text and "SECRETKEY123" not in text
