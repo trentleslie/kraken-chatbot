@@ -94,6 +94,10 @@ async def search_papers(
         raise S2RateLimitError("Semantic Scholar rate limited; cooling down after exhausted retries")
 
     async with S2_SEMAPHORE:
+        # Re-check after the wait: a search queued behind one that just exhausted its retries
+        # must not start its own backoff.
+        if time.monotonic() < _cooldown_until:
+            raise S2RateLimitError("Semantic Scholar rate limited; cooling down after exhausted retries")
         await asyncio.sleep(S2_DELAY)  # Rate limiting
 
         headers = {}

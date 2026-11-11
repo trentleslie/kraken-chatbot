@@ -95,3 +95,22 @@ async def test_non_429_error_is_not_retried(sleeps):
     route = respx.get(s2.S2_SEARCH_ENDPOINT).mock(return_value=httpx.Response(403))
     assert await s2.search_papers("leucine adiponectin") == []
     assert route.call_count == 1
+
+
+@respx.mock
+async def test_search_queued_behind_exhaustion_respects_cooldown(monkeypatch):
+    """Two overlapping searches: the second, queued on the semaphore, must not back off again."""
+    import asyncio as _asyncio
+
+    real_sleep = _asyncio.sleep
+
+    async def yielding_sleep(seconds):
+        await real_sleep(0)  # yield like a real sleep, so the second search queues on the semaphore
+
+    monkeypatch.setattr(s2.asyncio, "sleep", yielding_sleep)
+    route = respx.get(s2.S2_SEARCH_ENDPOINT).mock(return_value=httpx.Response(429))
+    results = await _asyncio.gather(
+        s2.search_papers("first"), s2.search_papers("second"), return_exceptions=True
+    )
+    assert all(isinstance(r, s2.S2RateLimitError) for r in results)
+    assert route.call_count == s2.S2_MAX_RETRIES + 1  # only the first search hit the API
