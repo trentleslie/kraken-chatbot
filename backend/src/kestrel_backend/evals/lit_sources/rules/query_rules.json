@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "frozen_note": "Frozen and hashed (rules_lock.json) BEFORE control links and landmarks are chosen. Never tuned against scored controls. Any later edit is a manifest deviation.",
+  "fetch_limit": 6,
+  "precision_top_k": 5,
+  "arm1": {
+    "description": "As-deployed: each source receives exactly the production *_raw call (build_search_query sentence; S2 = deployed three-strategy merge with the entity-name map), limit = parallel_fetch_limit. KG = ground_hypothesis_kg on the captured state's collect_pmids_from_state.",
+    "sources": ["kg", "openalex", "exa", "pubmed", "s2"]
+  },
+  "pubmed_direct_matched": {
+    "description": "Direct E-utilities client (ESearch relevance sort -> ESummary) run on the IDENTICAL Arm 1 sentence. Only this same-query pair may attribute a PubMed failure to the production client.",
+    "certification_query": "branched-chain amino acids insulin resistance",
+    "certification_min_pmids": 1
+  },
+  "arm2": {
+    "pubmed": {
+      "form": "boolean",
+      "max_entities": 3,
+      "field_tag": "[tiab]",
+      "entity_terms": "the entity-name map value for each of the first max_entities supporting_entities that has a name, plus that entity's pinned synonyms (pinned hypothesis 'synonyms' map only; no live expansion), each quoted and tagged, OR-joined inside parentheses",
+      "disease_terms": "the pinned disease_context, quoted and tagged; omitted when empty",
+      "join": "AND",
+      "fallback": "when fewer than 1 entity has a name, the Arm 2 PubMed call is recorded not_run (no query can be built)"
+    },
+    "consensus": {
+      "form": "question",
+      "template": "Is there evidence that {claim}{disease_suffix}?",
+      "claim_normalization": "strip whitespace and trailing punctuation; lowercase the first character unless the first word is an acronym (2+ leading uppercase letters)",
+      "disease_suffix": "' in ' + disease_context when disease_context is non-empty and not already contained (case-insensitive) in the claim; else ''"
+    },
+    "skip": {
+      "openalex": "native form is the sentence",
+      "exa": "native form is the sentence",
+      "s2": "Arm 1 already runs the deployed three-strategy merge",
+      "kg": "no query string"
+    }
+  },
+  "normalization": {
+    "abstract_resolver_chain": ["pmid->pubmed_efetch", "doi->openalex_abstract_inverted_index", "title->openalex_title_search"],
+    "text_repair": "ftfy.fix_text after the production _MOJIBAKE_REPLACEMENTS",
+    "consensus_title_resolution": {
+      "similarity": "difflib.SequenceMatcher ratio on normalized titles",
+      "min_similarity": 0.9,
+      "year_must_match": true,
+      "first_author_surname_must_match_when_both_present": true
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "frozen_note": "Fixed capture inputs. Fresh run_discovery captures (local Claude login; Kestrel at the logged KESTREL_MCP_URL).",
+  "captures": [
+    {
+      "id": "t2d_modules",
+      "panel_csv": "kraken_test_panel_modules.csv",
+      "query": "Which mechanisms link these co-expression modules to type 2 diabetes?",
+      "selected_groups": [],
+      "trait_label": "type 2 diabetes",
+      "module_directions": "UNSET",
+      "module_directions_note": "No direction table ships with kraken_test_panel_modules.csv. Trent supplies the per-module eigengene-trait correlations before Unit 4; the capture stage refuses this capture while this field is UNSET, and setting it is logged as a manifest deviation."
+    },
+    {
+      "id": "t2d_basic",
+      "panel_csv": "kraken_test_panel_basic.csv",
+      "query": "How do these analytes relate to type 2 diabetes?",
+      "selected_groups": [],
+      "module_directions": []
+    },
+    {
+      "id": "ad_freetext",
+      "panel_csv": null,
+      "query": "What metabolic and inflammatory mechanisms connect APOE, amyloid beta, and tau to Alzheimer's disease?",
+      "selected_groups": [],
+      "module_directions": []
+    }
+  ],
+  "selection": {
+    "target": 10,
+    "min_fallback": 6,
+    "order": "round-robin across captures in the order listed, each capture's hypotheses sorted by tier (production order), deduplicated on normalized title+claim",
+    "coverage": {"min_panels": 2, "required_types": ["bridge", "inferred_role"]},
+    "on_coverage_miss": "continue the round-robin past target until coverage is met or hypotheses run out",
+    "below_min": "capture one more run"
+  }
+}

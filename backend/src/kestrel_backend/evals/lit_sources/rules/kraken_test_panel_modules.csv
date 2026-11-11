@@ -1,0 +1,13 @@
+analyte,module,analyte_type,kME,kIM
+leucine,M1_bcaa,metabolite,0.91,12.4
+isoleucine,M1_bcaa,metabolite,0.88,11.9
+valine,M1_bcaa,metabolite,0.85,10.7
+glutamate,M1_bcaa,metabolite,0.62,6.1
+glycine,M1_bcaa,metabolite,-0.71,7.3
+glucose,M2_glycemic,metabolite,0.93,14.2
+mannose,M2_glycemic,metabolite,0.79,9.8
+"1,5-anhydroglucitol",M2_glycemic,metabolite,-0.84,10.5
+insulin,M2_glycemic,protein,0.66,5.9
+adiponectin,M3_adipokine,protein,-0.82,8.8
+leptin,M3_adipokine,protein,0.77,8.1
+C-reactive protein,M3_adipokine,protein,0.69,6.4

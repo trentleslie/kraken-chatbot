@@ -1,0 +1,143 @@
+{
+  "version": 1,
+  "frozen_note": "Pre-registered at plan approval (2026-11-11). Any change after the first real query is logged as a deviation in the run manifest.",
+  "headline_population": "real hypotheses only; controls feed P1-P3 and never enter headline metrics or decision-rule precision inputs",
+  "kept_set": {
+    "papers_per_hypothesis": 3,
+    "kg_short_circuit": true,
+    "production_concatenation_order": [
+      "openalex",
+      "exa",
+      "pubmed",
+      "s2"
+    ]
+  },
+  "mixes": {
+    "current": {
+      "description": "as deployed: Arm 1 openalex + exa + pubmed + s2"
+    },
+    "a_fix_query": {
+      "description": "current with PubMed Arm 2 Boolean (direct client) in place of Arm 1 PubMed",
+      "pubmed_arm": "arm2"
+    },
+    "b_add_consensus": {
+      "description": "current + Consensus",
+      "consensus_position": "after openalex"
+    },
+    "c_reweight": {
+      "description": "current sources, score = 1 - rank/fetch_limit per source; ties broken by SOURCE_PRIORITY",
+      "fetch_limit": 6
+    }
+  },
+  "consensus_score_mapping": {
+    "frozen": {
+      "kind": "rank_decay",
+      "base": 0.9,
+      "step": 0.03,
+      "priority": 3.5
+    },
+    "best": {
+      "kind": "constant",
+      "value": 1.0,
+      "priority": 3.5
+    },
+    "worst": {
+      "kind": "constant",
+      "value": 0.5,
+      "priority": 3.5
+    }
+  },
+  "judge": {
+    "model": "claude-sonnet-5",
+    "concurrency": 4,
+    "inputs": [
+      "claim",
+      "title",
+      "normalized_abstract"
+    ],
+    "missing_verdict": "not_run; any not_run blocks verdicts, not diagnostics"
+  },
+  "audit": {
+    "seed": 20261111,
+    "sample_size": 40,
+    "strata": "source x judge_hit",
+    "allocation": "round-robin over strata sorted by (source, judge_hit), seeded shuffle within each stratum",
+    "false_support_cap": 15,
+    "false_support_dedup": "(hypothesis_id, paper_key)",
+    "consensus_identity_checks": 5,
+    "max_readings": 60,
+    "verdicts_hidden_from_auditor": true
+  },
+  "certification": {
+    "min_agreement": 0.85,
+    "min_kappa": 0.6,
+    "min_ppv": 0.75,
+    "per_source_agreement": "descriptive only, reported with n",
+    "on_failure": "no verdicts; diagnostics marked uncertified plus ID-matched landmark recall"
+  },
+  "statistics": {
+    "bootstrap_unit": "hypothesis",
+    "bootstrap_resamples": 2000,
+    "bootstrap_seed": 20261111,
+    "ci_level": 0.95,
+    "search_path_min_n": 6
+  },
+  "precedence": [
+    "pubmed_client_failure",
+    "fix_query",
+    "add",
+    "reweight",
+    "drop",
+    "keep"
+  ],
+  "rules": {
+    "pubmed_client_failure": {
+      "description": "the verified direct client returns >=1 paper on the identical Arm 1 sentence where the production client returns 0",
+      "min_share_of_direct_positive_hypotheses": 0.5,
+      "blocks_drop": true
+    },
+    "fix_query": {
+      "applies_to": [
+        "pubmed"
+      ],
+      "requires": "Arm 2 precision > Arm 1 precision with paired bootstrap 95% CI over hypotheses excluding 0, AND Arm 2 precision >= 0.2",
+      "min_arm2_precision": 0.2,
+      "yield": "reported, not decisive"
+    },
+    "add": {
+      "applies_to": [
+        "consensus"
+      ],
+      "tos_gate": "yes",
+      "min_distinct_real_hypotheses_with_unique_kept_hits": 3,
+      "false_support_must_not_increase": true,
+      "must_hold_under_mappings": [
+        "best",
+        "worst"
+      ]
+    },
+    "reweight": {
+      "requires": "mix c raises kept-set precision vs current, paired bootstrap CI excluding 0"
+    },
+    "judge_filter": {
+      "requires": "raises kept-set precision AND lowers false-support count, each with CI excluding 0"
+    },
+    "drop": {
+      "requires_all": [
+        "zero judged hits in every kept set across all mixes",
+        "Wilson 95% upper bound on pooled per-source precision < 0.2",
+        ">= 30 judged papers with abstracts"
+      ],
+      "wilson_upper_max": 0.2,
+      "min_judged_with_abstract": 30,
+      "otherwise": "insufficient data"
+    },
+    "keep": "any difference whose interval includes 0 maps to keep-as-is",
+    "unavailable": "a source that did not run appears as unavailable with its reason",
+    "low": {
+      "description": "precision < low_precision_max counts as 'low' in the PubMed three-way diagnosis",
+      "low_precision_max": 0.2
+    }
+  },
+  "kg": "measured; excluded from drop and reweight verdicts (kept on product grounds)"
+}

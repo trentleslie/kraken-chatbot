@@ -1,0 +1,13 @@
+analyte,group,analyte_type
+glucose,glycemic,metabolite
+insulin,glycemic,protein
+HbA1c,glycemic,protein
+TCF7L2,glycemic,gene
+leucine,amino_acids,metabolite
+isoleucine,amino_acids,metabolite
+valine,amino_acids,metabolite
+alanine,amino_acids,metabolite
+adiponectin,adipokines,protein
+leptin,adipokines,protein
+C-reactive protein,inflammation,protein
+IL6,inflammation,gene
