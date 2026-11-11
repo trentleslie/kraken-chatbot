@@ -110,6 +110,12 @@ async def judge_items(
     done = checkpoint.done_keys() if checkpoint is not None else set()
 
     async def one(item: dict[str, Any]) -> dict[str, Any]:
+        row = await judge_one(item)
+        if checkpoint is not None:
+            checkpoint.append(row)  # as each finishes, so a crash mid-batch keeps finished rows
+        return row
+
+    async def judge_one(item: dict[str, Any]) -> dict[str, Any]:
         base = {k: item[k] for k in ("item_id", "hyp_id") if k in item}
         if not item.get("abstract"):
             return {**base, "status": "no_abstract"}
@@ -131,11 +137,7 @@ async def judge_items(
         return {**base, "status": "not_run", "error": last_error}
 
     todo = [it for it in items if (it["item_id"],) not in done]
-    results = await asyncio.gather(*(one(it) for it in todo))
-    if checkpoint is not None:
-        for r in results:
-            checkpoint.append(r)
-    return results
+    return await asyncio.gather(*(one(it) for it in todo))
 
 
 # ---------------------------------------------------------------------------------------------
