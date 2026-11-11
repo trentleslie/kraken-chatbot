@@ -1,0 +1,38 @@
+{
+  "status": "drafted; pre-run search across all sources NOT yet recorded",
+  "authoring_note": "Plausible-sounding fabricated links in the pipeline bridge template. Each needs a recorded pre-run search across all sources showing no supporting literature (pre_run_search) before use; run_study.require_verified_controls refuses otherwise. 'False' means 'absent from these sources' (disclosed).",
+  "links": [
+    {
+      "id": "F1_isoleucine_adiponectin_tcf7l2",
+      "a": "isoleucine",
+      "b": "adiponectin secretion",
+      "claim": "Isoleucine suppresses adiponectin secretion through TCF7L2-dependent signalling in adipocytes.",
+      "disease_context": "type 2 diabetes",
+      "pre_run_search": null
+    },
+    {
+      "id": "F2_anhydroglucitol_il6",
+      "a": "1,5-anhydroglucitol",
+      "b": "interleukin-6 transcription",
+      "claim": "1,5-anhydroglucitol directly activates interleukin-6 transcription in visceral adipocytes.",
+      "disease_context": "type 2 diabetes",
+      "pre_run_search": null
+    },
+    {
+      "id": "F3_glycine_leptin_receptor_beta_cell",
+      "a": "glycine",
+      "b": "leptin receptor signalling",
+      "claim": "Glycine inhibits leptin receptor signalling in pancreatic beta cells.",
+      "disease_context": "type 2 diabetes",
+      "pre_run_search": null
+    },
+    {
+      "id": "F4_valine_crp_hepatocyte",
+      "a": "valine",
+      "b": "C-reactive protein",
+      "claim": "Valine binds and inactivates C-reactive protein inside hepatocytes.",
+      "disease_context": "type 2 diabetes",
+      "pre_run_search": null
+    }
+  ]
+}
