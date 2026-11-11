@@ -109,6 +109,10 @@ def configure_logging(
 
     # Set root log level
     root_logger.setLevel(getattr(logging, log_level.upper()))
+    # httpx logs every request URL at INFO, and NCBI/OpenAlex keys travel as query parameters.
+    # Pin these to WARNING so no root log level can write API keys into the journal.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     # Create console handler
     console_handler = logging.StreamHandler(sys.stdout)

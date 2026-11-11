@@ -47,7 +47,16 @@ async def test_budget_429_is_logged_as_rate_limit(monkeypatch, caplog):
 async def test_api_key_never_reaches_logs_on_http_error(monkeypatch, caplog):
     monkeypatch.setenv("OPENALEX_API_KEY", "SECRETKEY123")
     respx.get(URL).mock(return_value=httpx.Response(500))
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.DEBUG, logger=oa.logger.name):
         assert await oa.search_works("insulin", limit=1) == []
-    text = " ".join(r.getMessage() for r in caplog.records)
+    text = " ".join(r.getMessage() for r in caplog.records if r.name == oa.logger.name)
     assert "500" in text and "SECRETKEY123" not in text
+
+
+def test_logging_config_pins_httpx_request_logs_off():
+    # httpx writes request URLs (with api_key / NCBI key params) at INFO.
+    from kestrel_backend.logging_config import configure_logging
+
+    configure_logging(log_level="DEBUG")
+    assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
+    assert logging.getLogger("httpcore").getEffectiveLevel() >= logging.WARNING
