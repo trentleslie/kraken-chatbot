@@ -1004,3 +1004,46 @@ def test_audit_packet_ids_are_opaque_and_map_back_on_ingest(tmp_path):
                                    for r in rows))
     labels = judge.ingest_audit_labels(labels_path, key_path=Path(f"{packet}.key.json"))
     assert labels == {"H1|exa|arm1|10.1/x": True, "H2|pubmed|arm2|PMID:1": False}
+
+
+# --- Unit 4 tail driver: pure helpers ---
+
+from kestrel_backend.evals.lit_sources import run_tail  # noqa: E402
+
+
+def _pin(hyp_id, kind, claim="A affects B", **kw):
+    return {"hyp_id": hyp_id, "kind": kind, "hypothesis": {"claim": claim}, **kw}
+
+
+def test_build_items_dedups_across_sources_and_injects_p2_twins():
+    pinned = [_pin("R1", "real"), _pin("T4", "control_true", "TCF7L2 -> T2D"),
+              _pin("P2", "control_corrupt", "TCF7L2 -> T1D", twin_of="T4",
+                   inject_landmarks=[{"pmid": "16415884", "doi": "10.1038/ng1732", "title": "Variant of TCF7L2"}])]
+    recs = [
+        {"hyp_id": "R1", "source": "openalex", "arm": "arm1", "papers": [{"paper_id": "W1", "doi": "10.1/X", "title": "t"}]},
+        {"hyp_id": "R1", "source": "exa", "arm": "arm1", "papers": [{"paper_id": "e", "doi": "10.1/x", "title": "t"}]},
+    ]
+    items = run_tail.build_items(recs, pinned)
+    r1 = [i for i in items.values() if i["hyp_id"] == "R1"]
+    assert len(r1) == 1 and sorted(r1[0]["sources"]) == ["exa", "openalex"]
+    roles = {i["hyp_id"]: i["roles"] for i in items.values() if i["hyp_id"] in ("P2", "T4")}
+    assert roles == {"P2": ["p2_corrupt"], "T4": ["p2_clean"]}
+
+
+def test_false_support_events_only_supporting_hits_on_false_controls():
+    items = {"F1|doi:a": {"item_id": "F1|doi:a", "hyp_id": "F1", "paper_key": "doi:a", "kind": "control_false"},
+             "F1|doi:b": {"item_id": "F1|doi:b", "hyp_id": "F1", "paper_key": "doi:b", "kind": "control_false"},
+             "R1|doi:c": {"item_id": "R1|doi:c", "hyp_id": "R1", "paper_key": "doi:c", "kind": "real"}}
+    judgments = [{"item_id": "F1|doi:a", "status": "judged", "hit": True, "direction": "supports"},
+                 {"item_id": "F1|doi:b", "status": "judged", "hit": True, "direction": "refutes"},
+                 {"item_id": "R1|doi:c", "status": "judged", "hit": True, "direction": "supports"}]
+    assert [e["item_id"] for e in run_tail.false_support_events(judgments, items)] == ["F1|doi:a"]
+
+
+def test_pubmed_pairs_use_matched_sentence_calls_on_real_hypotheses_only():
+    pinned = [_pin("R1", "real"), _pin("T1", "control_true")]
+    recs = [{"hyp_id": "R1", "source": "pubmed", "arm": "arm1", "state": "empty", "papers": []},
+            {"hyp_id": "R1", "source": "pubmed", "arm": "arm1_direct", "state": "ok", "papers": [{}, {}]},
+            {"hyp_id": "T1", "source": "pubmed", "arm": "arm1", "state": "empty", "papers": []},
+            {"hyp_id": "T1", "source": "pubmed", "arm": "arm1_direct", "state": "ok", "papers": [{}]}]
+    assert run_tail.pubmed_pairs(recs, pinned) == [(0, 2)]
