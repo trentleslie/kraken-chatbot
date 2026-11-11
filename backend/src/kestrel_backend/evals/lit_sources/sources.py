@@ -619,23 +619,40 @@ async def resolve_abstract(ids: dict[str, str | None], *, title: str | None, efe
     return None, None
 
 
+async def openalex_get(url: str, params: dict[str, Any], *, attempts: int = 6,
+                       sleep=None) -> httpx.Response:
+    """Polite-pool GET (production User-Agent) with pacing and 429/5xx backoff; raises when exhausted."""
+    from ...openalex import USER_AGENT
+
+    sleep = sleep or _sleep
+    for attempt in range(attempts):
+        await sleep(0.15)
+        async with httpx.AsyncClient(timeout=30.0) as c:
+            r = await c.get(url, params=params, headers={"User-Agent": USER_AGENT})
+        if r.status_code != 429 and r.status_code < 500:
+            return r
+        if attempt + 1 < attempts:
+            ra = r.headers.get("Retry-After")
+            await sleep(min(float(ra), 60.0) if ra and ra.replace(".", "").isdigit() else 2.0 * 2 ** attempt)
+    r.raise_for_status()
+    return r
+
+
 async def openalex_abstract_by_doi(doi: str) -> str | None:  # pragma: no cover - live, Unit 4
-    async with httpx.AsyncClient(timeout=30.0) as c:
-        r = await c.get(f"https://api.openalex.org/works/doi:{doi}",
-                        params={"select": "abstract_inverted_index"})
-        if r.status_code == 404:
-            return None
-        r.raise_for_status()
-        return reconstruct_abstract(r.json().get("abstract_inverted_index"))
+    r = await openalex_get(f"https://api.openalex.org/works/doi:{doi}",
+                           {"select": "abstract_inverted_index"})
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    return reconstruct_abstract(r.json().get("abstract_inverted_index"))
 
 
 async def openalex_title_candidates(title: str, n: int = 5) -> list[dict[str, Any]]:  # pragma: no cover
     clean = re.sub(r"[,:|]", " ", title)[:300]
-    async with httpx.AsyncClient(timeout=30.0) as c:
-        r = await c.get("https://api.openalex.org/works",
-                        params={"filter": f"title.search:{clean}", "per_page": n,
-                                "select": "id,title,doi,ids,publication_year,authorships,abstract_inverted_index"})
-        r.raise_for_status()
+    r = await openalex_get("https://api.openalex.org/works",
+                           {"filter": f"title.search:{clean}", "per_page": n,
+                            "select": "id,title,doi,ids,publication_year,authorships,abstract_inverted_index"})
+    r.raise_for_status()
     out = []
     for w in r.json().get("results", []):
         auth = (w.get("authorships") or [{}])[0].get("author", {}).get("display_name", "")

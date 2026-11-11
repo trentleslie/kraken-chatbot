@@ -1077,3 +1077,19 @@ async def test_s2_rate_limit_skip_is_transient_not_final(monkeypatch):
     rec = await sources.snapshot_arm1(pinned, "s2")
     assert rec["state"] == "lookup_failed" and rec["transient"] is True
     assert run_study.is_retryable(rec)
+
+
+@respx.mock
+async def test_openalex_get_backs_off_on_429_then_succeeds():
+    route = respx.get("https://api.openalex.org/works").mock(
+        side_effect=[httpx.Response(429), httpx.Response(429, headers={"Retry-After": "3"}),
+                     httpx.Response(200, json={"results": []})])
+    waits = []
+
+    async def rec(s):
+        waits.append(s)
+
+    r = await sources.openalex_get("https://api.openalex.org/works", {"filter": "x"}, sleep=rec)
+    assert r.status_code == 200 and route.call_count == 3
+    assert [w for w in waits if w != 0.15] == [2.0, 3.0]
+    assert "mailto:" in route.calls[0].request.headers["User-Agent"]
