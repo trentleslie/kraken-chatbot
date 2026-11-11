@@ -8,7 +8,9 @@ origin: docs/brainstorms/2026-11-11-literature-source-comparison-requirements.md
 
 # feat: Literature-source comparison spike for discovery-pipeline grounding
 
-**Target repo:** trentleslie/kraken-chatbot (branch `study/lit-source-comparison`). KRAKEN is the knowledge graph; this concerns the KRAKEN chatbot's discovery pipeline, specifically its `literature_grounding` node.
+**Target repo:** trentleslie/kraken-chatbot (branch `study/lit-source-comparison`). **PR base: `dev`** (repo convention: all PRs target `dev`; `main` is reached only through `promote/*` branches).
+
+**Execution split (approved 2026-11-11):** the automated build implements and tests **Units 1-3 only**. Unit 4 needs Trent mid-run (Consensus connector calls in his interactive session, and audit labeling), so it is executed interactively after the build PR merges and is **out of scope for the build workflow**. The build must not run captures, live source calls, or judging beyond what unit tests need. KRAKEN is the knowledge graph; this concerns the KRAKEN chatbot's discovery pipeline, specifically its `literature_grounding` node.
 
 ## Overview
 
@@ -24,7 +26,7 @@ Production code is not changed.
 
 ## Problem Frame
 
-On dev run `cdf9fa68`, all 30 kept papers came from OpenAlex and Exa; KG, PubMed and S2 contributed nothing. Nobody has measured whether kept papers are evidence for the hypotheses. The fix-first gate (G0) was lifted on 2026-11-11 (Trent): the spike runs now, S2 is reported unavailable until its new key works, and Consensus joins through the claude.ai connector (see origin).
+On dev run `cdf9fa68`, all 30 kept papers came from OpenAlex and Exa; KG, PubMed and S2 contributed nothing. Nobody has measured whether kept papers are evidence for the hypotheses. The fix-first gate (G0) was lifted on 2026-11-11 (Trent): the spike runs now, S2 runs as a normal Tier 1 source if its new key (installed 2026-11-11) verifies at run time, otherwise `unavailable`, and Consensus joins through the claude.ai connector (see origin).
 
 Research facts that shape the design:
 
@@ -378,7 +380,7 @@ Edits to controls or rules after the first real query are logged as deviations i
 
 **Verification:** the recommendation table has a verdict or `unavailable` per Tier 1 source, a verdict for Consensus, and a judge-filter yes/no, each traceable to run-directory files.
 
-- [ ] **Unit 4: Execute: gate, captures, timing, snapshot, Consensus stop, judge, audit, analysis**
+- [ ] **Unit 4: Execute: gate, captures, timing, snapshot, Consensus stop, judge, audit, analysis** *(interactive, after the build PR; not part of the automated build)*
 
 **Goal:** Run the stages in order.
 1. Planted-truth gate (P1, P2, P3 setup).
