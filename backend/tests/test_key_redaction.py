@@ -1,4 +1,5 @@
 import logging
+
 from kestrel_backend.logging_config import ApiKeyRedactionFilter
 
 
@@ -31,3 +32,39 @@ def test_filter_masks_key_in_dict_args():
     f.filter(rec)
     assert "sk-ant-abc123DEF456ghi789" not in rec.getMessage()
     assert "REDACTED" in rec.getMessage()
+
+
+
+def test_httpx_url_object_with_api_key_is_redacted_even_when_httpx_is_set_to_info(capsys):
+    """Greptile #135: LOG_MODULE_LEVELS=httpx:INFO must not write OpenAlex/NCBI keys."""
+    import logging as _logging
+
+    import httpx
+
+    from kestrel_backend.logging_config import configure_logging
+
+    configure_logging(log_level="INFO", module_levels={"httpx": "INFO"})
+    url = httpx.URL("https://api.openalex.org/works?search=insulin&api_key=SECRETKEY123")
+    _logging.getLogger("httpx").info('HTTP Request: %s %s "%s %d %s"', "GET", url, "HTTP/1.1", 200, "OK")
+    _logging.getLogger("x").info("ncbi %s", "https://eutils.ncbi.nlm.nih.gov/x?db=pubmed&api_key=NCBIKEY99&term=y")
+    out = capsys.readouterr().out
+    assert "SECRETKEY123" not in out and "NCBIKEY99" not in out
+    assert "api_key=***REDACTED***" in out and "search=insulin" in out and "term=y" in out
+
+
+
+def test_uvicorn_access_formatter_still_renders_redacted_line():
+    """Greptile #136: args must keep their 5-tuple shape for uvicorn's AccessFormatter."""
+    import logging as _logging
+
+    from uvicorn.logging import AccessFormatter
+
+    from kestrel_backend.logging_config import QueryTokenRedactionFilter
+
+    record = _logging.LogRecord(
+        "uvicorn.access", _logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+        ("10.0.0.5:51234", "GET", "/ws/chat?token=eyJSECRETJWT", "1.1", 101), None)
+    assert QueryTokenRedactionFilter().filter(record)
+    line = AccessFormatter(fmt="%(client_addr)s %(request_line)s %(status_code)s", use_colors=False).format(record)
+    assert "eyJSECRETJWT" not in line
+    assert "10.0.0.5:51234" in line and "/ws/chat?token=***REDACTED***" in line and "101" in line

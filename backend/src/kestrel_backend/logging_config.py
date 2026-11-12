@@ -11,8 +11,9 @@ from pythonjsonlogger.json import JsonFormatter
 
 
 _KEY_RE = re.compile(r"sk-(?:ant-)?[A-Za-z0-9_-]{16,}")
-# A token= query parameter (the WebSocket carries the Clerk session JWT as ?token=...).
-_TOKEN_QS_RE = re.compile(r"([?&]token=)[^&\s\"']+")
+# Secret-bearing query parameters: token= (the WebSocket carries the Clerk session JWT as
+# ?token=...) and api_key=/apikey=/key= (OpenAlex and NCBI keys travel as query parameters).
+_TOKEN_QS_RE = re.compile(r"([?&](?:token|api_key|apikey|key)=)[^&\s\"']+", re.IGNORECASE)
 
 
 class ApiKeyRedactionFilter(logging.Filter):
@@ -35,22 +36,34 @@ class ApiKeyRedactionFilter(logging.Filter):
 
 
 class QueryTokenRedactionFilter(logging.Filter):
-    """Mask ?token=... query values (Clerk session JWTs) in uvicorn's connection/access lines.
+    """Mask secret query values (?token=, api_key=, key=) in any log line.
 
     Uvicorn's loggers have their own handlers, so the root handler's filters never see them;
-    this is attached to those loggers directly.
+    this is attached to those loggers directly as well as to the root handler. Arguments are
+    redacted one by one, keeping their number and order (uvicorn's AccessFormatter unpacks a
+    5-tuple). A non-string argument whose text carries a secret (httpx passes the URL as an
+    ``httpx.URL``) is replaced by its redacted string.
     """
 
     @staticmethod
     def _redact(value):
         return _TOKEN_QS_RE.sub(r"\1***REDACTED***", value) if isinstance(value, str) else value
 
+    @classmethod
+    def _redact_arg(cls, value):
+        if isinstance(value, str):
+            return cls._redact(value)
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
+        text = str(value)
+        return cls._redact(text) if _TOKEN_QS_RE.search(text) else value
+
     def filter(self, record: logging.LogRecord) -> bool:
         record.msg = self._redact(record.msg)
         if isinstance(record.args, dict):
-            record.args = {k: self._redact(v) for k, v in record.args.items()}
+            record.args = {k: self._redact_arg(v) for k, v in record.args.items()}
         elif record.args:
-            record.args = tuple(self._redact(a) for a in record.args)
+            record.args = tuple(self._redact_arg(a) for a in record.args)
         return True
 
 
@@ -109,6 +122,10 @@ def configure_logging(
 
     # Set root log level
     root_logger.setLevel(getattr(logging, log_level.upper()))
+    # httpx logs every request URL at INFO, and NCBI/OpenAlex keys travel as query parameters.
+    # Pin these to WARNING so no root log level can write API keys into the journal.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     # Create console handler
     console_handler = logging.StreamHandler(sys.stdout)
