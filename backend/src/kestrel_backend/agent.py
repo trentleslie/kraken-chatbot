@@ -7,11 +7,12 @@ import sys
 import time
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from langfuse import get_client
+from langfuse import get_client, propagate_attributes
 
 from claude_agent_sdk import (
     query,
@@ -38,19 +39,31 @@ _langfuse = None  # Type annotation removed since get_client() return type diffe
 def _get_langfuse():
     """Get or create Langfuse client for observability tracing.
 
-    SDK v3 reads credentials from environment variables:
+    The SDK (v5) reads credentials from environment variables:
     - LANGFUSE_PUBLIC_KEY
     - LANGFUSE_SECRET_KEY
-    - LANGFUSE_HOST
+    - LANGFUSE_BASE_URL (preferred), else LANGFUSE_HOST (deprecated)
     """
     global _langfuse
     if _langfuse is not None:
         return _langfuse
     settings = get_settings()
     if settings.langfuse_enabled and settings.langfuse_public_key and settings.langfuse_secret_key:
-        # get_client() reads from LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST env vars
+        # get_client() reads LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY and the host env vars
         _langfuse = get_client()
     return _langfuse
+
+
+def _session_scope(session_id: str | None):
+    """Context manager that propagates ``session_id`` onto observations created inside it.
+
+    The SDK copies propagated attributes onto a span when the span starts, so this only
+    needs to wrap the synchronous creation of an observation. Never hold it open across a
+    generator ``yield``. No-op when there is no session id.
+    """
+    if not session_id:
+        return nullcontext()
+    return propagate_attributes(session_id=session_id)
 
 
 # Every tool the Kestrel MCP server exposes is allowed. "mcp__kestrel" is the
@@ -409,13 +422,14 @@ async def run_agent_turn(user_message: str, session_id: str | None = None) -> As
     langfuse = _get_langfuse()
     trace = None
     if langfuse:
-        trace = langfuse.start_span(
-            name="kraken_agent_turn",
-            input={"user_message": user_message},
-            metadata={"turn_id": metrics.turn_id, "model": metrics.model},
-        )
-        if session_id:
-            trace.update_trace(session_id=session_id)
+        # The session id is propagated at creation time (v5 has no trace-level update).
+        with _session_scope(session_id):
+            trace = langfuse.start_observation(
+                name="kraken_agent_turn",
+                as_type="span",
+                input={"user_message": user_message},
+                metadata={"turn_id": metrics.turn_id, "model": metrics.model},
+            )
 
     # Build options for Kestrel MCP server, Bash security hook, and BYOK key injection
     options = build_agent_options()
@@ -469,10 +483,12 @@ async def run_agent_turn(user_message: str, session_id: str | None = None) -> As
                             tool_id_to_name[tool_id] = tool_name
                             # Create Langfuse child span for tool call
                             if trace:
-                                tool_spans[tool_id] = trace.start_span(
-                                    name=f"tool:{tool_name}",
-                                    input=tool_input,
-                                )
+                                with _session_scope(session_id):
+                                    tool_spans[tool_id] = trace.start_observation(
+                                        name=f"tool:{tool_name}",
+                                        as_type="span",
+                                        input=tool_input,
+                                    )
 
                         metrics.tool_calls_count += 1
                         yield AgentEvent(
@@ -575,27 +591,26 @@ async def run_agent_turn(user_message: str, session_id: str | None = None) -> As
     }
     # Include trace_id if Langfuse tracing is enabled
     if trace:
-        trace_data["trace_id"] = trace.id
+        # trace.trace_id is the trace identifier (trace.id is the span id); /api/feedback
+        # scores by trace id, so send that (same as the pipeline path in main.py).
+        trace_data["trace_id"] = trace.trace_id
     yield AgentEvent(type="trace", data=trace_data)
 
     # Finalize Langfuse trace with collected metrics
     if trace and langfuse:
         trace.update(
             output={"turn_id": metrics.turn_id},
-            usage={
-                "input": metrics.input_tokens,
-                "output": metrics.output_tokens,
-                "total": metrics.input_tokens + metrics.output_tokens,
-            },
             metadata={
                 "cost_usd": metrics.cost_usd,
                 "duration_ms": metrics.duration_ms,
                 "tool_calls_count": metrics.tool_calls_count,
+                "input_tokens": metrics.input_tokens,
+                "output_tokens": metrics.output_tokens,
                 "cache_creation_tokens": metrics.cache_creation_tokens,
                 "cache_read_tokens": metrics.cache_read_tokens,
             },
         )
-        trace.end()  # SDK v3 requires explicit end() for manually created spans
+        trace.end()  # Manually created observations require an explicit end()
         langfuse.flush()  # Ensure trace is sent before response completes
 
     # Signal completion

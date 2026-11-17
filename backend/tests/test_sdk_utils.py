@@ -327,14 +327,14 @@ class TestQueryWithUsageDiagnostics:
 
 
 def _make_langfuse_mock():
-    """Return (client, generation) mocks where start_as_current_generation() is a context
+    """Return (client, generation) mocks where start_as_current_observation() is a context
     manager yielding the generation, mirroring the Langfuse v3 API."""
     gen = MagicMock()
     cm = MagicMock()
     cm.__enter__ = MagicMock(return_value=gen)
     cm.__exit__ = MagicMock(return_value=False)  # falsy => exceptions propagate
     client = MagicMock()
-    client.start_as_current_generation.return_value = cm
+    client.start_as_current_observation.return_value = cm
     return client, gen
 
 
@@ -365,8 +365,9 @@ class TestQueryWithUsageLangfuse:
 
         assert text == "Hello world"
         # Generation opened with node-derived name, model, and input prompt
-        client.start_as_current_generation.assert_called_once()
-        gkw = client.start_as_current_generation.call_args.kwargs
+        client.start_as_current_observation.assert_called_once()
+        gkw = client.start_as_current_observation.call_args.kwargs
+        assert gkw["as_type"] == "generation"
         assert gkw["name"] == "llm:synthesis"
         assert gkw["model"] == DEFAULT_MODEL_NAME
         assert gkw["input"] == "the prompt"
@@ -406,7 +407,7 @@ class TestQueryWithUsageLangfuse:
             await query_with_usage("p", MagicMock(), "synthesis")
 
         # Context manager exited (generation finalized) even though the stream raised
-        client.start_as_current_generation.return_value.__exit__.assert_called()
+        client.start_as_current_observation.return_value.__exit__.assert_called()
 
 
 _KESTREL_EXPECTED = ["mcp__kestrel__one_hop_query", "mcp__kestrel__get_nodes"]
