@@ -113,11 +113,12 @@ def get_settings() -> Settings:
     """Load settings from environment, cached for performance."""
     load_dotenv()
 
-    # Reconcile Langfuse host: the v3 client (get_client()) reads LANGFUSE_HOST from the
-    # environment, but our config historically exposed LANGFUSE_BASE_URL. Without this,
-    # LANGFUSE_BASE_URL is dead config and the client falls back to the EU default host.
-    # If LANGFUSE_HOST is unset, derive it from LANGFUSE_BASE_URL (default: US cloud) so the
-    # correct region is always used. An explicitly set LANGFUSE_HOST always wins.
+    # Reconcile Langfuse host. The v5 client (get_client()) reads LANGFUSE_BASE_URL first and
+    # falls back to the deprecated LANGFUSE_HOST, then to the EU default host. This bridge
+    # dates from SDK v3, which read only LANGFUSE_HOST: if LANGFUSE_HOST is unset, derive it
+    # from LANGFUSE_BASE_URL (default: US cloud) so the correct region is used even when
+    # neither variable is set. Note: when both are set and differ, SDK v5 uses
+    # LANGFUSE_BASE_URL (v3 used LANGFUSE_HOST).
     if not os.getenv("LANGFUSE_HOST"):
         os.environ["LANGFUSE_HOST"] = os.getenv(
             "LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com"

@@ -32,7 +32,7 @@ _langfuse_resolved = False
 
 
 def _get_langfuse():
-    """Return a Langfuse v3 client if observability is enabled and keys are present, else None.
+    """Return a Langfuse (SDK v5) client if observability is enabled and keys are present, else None.
 
     Observability must never break the pipeline, so any failure resolves to None.
     """
@@ -340,8 +340,8 @@ async def query_with_usage(
 
     langfuse = _get_langfuse()
     generation_cm = (
-        langfuse.start_as_current_generation(
-            name=f"llm:{node_name}", model=model_name, input=prompt
+        langfuse.start_as_current_observation(
+            as_type="generation", name=f"llm:{node_name}", model=model_name, input=prompt
         )
         if langfuse is not None
         else nullcontext()

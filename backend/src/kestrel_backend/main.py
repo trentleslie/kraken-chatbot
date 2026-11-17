@@ -455,8 +455,7 @@ async def submit_feedback(request: Request, auth: dict = Depends(get_current_use
         try:
             # Convert feedback_type to Langfuse score value (1 for positive, 0 for negative)
             score_value = 1 if feedback_type == "positive" else 0
-            # Langfuse v3: create_score() (v2's .score() was removed; the old call threw an
-            # AttributeError that was swallowed below, so scoring was silently dead).
+            # create_score() scores by trace id (keyword-only arguments in SDK v5).
             langfuse.create_score(
                 trace_id=trace_id,
                 name="user_feedback",
@@ -610,8 +609,9 @@ async def handle_pipeline_mode(
                     metadata={"mode": "pipeline", "version": "2.0"},
                 )
             )
-            # Trace-level attributes (v3: not settable on the CallbackHandler constructor).
-            # metadata values must be strings (Dict[str, str]).
+            # Trace-level attributes (not settable on the CallbackHandler constructor).
+            # propagate_attributes sets them on the active root span and on every span
+            # started inside it. metadata values must be strings of at most 200 characters.
             span_stack.enter_context(
                 propagate_attributes(
                     trace_name="discovery_pipeline",
@@ -685,8 +685,9 @@ async def handle_pipeline_mode(
                 if span:
                     span.update(output={"duration_ms": duration_ms})
                     span.end()
-                node_spans[node_name] = trace.start_span(
+                node_spans[node_name] = trace.start_observation(
                     name=f"node_{node_name}",
+                    as_type="span",
                     input={"node": node_name, "nodes_completed": nodes_completed},
                 )
 
