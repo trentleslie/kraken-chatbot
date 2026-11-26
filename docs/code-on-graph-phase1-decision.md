@@ -1,5 +1,7 @@
 # Code-on-Graph — Phase-1 Decision Memo
 
+> **Decision (2026-11-26): NO-GO.** Trent closed the spike without running Phase-1. The L+ `graph_reasoning` build is not proceeding. The basis is the Phase-0 result already in hand: any-one recall lift +0.13, below the pre-registered 0.15 bar, at roughly 5–7× the Kestrel calls plus about 5 LLM calls per discovery. The Phase-1 plan below was never run and stays only as a record of what a reopening would need.
+
 **Date:** 2026-06-07
 **Inputs:** N=100 corrected-gate result (`docs/code-on-graph-phase0-results.md`) · feasibility (`docs/code-on-graph-feasibility.md`) · gate-corrections plan (`docs/plans/2026-06-07-001-fix-cog-spike-gate-corrections-plan.md`)
 **Purpose:** Frame the build/don't-build decision the spike teed up, and specify what a Phase-1 run must add to make it cleanly answerable.
