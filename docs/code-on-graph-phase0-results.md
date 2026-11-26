@@ -5,6 +5,7 @@
 **Pre-registration:** `backend/tests/code_on_graph_spike/config.py` (frozen 2026-06-03; re-frozen 2026-06-07 with two documented corrections — see Addendum; git timestamp is the freeze proof)
 **Plan:** `docs/plans/2026-06-03-002-feat-code-on-graph-spike-plan.md` · **Feasibility:** `docs/code-on-graph-feasibility.md`
 **Verdict (N=100, corrected gate — authoritative):** ⚠️ **INCONCLUSIVE** — a significant, grounded iteration advantage that lands **just short of the pre-registered magnitude bar**, with one unstable (flapping) discordant pair. The idea is *not* killed; it is sub-threshold and measurement-unstable.
+**Final decision (2026-11-26): NO-GO**, without a Phase-1 run. See `docs/code-on-graph-phase1-decision.md`.
 
 ---
 

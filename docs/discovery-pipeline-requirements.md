@@ -83,7 +83,7 @@ Cross-referenced against `discovery-pipeline.md` (10-node LangGraph) and `pipeli
 | Subgraph mechanistic extraction | Partially (integration / bridges) | Confirm depth vs. MoA needs |
 | Multiomic enrichment (ORA/GSEA) | Pathway enrichment node exists | **Partial** — confirm ORA source coverage (Wiki/KEGG/Reactome) + GSEA by limma/connectivity |
 | Multi-hop to drug/intervention | Integration/multi-hop primitives exist | Confirm it terminates in drug/intervention nodes |
-| MoA / bridge-discovery *quality* (themes #2, #4) | `integration` uses a fixed `max_pairs=3` fan-out; no iterative query refinement | **Spike in progress** — `brainstorms/code-on-graph-spike-requirements.md` tests whether an iterative query loop beats the static plan, benchmarked on DrugMechDB MoA paths + EITL. A "go" needs two repurposing follow-ups: analyte-anchored entry + bridges terminating on drug/intervention nodes. |
+| MoA / bridge-discovery *quality* (themes #2, #4) | `integration` uses a fixed `max_pairs=3` fan-out; no iterative query refinement | **Spike closed: NO-GO (2026-11-26).** The iterative query loop beat the static plan on DrugMechDB MoA paths (any-one recall +0.13, p=0.0002) but fell short of the pre-registered 0.15 bar at several times the cost; Phase-1 was not run. See `code-on-graph-phase0-results.md` and `code-on-graph-phase1-decision.md`. |
 | Single-omic enrichments | Not present | Nice-to-have |
 | Network centrality scoring | Not first-class | Nice-to-have → possibly promote |
 | WGCNA / limma agents | Not present | Nice-to-have (input generators) |
